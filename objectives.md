@@ -21,6 +21,7 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
   - In the TUI terminal, you can start typing `git status`, backspace before you send it, type `echo "hello world"`, send that, and see the expected output in the TUI terminal.
 - NO E2E or unit tests are skipped, FOR ANY REASON. Install requirements if missing, or do WHATEVER IS REQUIRED to unblock them.
 - The cli had been built and linked globally.
+- The terminal session should be automatically saved and restored when reopening the TUI. E.G. if I'm editing something in vi I want to come back and pick up where I left off. This should work even if I turn off my computer and come back later. (Let me know if this is possible.)
 
 ## Order
 
