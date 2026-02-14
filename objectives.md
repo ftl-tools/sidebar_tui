@@ -13,7 +13,7 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 - The right side should be the terminal view, which should take up the rest of the space.
   - The terminal view should show a fully functional terminal where I can run commands and see their output. Or even run command line applications like vi.
   - The terminal should open to the current working directory of the terminal where I ran `sb`.
-- Running `ctrl + q` should quit the TUI and return me to my normal terminal.
+- Running `ctrl + q` or `ctrl + b` should quit the TUI and return me to my normal terminal.
 - You must create at the very least the following E2E tests. They must all work in the Apple terminal on my computer:
   - You have used the Sidebar TUI and it's layout matches the spec above exactly.
   - You can run `git status` in the TUI terminal and it has the same output as running `git status` in a normal terminal.
@@ -24,7 +24,7 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 
 ## Order
 
-1. Fisrt build a hello world TUI.
+1. First build a hello world TUI.
 2. Figure out how on earth agents can automtically test a TUI that requires user input and interaction, in a real Apple terminal environment. Be scrappy and figure it out.
 3. Test just the TUI with a moc terminal.
 4. Figure out how to do the terminal side of things.
