@@ -47,3 +47,12 @@ Completed the resize handling issue (sidebar_tui-cch). The resize handling was a
 ## 2026-02-14 - CLI Build and E2E Tests Complete
 
 Completed CLI build issue (sidebar_tui-a97): installed the `sb` binary globally via `cargo install --path .` to ~/.cargo/bin/sb and added cargo bin to PATH in ~/.zshrc. Then implemented all 4 required E2E tests (sidebar_tui-aun, sidebar_tui-xml, sidebar_tui-ikz, sidebar_tui-0sh) using expectrl for PTY management and vt100 for terminal emulation parsing. Tests cover: layout verification (sidebar 20 chars, blue header, centered text), git status output matching, vi editing workflow (open file, insert text, save, verify changes), and backspace input handling. Completed the final review (sidebar_tui-8cl), verifying all 85 tests pass (78 unit + 5 E2E + 2 integration), no tests skipped, all objectives met. The basic Sidebar TUI is now complete with a functional embedded terminal.
+
+## 2026-02-14 - Verification Check Found Incomplete Work
+
+Verification check found incomplete work:
+- **Ctrl+B quit keybinding not implemented**: The objectives state "Running `ctrl + q` or `ctrl + b` should quit the TUI" but only Ctrl+Q is implemented in main.rs. Ctrl+B is missing. Created issue sidebar_tui-e80 to track this fix.
+
+## 2026-02-14 - Ctrl+B Quit Keybinding Added
+
+Completed the Ctrl+B quit keybinding issue (sidebar_tui-e80). Modified the key event handler in main.rs to check for both Ctrl+Q and Ctrl+B as quit keys. Updated the terminal view placeholder text to reflect both shortcuts. Added 5 unit tests: test_ctrl_q_is_quit_key, test_ctrl_b_is_quit_key, test_ctrl_other_is_not_quit_key, test_plain_q_is_not_quit_key, test_plain_b_is_not_quit_key. All 90 tests pass (83 unit + 5 E2E + 2 integration). Closed sidebar_tui-e80. All objectives from objectives.md are now fully met.

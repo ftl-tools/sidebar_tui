@@ -94,8 +94,10 @@ fn run(ratatui_term: &mut DefaultTerminal) -> Result<()> {
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) => {
-                    // Check for Ctrl+Q to quit
-                    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
+                    // Check for Ctrl+Q or Ctrl+B to quit
+                    if key.modifiers == KeyModifiers::CONTROL
+                        && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'))
+                    {
                         break;
                     }
 
@@ -178,7 +180,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect) {
 
 fn render_terminal_view(frame: &mut Frame, area: Rect) {
     // Terminal view - placeholder for static tests
-    let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q to quit)")
+    let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
         .style(Style::default().bg(Color::Black).fg(Color::White));
     frame.render_widget(terminal_placeholder, area);
 }
@@ -377,8 +379,8 @@ mod tests {
         let content = buffer_to_string(buffer);
 
         assert!(
-            content.contains("Ctrl+Q"),
-            "Terminal view should contain 'Ctrl+Q', got: {}",
+            content.contains("Ctrl+Q") && content.contains("Ctrl+B"),
+            "Terminal view should contain both 'Ctrl+Q' and 'Ctrl+B', got: {}",
             content
         );
     }
@@ -454,5 +456,50 @@ mod tests {
         let same_size = (100u16, 30u16);
         let should_resize = same_size != last_size;
         assert!(!should_resize, "Same size should not trigger resize");
+    }
+
+    #[test]
+    fn test_ctrl_q_is_quit_key() {
+        // Ctrl+Q should trigger quit
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        let is_quit = key.modifiers == KeyModifiers::CONTROL
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
+        assert!(is_quit, "Ctrl+Q should be a quit key");
+    }
+
+    #[test]
+    fn test_ctrl_b_is_quit_key() {
+        // Ctrl+B should trigger quit
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let is_quit = key.modifiers == KeyModifiers::CONTROL
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
+        assert!(is_quit, "Ctrl+B should be a quit key");
+    }
+
+    #[test]
+    fn test_ctrl_other_is_not_quit_key() {
+        // Ctrl+X should not trigger quit
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let is_quit = key.modifiers == KeyModifiers::CONTROL
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
+        assert!(!is_quit, "Ctrl+X should not be a quit key");
+    }
+
+    #[test]
+    fn test_plain_q_is_not_quit_key() {
+        // Plain 'q' without Ctrl should not trigger quit
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        let is_quit = key.modifiers == KeyModifiers::CONTROL
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
+        assert!(!is_quit, "Plain 'q' should not be a quit key");
+    }
+
+    #[test]
+    fn test_plain_b_is_not_quit_key() {
+        // Plain 'b' without Ctrl should not trigger quit
+        let key = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+        let is_quit = key.modifiers == KeyModifiers::CONTROL
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
+        assert!(!is_quit, "Plain 'b' should not be a quit key");
     }
 }
