@@ -11,18 +11,27 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::pty::{spawn_shell, PtyEvent, PtyHandle};
+
 /// Message types for communication between TUI client and daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// Attach to a session (create if doesn't exist).
-    Attach { session_name: String, rows: u16, cols: u16 },
+    Attach {
+        session_name: String,
+        rows: u16,
+        cols: u16,
+        /// Working directory for new sessions.
+        cwd: Option<PathBuf>,
+    },
     /// Detach from the current session.
     Detach,
     /// Send input to the session.
@@ -115,22 +124,113 @@ pub struct Daemon {
 }
 
 /// A single terminal session managed by the daemon.
+///
+/// The session owns the PTY and manages communication with clients.
 pub struct Session {
     pub name: String,
     pub rows: u16,
     pub cols: u16,
     pub is_attached: bool,
-    // PTY handle will be added in a future issue (sidebar_tui-8wq)
-    // For now, we just track session metadata.
+    /// The PTY handle for this session.
+    pub pty: PtyHandle,
+    /// Channel sender for notifying clients of PTY output.
+    /// Each attached client has its own receiver.
+    client_output_tx: Vec<Sender<Vec<u8>>>,
+    /// Flag indicating if the shell is still running.
+    pub shell_running: Arc<AtomicBool>,
+    /// Handle for the PTY reader thread that forwards output to clients.
+    _pty_reader_handle: Option<JoinHandle<()>>,
 }
 
 impl Session {
-    pub fn new(name: String, rows: u16, cols: u16) -> Self {
+    /// Create a new session with a PTY.
+    pub fn new(name: String, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<Self> {
+        let pty = spawn_shell(rows, cols, cwd)?;
+        let shell_running = Arc::new(AtomicBool::new(true));
+
+        Ok(Self {
+            name,
+            rows,
+            cols,
+            is_attached: false,
+            pty,
+            client_output_tx: Vec::new(),
+            shell_running,
+            _pty_reader_handle: None,
+        })
+    }
+
+    /// Create a session with a given PTY handle (for testing).
+    #[cfg(test)]
+    pub fn with_pty(name: String, rows: u16, cols: u16, pty: PtyHandle) -> Self {
         Self {
             name,
             rows,
             cols,
             is_attached: false,
+            pty,
+            client_output_tx: Vec::new(),
+            shell_running: Arc::new(AtomicBool::new(true)),
+            _pty_reader_handle: None,
+        }
+    }
+
+    /// Add a client output channel.
+    pub fn add_client(&mut self) -> Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        self.client_output_tx.push(tx);
+        rx
+    }
+
+    /// Remove disconnected clients (those whose receivers have been dropped).
+    pub fn cleanup_clients(&mut self) {
+        self.client_output_tx.retain(|tx| {
+            // Try to send empty data to check if receiver is still alive
+            tx.send(Vec::new()).is_ok()
+        });
+    }
+
+    /// Send data to all connected clients.
+    pub fn broadcast_to_clients(&mut self, data: &[u8]) {
+        self.client_output_tx.retain(|tx| {
+            tx.send(data.to_vec()).is_ok()
+        });
+    }
+
+    /// Write input to the PTY.
+    pub fn write_input(&mut self, data: &[u8]) -> Result<()> {
+        self.pty.write(data)
+    }
+
+    /// Resize the PTY.
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        self.rows = rows;
+        self.cols = cols;
+        self.pty.resize(rows, cols)
+    }
+
+    /// Check if the shell is still running.
+    pub fn is_running(&mut self) -> bool {
+        self.pty.is_running()
+    }
+
+    /// Process pending PTY output and broadcast to clients.
+    pub fn process_pty_output(&mut self) {
+        loop {
+            match self.pty.rx.try_recv() {
+                Ok(PtyEvent::Output(data)) => {
+                    self.broadcast_to_clients(&data);
+                }
+                Ok(PtyEvent::Exited) => {
+                    self.shell_running.store(false, Ordering::SeqCst);
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.shell_running.store(false, Ordering::SeqCst);
+                    break;
+                }
+            }
         }
     }
 
@@ -266,21 +366,23 @@ impl Daemon {
     }
 
     /// Create or get a session.
-    pub fn get_or_create_session(&self, name: &str, rows: u16, cols: u16) -> (SessionInfo, bool) {
+    pub fn get_or_create_session(&self, name: &str, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<(SessionInfo, bool)> {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(name) {
             // Session exists, mark as attached and update dimensions
             session.is_attached = true;
-            session.rows = rows;
-            session.cols = cols;
-            (session.info(), false)
+            if let Err(e) = session.resize(rows, cols) {
+                // Log but don't fail - session still exists
+                eprintln!("Warning: failed to resize session: {:?}", e);
+            }
+            Ok((session.info(), false))
         } else {
-            // Create new session
-            let mut session = Session::new(name.to_string(), rows, cols);
+            // Create new session with PTY
+            let mut session = Session::new(name.to_string(), rows, cols, cwd)?;
             session.is_attached = true;
             let info = session.info();
             sessions.insert(name.to_string(), session);
-            (info, true)
+            Ok((info, true))
         }
     }
 
@@ -314,8 +416,10 @@ fn handle_client(
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))
+    stream.set_read_timeout(Some(Duration::from_millis(50)))
         .context("Failed to set read timeout")?;
+
+    let mut current_session: Option<String> = None;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -323,13 +427,65 @@ fn handle_client(
             break;
         }
 
+        // Process PTY output if attached to a session
+        // Collect all output in a local buffer first, then send without holding the lock
+        if let Some(ref session_name) = current_session {
+            let outputs = {
+                let mut sessions_guard = sessions.lock().unwrap();
+                let mut outputs = Vec::new();
+                let mut shell_exited = false;
+
+                if let Some(session) = sessions_guard.get_mut(session_name) {
+                    // Collect all pending PTY output
+                    loop {
+                        match session.pty.rx.try_recv() {
+                            Ok(PtyEvent::Output(data)) => {
+                                outputs.push(data);
+                            }
+                            Ok(PtyEvent::Exited) => {
+                                session.shell_running.store(false, Ordering::SeqCst);
+                                shell_exited = true;
+                                break;
+                            }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => {
+                                session.shell_running.store(false, Ordering::SeqCst);
+                                shell_exited = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                (outputs, shell_exited)
+            };
+
+            // Send all collected output to the client (lock released)
+            for data in outputs.0 {
+                send_response(&mut stream, &DaemonResponse::Output { data })?;
+            }
+
+            // If shell exited, we could notify the client here
+            if outputs.1 {
+                // Shell exited - continue for now, client will handle disconnect
+            }
+        }
+
         let msg = match read_message(&mut stream) {
             Ok(msg) => msg,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 continue;
             }
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                continue;
+            }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                // Client disconnected
+                // Client disconnected - mark session as detached
+                if let Some(session_name) = current_session.take() {
+                    let mut sessions_guard = sessions.lock().unwrap();
+                    if let Some(session) = sessions_guard.get_mut(&session_name) {
+                        session.is_attached = false;
+                    }
+                }
                 break;
             }
             Err(e) => {
@@ -337,7 +493,7 @@ fn handle_client(
             }
         };
 
-        let response = process_message(msg, &sessions, &shutdown);
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
         send_response(&mut stream, &response)?;
 
         if matches!(response, DaemonResponse::ShuttingDown | DaemonResponse::Detached) {
@@ -353,44 +509,87 @@ fn process_message(
     msg: ClientMessage,
     sessions: &Arc<Mutex<HashMap<String, Session>>>,
     shutdown: &Arc<AtomicBool>,
+    current_session: &mut Option<String>,
 ) -> DaemonResponse {
     match msg {
-        ClientMessage::Attach { session_name, rows, cols } => {
-            let mut sessions = sessions.lock().unwrap();
-            let is_new = !sessions.contains_key(&session_name);
+        ClientMessage::Attach { session_name, rows, cols, cwd } => {
+            let mut sessions_guard = sessions.lock().unwrap();
+            let is_new = !sessions_guard.contains_key(&session_name);
 
-            let session = sessions.entry(session_name.clone()).or_insert_with(|| {
-                Session::new(session_name.clone(), rows, cols)
-            });
-            session.is_attached = true;
-            session.rows = rows;
-            session.cols = cols;
+            // Create new session if it doesn't exist
+            if is_new {
+                match Session::new(session_name.clone(), rows, cols, cwd) {
+                    Ok(mut session) => {
+                        session.is_attached = true;
+                        sessions_guard.insert(session_name.clone(), session);
+                    }
+                    Err(e) => {
+                        return DaemonResponse::Error {
+                            message: format!("Failed to create session: {}", e),
+                        };
+                    }
+                }
+            } else {
+                // Update existing session
+                if let Some(session) = sessions_guard.get_mut(&session_name) {
+                    session.is_attached = true;
+                    if let Err(e) = session.resize(rows, cols) {
+                        eprintln!("Warning: failed to resize session: {:?}", e);
+                    }
+                }
+            }
+
+            *current_session = Some(session_name.clone());
 
             DaemonResponse::Attached {
                 session_name,
                 is_new,
-                terminal_state: None, // Will be implemented when PTY is moved to daemon
+                terminal_state: None, // Will be implemented in sidebar_tui-1f8
             }
         }
         ClientMessage::Detach => {
+            if let Some(session_name) = current_session.take() {
+                let mut sessions_guard = sessions.lock().unwrap();
+                if let Some(session) = sessions_guard.get_mut(&session_name) {
+                    session.is_attached = false;
+                }
+            }
             DaemonResponse::Detached
         }
-        ClientMessage::Input { data: _ } => {
-            // Will be implemented when PTY is moved to daemon
+        ClientMessage::Input { data } => {
+            if let Some(session_name) = current_session {
+                let mut sessions_guard = sessions.lock().unwrap();
+                if let Some(session) = sessions_guard.get_mut(session_name) {
+                    if let Err(e) = session.write_input(&data) {
+                        return DaemonResponse::Error {
+                            message: format!("Failed to write input: {}", e),
+                        };
+                    }
+                }
+            }
             DaemonResponse::Output { data: vec![] }
         }
-        ClientMessage::Resize { rows: _, cols: _ } => {
-            // Will be implemented when PTY is moved to daemon
+        ClientMessage::Resize { rows, cols } => {
+            if let Some(session_name) = current_session {
+                let mut sessions_guard = sessions.lock().unwrap();
+                if let Some(session) = sessions_guard.get_mut(session_name) {
+                    if let Err(e) = session.resize(rows, cols) {
+                        return DaemonResponse::Error {
+                            message: format!("Failed to resize: {}", e),
+                        };
+                    }
+                }
+            }
             DaemonResponse::Output { data: vec![] }
         }
         ClientMessage::List => {
-            let sessions = sessions.lock().unwrap();
-            let names: Vec<SessionInfo> = sessions.values().map(|s| s.info()).collect();
+            let sessions_guard = sessions.lock().unwrap();
+            let names: Vec<SessionInfo> = sessions_guard.values().map(|s| s.info()).collect();
             DaemonResponse::Sessions { names }
         }
         ClientMessage::Kill { session_name } => {
-            let mut sessions = sessions.lock().unwrap();
-            if sessions.remove(&session_name).is_some() {
+            let mut sessions_guard = sessions.lock().unwrap();
+            if sessions_guard.remove(&session_name).is_some() {
                 DaemonResponse::Killed { session_name }
             } else {
                 DaemonResponse::Error {
@@ -482,12 +681,54 @@ impl DaemonClient {
     }
 
     /// Attach to a session.
-    pub fn attach(&mut self, session_name: &str, rows: u16, cols: u16) -> Result<DaemonResponse> {
+    pub fn attach(&mut self, session_name: &str, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<DaemonResponse> {
         self.send(ClientMessage::Attach {
             session_name: session_name.to_string(),
             rows,
             cols,
+            cwd,
         })
+    }
+
+    /// Send input to the current session.
+    pub fn send_input(&mut self, data: &[u8]) -> Result<()> {
+        match self.send(ClientMessage::Input { data: data.to_vec() })? {
+            DaemonResponse::Output { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Resize the terminal.
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        match self.send(ClientMessage::Resize { rows, cols })? {
+            DaemonResponse::Output { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Detach from the current session.
+    pub fn detach(&mut self) -> Result<()> {
+        match self.send(ClientMessage::Detach)? {
+            DaemonResponse::Detached => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Try to receive PTY output without blocking.
+    pub fn try_recv_output(&mut self) -> Result<Option<Vec<u8>>> {
+        self.stream.set_read_timeout(Some(Duration::from_millis(1)))
+            .context("Failed to set read timeout")?;
+
+        match decode_message::<DaemonResponse>(&mut self.stream) {
+            Ok(DaemonResponse::Output { data }) => Ok(Some(data)),
+            Ok(_) => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(None),
+            Err(e) => Err(e).context("Failed to receive output")?,
+        }
     }
 
     /// List all sessions.
@@ -525,6 +766,7 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+    use crate::pty::spawn_shell;
 
     fn temp_socket_path() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -564,7 +806,7 @@ mod tests {
 
     #[test]
     fn test_session_creation() {
-        let session = Session::new("test".to_string(), 24, 80);
+        let session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
         assert_eq!(session.name, "test");
         assert_eq!(session.rows, 24);
         assert_eq!(session.cols, 80);
@@ -573,13 +815,36 @@ mod tests {
 
     #[test]
     fn test_session_info() {
-        let mut session = Session::new("test".to_string(), 24, 80);
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
         session.is_attached = true;
         let info = session.info();
         assert_eq!(info.name, "test");
         assert_eq!(info.rows, 24);
         assert_eq!(info.cols, 80);
         assert!(info.is_attached);
+    }
+
+    #[test]
+    fn test_session_write_input() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+        // Writing to PTY should succeed
+        let result = session.write_input(b"echo hello\n");
+        assert!(result.is_ok(), "Failed to write input: {:?}", result);
+    }
+
+    #[test]
+    fn test_session_resize() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+        let result = session.resize(30, 100);
+        assert!(result.is_ok(), "Failed to resize: {:?}", result);
+        assert_eq!(session.rows, 30);
+        assert_eq!(session.cols, 100);
+    }
+
+    #[test]
+    fn test_session_is_running() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+        assert!(session.is_running(), "Session should be running after creation");
     }
 
     #[test]
@@ -613,7 +878,9 @@ mod tests {
     fn test_daemon_get_or_create_session_new() {
         let path = temp_socket_path();
         let daemon = Daemon::with_socket_path(path.clone());
-        let (info, is_new) = daemon.get_or_create_session("test", 24, 80);
+        let result = daemon.get_or_create_session("test", 24, 80, None);
+        assert!(result.is_ok(), "Failed to create session: {:?}", result);
+        let (info, is_new) = result.unwrap();
         assert!(is_new);
         assert_eq!(info.name, "test");
         assert_eq!(info.rows, 24);
@@ -628,12 +895,16 @@ mod tests {
         let daemon = Daemon::with_socket_path(path.clone());
 
         // Create session first
-        let (_, is_new1) = daemon.get_or_create_session("test", 24, 80);
+        let result1 = daemon.get_or_create_session("test", 24, 80, None);
+        assert!(result1.is_ok());
+        let (_, is_new1) = result1.unwrap();
         assert!(is_new1);
 
         // Detach then reattach
         daemon.detach_session("test");
-        let (info, is_new2) = daemon.get_or_create_session("test", 30, 100);
+        let result2 = daemon.get_or_create_session("test", 30, 100, None);
+        assert!(result2.is_ok());
+        let (info, is_new2) = result2.unwrap();
         assert!(!is_new2);
         assert_eq!(info.name, "test");
         // Dimensions should be updated
@@ -649,7 +920,7 @@ mod tests {
         let daemon = Daemon::with_socket_path(path.clone());
 
         // Create and attach
-        daemon.get_or_create_session("test", 24, 80);
+        daemon.get_or_create_session("test", 24, 80, None).unwrap();
 
         // Detach
         assert!(daemon.detach_session("test"));
@@ -676,7 +947,7 @@ mod tests {
         let daemon = Daemon::with_socket_path(path.clone());
 
         // Create session
-        daemon.get_or_create_session("test", 24, 80);
+        daemon.get_or_create_session("test", 24, 80, None).unwrap();
         assert_eq!(daemon.list_sessions().len(), 1);
 
         // Kill session
@@ -703,8 +974,8 @@ mod tests {
         assert!(daemon.list_sessions().is_empty());
 
         // Create sessions
-        daemon.get_or_create_session("session1", 24, 80);
-        daemon.get_or_create_session("session2", 30, 100);
+        daemon.get_or_create_session("session1", 24, 80, None).unwrap();
+        daemon.get_or_create_session("session2", 30, 100, None).unwrap();
 
         let sessions = daemon.list_sessions();
         assert_eq!(sessions.len(), 2);
@@ -722,6 +993,7 @@ mod tests {
             session_name: "test".to_string(),
             rows: 24,
             cols: 80,
+            cwd: None,
         };
         let encoded = encode_message(&msg).unwrap();
 
@@ -729,10 +1001,35 @@ mod tests {
         let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
 
         match decoded {
-            ClientMessage::Attach { session_name, rows, cols } => {
+            ClientMessage::Attach { session_name, rows, cols, cwd } => {
                 assert_eq!(session_name, "test");
                 assert_eq!(rows, 24);
                 assert_eq!(cols, 80);
+                assert!(cwd.is_none());
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_client_message_with_cwd() {
+        let msg = ClientMessage::Attach {
+            session_name: "test".to_string(),
+            rows: 24,
+            cols: 80,
+            cwd: Some(PathBuf::from("/tmp")),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::Attach { session_name, rows, cols, cwd } => {
+                assert_eq!(session_name, "test");
+                assert_eq!(rows, 24);
+                assert_eq!(cols, 80);
+                assert_eq!(cwd, Some(PathBuf::from("/tmp")));
             }
             _ => panic!("Wrong message type"),
         }
@@ -790,6 +1087,41 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_decode_input_message() {
+        let msg = ClientMessage::Input {
+            data: b"echo hello\n".to_vec(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::Input { data } => {
+                assert_eq!(data, b"echo hello\n");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_resize_message() {
+        let msg = ClientMessage::Resize { rows: 30, cols: 100 };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::Resize { rows, cols } => {
+                assert_eq!(rows, 30);
+                assert_eq!(cols, 100);
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
     fn test_encode_decode_sessions_response() {
         let sessions = vec![
             SessionInfo {
@@ -827,19 +1159,24 @@ mod tests {
     fn test_process_attach_new_session() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
         let msg = ClientMessage::Attach {
             session_name: "test".to_string(),
             rows: 24,
             cols: 80,
+            cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown);
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, .. } => {
                 assert_eq!(session_name, "test");
                 assert!(is_new);
+            }
+            DaemonResponse::Error { message } => {
+                panic!("Expected Attached response, got error: {}", message);
             }
             _ => panic!("Expected Attached response"),
         }
@@ -847,17 +1184,21 @@ mod tests {
         // Verify session was created
         let sessions = sessions.lock().unwrap();
         assert!(sessions.contains_key("test"));
+
+        // Verify current_session was set
+        assert_eq!(current_session, Some("test".to_string()));
     }
 
     #[test]
     fn test_process_attach_existing_session() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
         // Create initial session
         {
             let mut sessions = sessions.lock().unwrap();
-            sessions.insert("test".to_string(), Session::new("test".to_string(), 24, 80));
+            sessions.insert("test".to_string(), Session::new("test".to_string(), 24, 80, None).unwrap());
         }
 
         // Attach to existing session
@@ -865,9 +1206,10 @@ mod tests {
             session_name: "test".to_string(),
             rows: 30,
             cols: 100,
+            cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown);
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, .. } => {
@@ -882,15 +1224,16 @@ mod tests {
     fn test_process_list() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
         // Add some sessions
         {
             let mut sessions = sessions.lock().unwrap();
-            sessions.insert("s1".to_string(), Session::new("s1".to_string(), 24, 80));
-            sessions.insert("s2".to_string(), Session::new("s2".to_string(), 30, 100));
+            sessions.insert("s1".to_string(), Session::new("s1".to_string(), 24, 80, None).unwrap());
+            sessions.insert("s2".to_string(), Session::new("s2".to_string(), 30, 100, None).unwrap());
         }
 
-        let response = process_message(ClientMessage::List, &sessions, &shutdown);
+        let response = process_message(ClientMessage::List, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Sessions { names } => {
@@ -901,21 +1244,70 @@ mod tests {
     }
 
     #[test]
+    fn test_process_input() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = Some("test".to_string());
+
+        // Create session
+        {
+            let mut sessions = sessions.lock().unwrap();
+            sessions.insert("test".to_string(), Session::new("test".to_string(), 24, 80, None).unwrap());
+        }
+
+        let msg = ClientMessage::Input { data: b"echo hello\n".to_vec() };
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Output { .. } => {}
+            _ => panic!("Expected Output response"),
+        }
+    }
+
+    #[test]
+    fn test_process_resize() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = Some("test".to_string());
+
+        // Create session
+        {
+            let mut sessions = sessions.lock().unwrap();
+            sessions.insert("test".to_string(), Session::new("test".to_string(), 24, 80, None).unwrap());
+        }
+
+        let msg = ClientMessage::Resize { rows: 30, cols: 100 };
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Output { .. } => {}
+            _ => panic!("Expected Output response"),
+        }
+
+        // Verify dimensions were updated
+        let sessions = sessions.lock().unwrap();
+        let session = sessions.get("test").unwrap();
+        assert_eq!(session.rows, 30);
+        assert_eq!(session.cols, 100);
+    }
+
+    #[test]
     fn test_process_kill_existing() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
         // Add session
         {
             let mut sessions = sessions.lock().unwrap();
-            sessions.insert("victim".to_string(), Session::new("victim".to_string(), 24, 80));
+            sessions.insert("victim".to_string(), Session::new("victim".to_string(), 24, 80, None).unwrap());
         }
 
         let msg = ClientMessage::Kill {
             session_name: "victim".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown);
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Killed { session_name } => {
@@ -933,12 +1325,13 @@ mod tests {
     fn test_process_kill_nonexistent() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
         let msg = ClientMessage::Kill {
             session_name: "nonexistent".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown);
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
     }
@@ -947,11 +1340,39 @@ mod tests {
     fn test_process_shutdown() {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
 
-        let response = process_message(ClientMessage::Shutdown, &sessions, &shutdown);
+        let response = process_message(ClientMessage::Shutdown, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::ShuttingDown));
         assert!(shutdown.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_process_detach() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = Some("test".to_string());
+
+        // Create session with is_attached = true
+        {
+            let mut sessions = sessions.lock().unwrap();
+            let mut session = Session::new("test".to_string(), 24, 80, None).unwrap();
+            session.is_attached = true;
+            sessions.insert("test".to_string(), session);
+        }
+
+        let response = process_message(ClientMessage::Detach, &sessions, &shutdown, &mut current_session);
+
+        assert!(matches!(response, DaemonResponse::Detached));
+
+        // Verify session is detached
+        let sessions = sessions.lock().unwrap();
+        let session = sessions.get("test").unwrap();
+        assert!(!session.is_attached);
+
+        // Verify current_session was cleared
+        assert!(current_session.is_none());
     }
 
     #[test]
@@ -993,5 +1414,35 @@ mod tests {
                 assert!(sessions.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn test_session_with_pty_receives_output() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Send echo command
+        session.write_input(b"echo TESTOUTPUT123\r").unwrap();
+
+        // Wait for output
+        let mut received = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            match session.pty.rx.try_recv() {
+                Ok(PtyEvent::Output(data)) => {
+                    let output = String::from_utf8_lossy(&data);
+                    if output.contains("TESTOUTPUT123") {
+                        received = true;
+                        break;
+                    }
+                }
+                Ok(PtyEvent::Exited) => break,
+                Err(TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+
+        assert!(received, "Should receive echo output from session PTY");
     }
 }
