@@ -16,3 +16,8 @@ anyhow = "1.0"
 vt100 = "0.15"
 
 [dev-dependencies]
+expectrl = "0.8"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/mod.rs"
