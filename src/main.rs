@@ -1,7 +1,3 @@
-mod input;
-mod pty;
-mod terminal;
-
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
@@ -13,9 +9,9 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::input::key_to_bytes;
-use crate::pty::{spawn_shell, PtyEvent, PtyHandle};
-use crate::terminal::Terminal;
+use sidebar_tui::input::key_to_bytes;
+use sidebar_tui::pty::{spawn_shell, PtyEvent, PtyHandle};
+use sidebar_tui::terminal::Terminal;
 
 fn main() -> Result<()> {
     color_eyre::install()?;

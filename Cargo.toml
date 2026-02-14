@@ -3,6 +3,10 @@ name = "sidebar-tui"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "sidebar_tui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sb"
 path = "src/main.rs"
@@ -14,6 +18,10 @@ color-eyre = "0.6"
 portable-pty = "0.9"
 anyhow = "1.0"
 vt100 = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ctrlc = "3.4"
+libc = "0.2"
 
 [dev-dependencies]
 expectrl = "0.8"
