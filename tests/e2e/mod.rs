@@ -228,22 +228,21 @@ fn test_git_status_output_matches() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for shell prompt
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(2000));
     session.read_and_parse().expect("Failed to read output");
 
     // Type "git status" and press Enter
     session.send("git status").expect("Failed to send command");
     session.send_enter().expect("Failed to send enter");
 
-    // Wait for command to execute
-    std::thread::sleep(Duration::from_millis(1500));
-    session.read_and_parse().expect("Failed to read output");
+    // Wait for command to execute with polling - look for "On branch" text
+    let found = wait_for_text(&mut session.session, &mut session.parser, "On branch", 5000);
 
     // Get the screen contents and verify git status output appears
     let screen_contents = session.parser.screen().contents();
 
     assert!(
-        screen_contents.contains("On branch"),
+        found && screen_contents.contains("On branch"),
         "TUI terminal should show 'On branch' from git status. Got:\n{}",
         screen_contents
     );
@@ -406,6 +405,246 @@ fn test_backspace_input_handling() {
     // But "hello world" appearing proves the backspace worked
 
     session.quit().expect("Failed to quit");
+}
+
+/// Test that session state persists across TUI restarts (detach/reattach).
+/// This tests the core session persistence required by objectives:
+/// 1. Start TUI and open vi editing a file
+/// 2. Exit TUI (Ctrl+Q) without saving vi - this detaches
+/// 3. Restart TUI
+/// 4. Verify vi is still open with the same content
+/// 5. Verify can save and exit vi normally
+#[test]
+fn test_session_persistence_across_restart() {
+    use std::fs;
+
+    // Create a test file with known content
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("persist-test-{}-{}", pid, unique_id);
+    let test_file = format!("{}/test_persist_{}.txt", env!("CARGO_MANIFEST_DIR"), unique_id);
+    let swap_file = format!("{}/.test_persist_{}.txt.swp", env!("CARGO_MANIFEST_DIR"), unique_id);
+    let original_content = "original content\n";
+    fs::write(&test_file, original_content).expect("Failed to create test file");
+
+    // Ensure cleanup even if test fails
+    struct Cleanup<'a> {
+        file: &'a str,
+        swap_file: &'a str,
+        session: String,
+        binary_path: String,
+    }
+    impl<'a> Drop for Cleanup<'a> {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(self.file);
+            let _ = fs::remove_file(self.swap_file);
+            // Kill the session to clean up daemon resources
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["kill", &self.session])
+                .output();
+        }
+    }
+    let binary_path = get_binary_path();
+    let _cleanup = Cleanup {
+        file: &test_file,
+        swap_file: &swap_file,
+        session: session_name.clone(),
+        binary_path: binary_path.clone(),
+    };
+
+    // Clean up any leftover swap file from previous test runs
+    let _ = fs::remove_file(&swap_file);
+
+    // ============ PHASE 1: Start TUI, open vi, type text, detach ============
+    {
+        let cmd = format!("{} -s {}", binary_path, session_name);
+        let mut session = spawn(&cmd).expect("Failed to spawn sb");
+        session.set_expect_timeout(Some(Duration::from_secs(10)));
+        let mut parser = vt100::Parser::new(24, 80, 0);
+
+        // Wait for shell to be ready
+        std::thread::sleep(Duration::from_millis(2500));
+        read_into_parser(&mut session, &mut parser);
+
+        // Open the file in vi
+        session
+            .write_all(format!("vi {}\n", test_file).as_bytes())
+            .expect("Failed to send vi command");
+        session.flush().expect("Failed to flush");
+
+        // Wait for vi to fully load - look for the file content or vi's ~ indicators
+        let vi_loaded = wait_for_text(&mut session, &mut parser, "original", 5000)
+            || parser.screen().contents().contains("~");
+
+        let screen = parser.screen().contents();
+        eprintln!("Screen after vi open:\n{}", screen);
+
+        assert!(vi_loaded, "Vi should have loaded the file. Screen:\n{}", screen);
+
+        // Enter insert mode at beginning of line (I)
+        session.write_all(b"I").expect("Failed to send I");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Type our marker text
+        session.write_all(b"INSERTED: ").expect("Failed to type text");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+        read_into_parser(&mut session, &mut parser);
+
+        // Exit insert mode with Escape
+        session.write_all(&[0x1b]).expect("Failed to send Escape");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+        read_into_parser(&mut session, &mut parser);
+
+        // Check the screen shows our inserted text
+        let screen_contents = parser.screen().contents();
+        eprintln!("Phase 1 screen after typing:\n{}", screen_contents);
+
+        // Verify the inserted text appears on screen (vi shows it even before saving)
+        assert!(
+            screen_contents.contains("INSERTED"),
+            "Screen should show 'INSERTED' text. Got:\n{}",
+            screen_contents
+        );
+
+        // Send Ctrl+Q to detach (this does NOT save vi - the text is unsaved in vi buffer)
+        session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Process should exit (TUI detached)
+        let _ = session.get_process_mut().exit(true);
+    }
+
+    // Brief pause to let daemon stabilize the detached session
+    std::thread::sleep(Duration::from_millis(1000));
+
+    // ============ PHASE 2: Reattach and verify vi is still running ============
+    {
+        let cmd = format!("{} -s {}", binary_path, session_name);
+        let mut session = spawn(&cmd).expect("Failed to spawn sb for reattach");
+        session.set_expect_timeout(Some(Duration::from_secs(10)));
+        let mut parser = vt100::Parser::new(24, 80, 0);
+
+        // Wait for session to restore - look for vi content or swap dialog
+        // The session should be restored with vi still running
+        let found_content = wait_for_text(&mut session, &mut parser, "INSERTED", 5000)
+            || parser.screen().contents().contains("original")
+            || parser.screen().contents().contains("swap")
+            || parser.screen().contents().contains("Swap")
+            || parser.screen().contents().contains("~");
+
+        let screen_contents = parser.screen().contents();
+        eprintln!("Phase 2 screen after reattach:\n{}", screen_contents);
+
+        assert!(
+            found_content,
+            "After reattach, vi session should still exist. Got:\n{}",
+            screen_contents
+        );
+
+        // Check if we're at a swap file dialog - if so, choose (R)ecover
+        if screen_contents.contains("swap") || screen_contents.contains("Swap file") {
+            eprintln!("Swap file dialog detected, sending 'r' to recover");
+            session.write_all(b"r").expect("Failed to send 'r' for recover");
+            session.flush().expect("Failed to flush");
+            std::thread::sleep(Duration::from_millis(1500));
+            read_into_parser(&mut session, &mut parser);
+
+            let after_recover = parser.screen().contents();
+            eprintln!("Screen after recover:\n{}", after_recover);
+        }
+
+        // Now save and quit vi with :wq
+        // First, ensure we're in normal mode by sending Escape
+        session.write_all(&[0x1b]).expect("Failed to send Escape");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(300));
+
+        session.write_all(b":wq").expect("Failed to send :wq");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(300));
+
+        session.write_all(&[0x0d]).expect("Failed to send Enter");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(2000));
+        read_into_parser(&mut session, &mut parser);
+
+        let screen_after_save = parser.screen().contents();
+        eprintln!("Screen after :wq:\n{}", screen_after_save);
+
+        // Quit the TUI
+        session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = session.get_process_mut().exit(true);
+    }
+
+    // ============ PHASE 3: Verify the file was saved correctly ============
+    let final_content = fs::read_to_string(&test_file).expect("Failed to read final file");
+    eprintln!("Final file content: {:?}", final_content);
+
+    // The file should contain both the original content AND our inserted text
+    // If vi recovery worked, it should have our INSERTED text
+    // Note: If the session truly persisted with vi running, the unsaved buffer
+    // should still be there and saving should write our INSERTED text
+    assert!(
+        final_content.contains("INSERTED"),
+        "File should contain 'INSERTED' after vi save. Got: '{}'",
+        final_content
+    );
+    assert!(
+        final_content.contains("original"),
+        "File should still contain 'original'. Got: '{}'",
+        final_content
+    );
+}
+
+/// Helper to read available output into a vt100 parser
+/// Reads repeatedly until no more data is available
+fn read_into_parser(session: &mut expectrl::session::OsSession, parser: &mut vt100::Parser) {
+    let mut buf = [0u8; 8192];
+    // Try reading multiple times with small delays to ensure we get all data
+    for _ in 0..10 {
+        let mut got_data = false;
+        loop {
+            match session.try_read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    parser.process(&buf[..n]);
+                    got_data = true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+        if !got_data {
+            // Small delay then try again
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Wait for specific text to appear in the terminal, with timeout
+fn wait_for_text(
+    session: &mut expectrl::session::OsSession,
+    parser: &mut vt100::Parser,
+    text: &str,
+    timeout_ms: u64,
+) -> bool {
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+
+    while start.elapsed() < timeout {
+        read_into_parser(session, parser);
+        if parser.screen().contents().contains(text) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 /// Test that the sidebar is exactly 20 characters wide
