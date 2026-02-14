@@ -413,4 +413,46 @@ mod tests {
         }
         result
     }
+
+    #[test]
+    fn test_terminal_width_excludes_sidebar() {
+        // When window is 100 wide, terminal should be 100 - SIDEBAR_WIDTH = 80
+        let window_width: u16 = 100;
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
+        assert_eq!(term_cols, 80);
+    }
+
+    #[test]
+    fn test_terminal_width_handles_small_window() {
+        // When window is smaller than sidebar, terminal width should be 0 (saturating sub)
+        let window_width: u16 = 15;
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
+        assert_eq!(term_cols, 0);
+    }
+
+    #[test]
+    fn test_terminal_width_at_boundary() {
+        // When window is exactly sidebar width, terminal should be 0
+        let window_width: u16 = SIDEBAR_WIDTH;
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
+        assert_eq!(term_cols, 0);
+    }
+
+    #[test]
+    fn test_resize_state_tracking() {
+        // Test that we correctly track the last window size
+        let mut last_size = (80u16, 24u16);
+        let new_size = (100u16, 30u16);
+
+        // Different size should trigger resize
+        if new_size != last_size {
+            last_size = new_size;
+        }
+        assert_eq!(last_size, (100, 30));
+
+        // Same size should not trigger resize (state unchanged)
+        let same_size = (100u16, 30u16);
+        let should_resize = same_size != last_size;
+        assert!(!should_resize, "Same size should not trigger resize");
+    }
 }

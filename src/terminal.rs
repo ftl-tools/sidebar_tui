@@ -304,4 +304,28 @@ mod tests {
         assert_eq!(row, 4); // 0-indexed
         assert_eq!(col, 9); // 0-indexed
     }
+
+    #[test]
+    fn test_terminal_resize_preserves_content() {
+        let mut term = Terminal::new(24, 80);
+        term.process(b"Hello, World!");
+        term.resize(30, 100);
+        // Content should still be present after resize
+        assert!(term.contents().contains("Hello"));
+        assert_eq!(term.size(), (30, 100));
+    }
+
+    #[test]
+    fn test_terminal_resize_shrink() {
+        let mut term = Terminal::new(24, 80);
+        term.resize(12, 40);
+        assert_eq!(term.size(), (12, 40));
+    }
+
+    #[test]
+    fn test_terminal_resize_grow() {
+        let mut term = Terminal::new(24, 80);
+        term.resize(48, 160);
+        assert_eq!(term.size(), (48, 160));
+    }
 }

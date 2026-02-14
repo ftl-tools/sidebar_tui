@@ -299,4 +299,30 @@ mod tests {
             handle.err()
         );
     }
+
+    #[test]
+    fn test_pty_resize_shrink() {
+        let handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
+        // Resize to smaller dimensions
+        let result = handle.resize(12, 40);
+        assert!(result.is_ok(), "Resize shrink failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_pty_resize_grow() {
+        let handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
+        // Resize to larger dimensions
+        let result = handle.resize(48, 160);
+        assert!(result.is_ok(), "Resize grow failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_pty_resize_multiple_times() {
+        let handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
+        // Multiple resizes should all succeed
+        handle.resize(30, 100).expect("First resize failed");
+        handle.resize(12, 40).expect("Second resize failed");
+        handle.resize(48, 160).expect("Third resize failed");
+        handle.resize(24, 80).expect("Fourth resize failed");
+    }
 }
