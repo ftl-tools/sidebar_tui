@@ -1,3 +1,5 @@
+mod pty;
+
 use std::time::Duration;
 
 use color_eyre::Result;
