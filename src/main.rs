@@ -51,6 +51,18 @@ enum Commands {
     },
     /// Start the session daemon
     Daemon,
+    /// List stale sessions (from before reboot/crash)
+    Stale,
+    /// Restore a stale session
+    Restore {
+        /// Name of the session to restore
+        session: String,
+    },
+    /// Delete stale session metadata
+    Forget {
+        /// Name of the session to forget
+        session: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -62,6 +74,9 @@ fn main() -> Result<()> {
         Some(Commands::Kill { session }) => cmd_kill(&session),
         Some(Commands::Attach { session }) => cmd_attach(&session),
         Some(Commands::Daemon) => cmd_daemon(),
+        Some(Commands::Stale) => cmd_stale(),
+        Some(Commands::Restore { session }) => cmd_restore(&session),
+        Some(Commands::Forget { session }) => cmd_forget(&session),
         None => cmd_attach(&cli.session),
     }
 }
@@ -92,6 +107,44 @@ fn cmd_kill(session_name: &str) -> Result<()> {
     let mut client = connect_to_daemon()?;
     client.kill_session(session_name)?;
     println!("Killed session '{}'", session_name);
+    Ok(())
+}
+
+/// List stale sessions (from before reboot/crash).
+fn cmd_stale() -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    let sessions = client.list_stale_sessions()?;
+
+    if sessions.is_empty() {
+        println!("No stale sessions found");
+    } else {
+        println!("{:<20} {:<30} {:>5}x{:<5}", "NAME", "WORKING DIR", "ROWS", "COLS");
+        for session in sessions {
+            let cwd = session.cwd.map(|p| p.display().to_string()).unwrap_or_else(|| "-".to_string());
+            println!(
+                "{:<20} {:<30} {:>5}x{:<5}",
+                session.name, cwd, session.rows, session.cols
+            );
+        }
+        println!("\nUse 'sb restore <name>' to restore a session, or 'sb forget <name>' to delete.");
+    }
+
+    Ok(())
+}
+
+/// Restore a stale session.
+fn cmd_restore(session_name: &str) -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    client.restore_stale_session(session_name)?;
+    println!("Restored session '{}'. Use 'sb attach {}' to connect.", session_name, session_name);
+    Ok(())
+}
+
+/// Delete stale session metadata.
+fn cmd_forget(session_name: &str) -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    client.delete_stale_session(session_name)?;
+    println!("Deleted metadata for session '{}'", session_name);
     Ok(())
 }
 
@@ -795,5 +848,29 @@ mod tests {
         let cli = Cli::try_parse_from(["sb", "-s", "mysession"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.session, "mysession");
+    }
+
+    #[test]
+    fn test_cli_parsing_stale() {
+        let cli = Cli::try_parse_from(["sb", "stale"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Stale)));
+    }
+
+    #[test]
+    fn test_cli_parsing_restore() {
+        let cli = Cli::try_parse_from(["sb", "restore", "old-session"]).unwrap();
+        match cli.command {
+            Some(Commands::Restore { session }) => assert_eq!(session, "old-session"),
+            _ => panic!("Expected Restore command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_forget() {
+        let cli = Cli::try_parse_from(["sb", "forget", "old-session"]).unwrap();
+        match cli.command {
+            Some(Commands::Forget { session }) => assert_eq!(session, "old-session"),
+            _ => panic!("Expected Forget command"),
+        }
     }
 }

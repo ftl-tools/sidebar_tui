@@ -2,12 +2,16 @@
 //!
 //! These tests spawn the actual `sb` binary in a PTY and verify its behavior.
 //! Uses expectrl for PTY management and vt100 for terminal emulation.
+//!
+//! NOTE: These tests MUST run serially because they share a daemon process.
+//! They use the `serial_test` crate to enforce this.
 
 use std::io::Write;
 use std::time::Duration;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use expectrl::spawn;
+use serial_test::serial;
 
 /// Atomic counter to generate unique session names for each test
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -139,6 +143,7 @@ impl Drop for SbSession {
 /// - Header row is blue with centered "Sidebar TUI" in black
 /// - Sidebar body has lighter (dark gray) background
 #[test]
+#[serial]
 fn test_layout_matches_spec() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
@@ -208,6 +213,7 @@ fn test_layout_matches_spec() {
 /// Test that git status output in the TUI matches normal terminal output.
 /// This verifies that the terminal emulation properly handles git output.
 #[test]
+#[serial]
 fn test_git_status_output_matches() {
     // First, get the expected git status output from a normal terminal
     let expected_output = std::process::Command::new("git")
@@ -262,6 +268,7 @@ fn test_git_status_output_matches() {
 /// This verifies that the terminal properly handles vi's escape sequences
 /// and that keyboard input is correctly forwarded.
 #[test]
+#[serial]
 fn test_vi_editing_workflow() {
     use std::fs;
 
@@ -355,6 +362,7 @@ fn test_vi_editing_workflow() {
 /// Per objectives: "type `git status`, backspace before you send it, type `echo "hello world"`,
 /// send that, and see the expected output"
 #[test]
+#[serial]
 fn test_backspace_input_handling() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
@@ -415,6 +423,7 @@ fn test_backspace_input_handling() {
 /// 4. Verify vi is still open with the same content
 /// 5. Verify can save and exit vi normally
 #[test]
+#[serial]
 fn test_session_persistence_across_restart() {
     use std::fs;
 
@@ -647,8 +656,186 @@ fn wait_for_text(
     false
 }
 
+/// Test that session metadata is persisted to disk and can be listed/restored.
+/// This simulates the "reboot persistence" scenario where:
+/// 1. A session is created via the TUI (using SbSession which provides a proper PTY)
+/// 2. The session is detached and metadata file is saved
+/// 3. We simulate reboot by killing the session but keeping the metadata file
+/// 4. The stale session can be listed via `sb stale` and restored via `sb restore`
+#[test]
+#[serial]
+fn test_stale_session_persistence() {
+    use std::fs;
+
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("stale-test-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    // Cleanup helper
+    struct Cleanup {
+        session: String,
+        binary_path: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            // Kill the session if it exists
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["kill", &self.session])
+                .output();
+            // Delete stale metadata if it exists
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["forget", &self.session])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup {
+        session: session_name.clone(),
+        binary_path: binary_path.clone(),
+    };
+
+    // ============ PHASE 1: Create a session via proper PTY using expectrl ============
+    {
+        let cmd = format!("{} -s {}", binary_path, session_name);
+        let mut session = spawn(&cmd).expect("Failed to spawn sb");
+        session.set_expect_timeout(Some(Duration::from_secs(5)));
+
+        // Wait for TUI to initialize and shell to be ready
+        std::thread::sleep(Duration::from_millis(2500));
+
+        // Run a simple command to verify session is working
+        session.write_all(b"echo SESSION_ACTIVE\n").expect("Failed to send command");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(1000));
+
+        // Detach with Ctrl+Q
+        session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = session.get_process_mut().exit(true);
+    }
+
+    // Small delay to let daemon process the detach
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Verify the session is listed as active
+    let list_output = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    eprintln!("List output:\n{}", list_stdout);
+
+    assert!(
+        list_stdout.contains(&session_name),
+        "Session should be listed as active. Got:\n{}",
+        list_stdout
+    );
+
+    // ============ PHASE 2: Verify metadata file was created ============
+    let data_dir = if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
+        std::path::PathBuf::from(dir).join("sidebar-tui")
+    } else {
+        dirs::home_dir()
+            .unwrap()
+            .join(".local")
+            .join("share")
+            .join("sidebar-tui")
+    };
+    let sessions_dir = data_dir.join("sessions");
+    let metadata_file = sessions_dir.join(format!("{}.json", session_name));
+
+    eprintln!("Looking for metadata at: {:?}", metadata_file);
+    assert!(
+        metadata_file.exists(),
+        "Metadata file should exist at {:?}",
+        metadata_file
+    );
+
+    // Read and save the metadata content
+    let metadata_content = fs::read_to_string(&metadata_file)
+        .expect("Failed to read metadata file");
+    eprintln!("Metadata content:\n{}", metadata_content);
+
+    // ============ PHASE 3: Kill session and restore metadata to simulate reboot ============
+    // Kill the session (this will delete the metadata file)
+    let kill_output = std::process::Command::new(&binary_path)
+        .args(["kill", &session_name])
+        .output()
+        .expect("Failed to run sb kill");
+    eprintln!("Kill output: {}", String::from_utf8_lossy(&kill_output.stdout));
+
+    // Restore the metadata file to simulate "reboot" scenario
+    // (After reboot, daemon is gone but metadata files persist on disk)
+    fs::create_dir_all(&sessions_dir).expect("Failed to create sessions dir");
+    fs::write(&metadata_file, &metadata_content).expect("Failed to restore metadata");
+
+    // Verify session is no longer listed as active
+    let list_output2 = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list");
+    let list_stdout2 = String::from_utf8_lossy(&list_output2.stdout);
+    eprintln!("List output after kill:\n{}", list_stdout2);
+
+    assert!(
+        !list_stdout2.contains(&session_name),
+        "Session should NOT be in active list after kill. Got:\n{}",
+        list_stdout2
+    );
+
+    // ============ PHASE 4: Verify stale session appears ============
+    let stale_output = std::process::Command::new(&binary_path)
+        .arg("stale")
+        .output()
+        .expect("Failed to run sb stale");
+    let stale_stdout = String::from_utf8_lossy(&stale_output.stdout);
+    eprintln!("Stale output:\n{}", stale_stdout);
+
+    assert!(
+        stale_stdout.contains(&session_name),
+        "Session should appear in stale list. Got:\n{}",
+        stale_stdout
+    );
+
+    // ============ PHASE 5: Restore the stale session ============
+    let restore_output = std::process::Command::new(&binary_path)
+        .args(["restore", &session_name])
+        .output()
+        .expect("Failed to run sb restore");
+    let restore_stdout = String::from_utf8_lossy(&restore_output.stdout);
+    eprintln!("Restore output:\n{}", restore_stdout);
+
+    assert!(
+        restore_stdout.contains("Restored"),
+        "Restore should succeed. Got:\n{}",
+        restore_stdout
+    );
+
+    // Verify session is now active again
+    let list_output3 = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list");
+    let list_stdout3 = String::from_utf8_lossy(&list_output3.stdout);
+    eprintln!("List output after restore:\n{}", list_stdout3);
+
+    assert!(
+        list_stdout3.contains(&session_name),
+        "Session should be active after restore. Got:\n{}",
+        list_stdout3
+    );
+
+    // ============ PHASE 6: Clean up ============
+    // Kill the restored session
+    let _ = std::process::Command::new(&binary_path)
+        .args(["kill", &session_name])
+        .output();
+}
+
 /// Test that the sidebar is exactly 20 characters wide
 #[test]
+#[serial]
 fn test_sidebar_is_20_chars_wide() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 

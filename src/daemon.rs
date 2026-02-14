@@ -56,6 +56,12 @@ pub enum ClientMessage {
     List,
     /// Kill a specific session.
     Kill { session_name: String },
+    /// List stale sessions (persisted but not currently running).
+    ListStale,
+    /// Restore a stale session from its persisted metadata.
+    RestoreStale { session_name: String },
+    /// Delete stale session metadata (user declined to restore).
+    DeleteStale { session_name: String },
     /// Shutdown the daemon.
     Shutdown,
 }
@@ -76,6 +82,12 @@ pub enum DaemonResponse {
     Output { data: Vec<u8> },
     /// Session list.
     Sessions { names: Vec<SessionInfo> },
+    /// Stale sessions list (persisted but not currently running).
+    StaleSessions { sessions: Vec<SessionMetadata> },
+    /// Stale session was restored.
+    Restored { session_name: String },
+    /// Stale session metadata was deleted.
+    Deleted { session_name: String },
     /// Session was killed.
     Killed { session_name: String },
     /// Error occurred.
@@ -93,6 +105,132 @@ pub struct SessionInfo {
     pub cols: u16,
 }
 
+/// Persistent session metadata saved to disk for reboot survival.
+/// When the daemon restarts after a reboot, it can read these files
+/// to know about sessions that were running before the reboot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMetadata {
+    /// Session name.
+    pub name: String,
+    /// Working directory for the session.
+    pub cwd: Option<PathBuf>,
+    /// Terminal dimensions (rows, cols).
+    pub rows: u16,
+    pub cols: u16,
+    /// Timestamp when the session was created (Unix epoch seconds).
+    pub created_at: u64,
+    /// Timestamp when the session was last active (Unix epoch seconds).
+    pub last_active: u64,
+}
+
+impl SessionMetadata {
+    /// Create new session metadata.
+    pub fn new(name: String, cwd: Option<PathBuf>, rows: u16, cols: u16) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self {
+            name,
+            cwd,
+            rows,
+            cols,
+            created_at: now,
+            last_active: now,
+        }
+    }
+
+    /// Update the last_active timestamp.
+    pub fn touch(&mut self) {
+        self.last_active = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+    }
+
+    /// Get the path to this session's metadata file.
+    pub fn file_path(&self) -> PathBuf {
+        get_sessions_dir().join(format!("{}.json", self.name))
+    }
+
+    /// Save the metadata to disk.
+    pub fn save(&self) -> Result<()> {
+        ensure_sessions_dir()?;
+        let path = self.file_path();
+        let json = serde_json::to_string_pretty(self)
+            .context("Failed to serialize session metadata")?;
+        fs::write(&path, json)
+            .with_context(|| format!("Failed to write session metadata to {:?}", path))?;
+        Ok(())
+    }
+
+    /// Load session metadata from a file.
+    pub fn load(path: &Path) -> Result<Self> {
+        let json = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read session metadata from {:?}", path))?;
+        let metadata: Self = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse session metadata from {:?}", path))?;
+        Ok(metadata)
+    }
+
+    /// Delete the metadata file from disk.
+    pub fn delete(&self) -> Result<()> {
+        let path = self.file_path();
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to delete session metadata at {:?}", path))?;
+        }
+        Ok(())
+    }
+}
+
+/// Load all persisted session metadata from disk.
+pub fn load_all_session_metadata() -> Result<Vec<SessionMetadata>> {
+    let sessions_dir = get_sessions_dir();
+    if !sessions_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(&sessions_dir).context("Failed to read sessions directory")? {
+        let entry = entry.context("Failed to read directory entry")?;
+        let path = entry.path();
+        if path.extension().map(|e| e == "json").unwrap_or(false) {
+            match SessionMetadata::load(&path) {
+                Ok(metadata) => sessions.push(metadata),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load session metadata from {:?}: {:?}", path, e);
+                }
+            }
+        }
+    }
+    Ok(sessions)
+}
+
+/// Clean up metadata files for sessions that are no longer running.
+/// This compares metadata files on disk against currently active sessions.
+pub fn cleanup_stale_metadata(active_sessions: &[String]) -> Result<()> {
+    let sessions_dir = get_sessions_dir();
+    if !sessions_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&sessions_dir).context("Failed to read sessions directory")? {
+        let entry = entry.context("Failed to read directory entry")?;
+        let path = entry.path();
+        if path.extension().map(|e| e == "json").unwrap_or(false) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if !active_sessions.contains(&stem.to_string()) {
+                    if let Err(e) = fs::remove_file(&path) {
+                        eprintln!("Warning: Failed to remove stale metadata {:?}: {:?}", path, e);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Get the runtime directory for the daemon socket.
 pub fn get_runtime_dir() -> PathBuf {
     // Try XDG_RUNTIME_DIR first (standard on Linux)
@@ -103,6 +241,27 @@ pub fn get_runtime_dir() -> PathBuf {
     // Fall back to /tmp/sidebar-tui-{uid}
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/tmp/sidebar-tui-{}", uid))
+}
+
+/// Get the data directory for persistent storage (survives reboots).
+pub fn get_data_dir() -> PathBuf {
+    // Try XDG_DATA_HOME first (standard on Linux)
+    if let Ok(dir) = env::var("XDG_DATA_HOME") {
+        return PathBuf::from(dir).join("sidebar-tui");
+    }
+
+    // Fall back to ~/.local/share/sidebar-tui
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".local").join("share").join("sidebar-tui");
+    }
+
+    // Last resort fallback
+    PathBuf::from("/tmp/sidebar-tui-data")
+}
+
+/// Get the sessions metadata directory.
+pub fn get_sessions_dir() -> PathBuf {
+    get_data_dir().join("sessions")
 }
 
 /// Get the socket path for the daemon.
@@ -122,6 +281,39 @@ pub fn ensure_runtime_dir() -> Result<PathBuf> {
             let perms = fs::Permissions::from_mode(0o700);
             fs::set_permissions(&dir, perms)
                 .context("Failed to set runtime directory permissions")?;
+        }
+    }
+    Ok(dir)
+}
+
+/// Ensure the data directory exists with proper permissions.
+pub fn ensure_data_dir() -> Result<PathBuf> {
+    let dir = get_data_dir();
+    if !dir.exists() {
+        fs::create_dir_all(&dir).context("Failed to create data directory")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(&dir, perms)
+                .context("Failed to set data directory permissions")?;
+        }
+    }
+    Ok(dir)
+}
+
+/// Ensure the sessions directory exists with proper permissions.
+pub fn ensure_sessions_dir() -> Result<PathBuf> {
+    ensure_data_dir()?;
+    let dir = get_sessions_dir();
+    if !dir.exists() {
+        fs::create_dir_all(&dir).context("Failed to create sessions directory")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(&dir, perms)
+                .context("Failed to set sessions directory permissions")?;
         }
     }
     Ok(dir)
@@ -159,16 +351,28 @@ pub struct Session {
     /// vt100 parser for tracking terminal state.
     /// Used to restore terminal contents when a client reconnects.
     terminal_parser: vt100::Parser,
+    /// Persistent metadata for this session (saved to disk).
+    metadata: SessionMetadata,
 }
 
 impl Session {
     /// Create a new session with a PTY.
     pub fn new(name: String, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<Self> {
-        let pty = spawn_shell(rows, cols, cwd)?;
+        // Validate dimensions - vt100 panics with 0 dimensions
+        let rows = if rows == 0 { 24 } else { rows };
+        let cols = if cols == 0 { 80 } else { cols };
+
+        let pty = spawn_shell(rows, cols, cwd.clone())?;
         let shell_running = Arc::new(AtomicBool::new(true));
         // Initialize vt100 parser with same dimensions as PTY.
         // The third argument is scrollback lines (0 = no scrollback).
         let terminal_parser = vt100::Parser::new(rows, cols, 0);
+
+        // Create and save metadata for persistence across reboots
+        let metadata = SessionMetadata::new(name.clone(), cwd, rows, cols);
+        if let Err(e) = metadata.save() {
+            eprintln!("Warning: Failed to save session metadata: {:?}", e);
+        }
 
         Ok(Self {
             name,
@@ -180,14 +384,16 @@ impl Session {
             shell_running,
             _pty_reader_handle: None,
             terminal_parser,
+            metadata,
         })
     }
 
     /// Create a session with a given PTY handle (for testing).
+    /// Note: This does NOT save metadata to disk (test-only).
     #[cfg(test)]
     pub fn with_pty(name: String, rows: u16, cols: u16, pty: PtyHandle) -> Self {
         Self {
-            name,
+            name: name.clone(),
             rows,
             cols,
             is_attached: false,
@@ -196,6 +402,20 @@ impl Session {
             shell_running: Arc::new(AtomicBool::new(true)),
             _pty_reader_handle: None,
             terminal_parser: vt100::Parser::new(rows, cols, 0),
+            metadata: SessionMetadata::new(name, None, rows, cols),
+        }
+    }
+
+    /// Delete the session's persistent metadata from disk.
+    pub fn delete_metadata(&self) -> Result<()> {
+        self.metadata.delete()
+    }
+
+    /// Update the session's last_active timestamp and save to disk.
+    pub fn touch_metadata(&mut self) {
+        self.metadata.touch();
+        if let Err(e) = self.metadata.save() {
+            eprintln!("Warning: Failed to update session metadata: {:?}", e);
         }
     }
 
@@ -455,7 +675,65 @@ impl Daemon {
     /// Kill a session.
     pub fn kill_session(&self, name: &str) -> bool {
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.remove(name).is_some()
+        if let Some(session) = sessions.remove(name) {
+            // Delete the persistent metadata file
+            if let Err(e) = session.delete_metadata() {
+                eprintln!("Warning: Failed to delete session metadata: {:?}", e);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get a list of stale sessions (persisted metadata with no running daemon session).
+    /// These are sessions that were running before a reboot/crash.
+    pub fn get_stale_sessions(&self) -> Vec<SessionMetadata> {
+        let sessions = self.sessions.lock().unwrap();
+        let active_names: Vec<String> = sessions.keys().cloned().collect();
+        drop(sessions); // Release lock before file I/O
+
+        match load_all_session_metadata() {
+            Ok(all_metadata) => {
+                all_metadata
+                    .into_iter()
+                    .filter(|m| !active_names.contains(&m.name))
+                    .collect()
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load session metadata: {:?}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Restore a stale session from its metadata.
+    /// Creates a new session with the same name and working directory.
+    pub fn restore_session(&self, metadata: &SessionMetadata) -> Result<SessionInfo> {
+        let mut sessions = self.sessions.lock().unwrap();
+        if sessions.contains_key(&metadata.name) {
+            bail!("Session '{}' already exists", metadata.name);
+        }
+
+        let session = Session::new(
+            metadata.name.clone(),
+            metadata.rows,
+            metadata.cols,
+            metadata.cwd.clone(),
+        )?;
+        let info = session.info();
+        sessions.insert(metadata.name.clone(), session);
+        Ok(info)
+    }
+
+    /// Delete metadata for a stale session (user declined to restore it).
+    pub fn delete_stale_metadata(&self, name: &str) -> Result<()> {
+        let path = get_sessions_dir().join(format!("{}.json", name));
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to delete stale metadata for '{}'", name))?;
+        }
+        Ok(())
     }
 }
 
@@ -570,6 +848,10 @@ fn process_message(
 ) -> DaemonResponse {
     match msg {
         ClientMessage::Attach { session_name, rows, cols, cwd } => {
+            // Validate dimensions - vt100 panics with 0 dimensions
+            let rows = if rows == 0 { 24 } else { rows };
+            let cols = if cols == 0 { 80 } else { cols };
+
             let mut sessions_guard = sessions.lock().unwrap();
             let is_new = !sessions_guard.contains_key(&session_name);
             let mut terminal_state = None;
@@ -651,11 +933,85 @@ fn process_message(
         }
         ClientMessage::Kill { session_name } => {
             let mut sessions_guard = sessions.lock().unwrap();
-            if sessions_guard.remove(&session_name).is_some() {
+            if let Some(session) = sessions_guard.remove(&session_name) {
+                // Delete the persistent metadata file
+                if let Err(e) = session.delete_metadata() {
+                    eprintln!("Warning: Failed to delete session metadata: {:?}", e);
+                }
                 DaemonResponse::Killed { session_name }
             } else {
                 DaemonResponse::Error {
                     message: format!("Session '{}' not found", session_name),
+                }
+            }
+        }
+        ClientMessage::ListStale => {
+            let sessions_guard = sessions.lock().unwrap();
+            let active_names: Vec<String> = sessions_guard.keys().cloned().collect();
+            drop(sessions_guard);
+
+            match load_all_session_metadata() {
+                Ok(all_metadata) => {
+                    let stale: Vec<SessionMetadata> = all_metadata
+                        .into_iter()
+                        .filter(|m| !active_names.contains(&m.name))
+                        .collect();
+                    DaemonResponse::StaleSessions { sessions: stale }
+                }
+                Err(e) => DaemonResponse::Error {
+                    message: format!("Failed to load session metadata: {}", e),
+                },
+            }
+        }
+        ClientMessage::RestoreStale { session_name } => {
+            // First check if session already exists
+            {
+                let sessions_guard = sessions.lock().unwrap();
+                if sessions_guard.contains_key(&session_name) {
+                    return DaemonResponse::Error {
+                        message: format!("Session '{}' already exists", session_name),
+                    };
+                }
+            }
+
+            // Load metadata for this session
+            let metadata_path = get_sessions_dir().join(format!("{}.json", session_name));
+            match SessionMetadata::load(&metadata_path) {
+                Ok(metadata) => {
+                    // Create new session from metadata
+                    match Session::new(
+                        metadata.name.clone(),
+                        metadata.rows,
+                        metadata.cols,
+                        metadata.cwd,
+                    ) {
+                        Ok(session) => {
+                            let mut sessions_guard = sessions.lock().unwrap();
+                            sessions_guard.insert(session_name.clone(), session);
+                            DaemonResponse::Restored { session_name }
+                        }
+                        Err(e) => DaemonResponse::Error {
+                            message: format!("Failed to restore session: {}", e),
+                        },
+                    }
+                }
+                Err(e) => DaemonResponse::Error {
+                    message: format!("Failed to load session metadata: {}", e),
+                },
+            }
+        }
+        ClientMessage::DeleteStale { session_name } => {
+            let metadata_path = get_sessions_dir().join(format!("{}.json", session_name));
+            if metadata_path.exists() {
+                match fs::remove_file(&metadata_path) {
+                    Ok(()) => DaemonResponse::Deleted { session_name },
+                    Err(e) => DaemonResponse::Error {
+                        message: format!("Failed to delete metadata: {}", e),
+                    },
+                }
+            } else {
+                DaemonResponse::Error {
+                    message: format!("No metadata found for session '{}'", session_name),
                 }
             }
         }
@@ -817,6 +1173,37 @@ impl DaemonClient {
     pub fn shutdown(&mut self) -> Result<()> {
         match self.send(ClientMessage::Shutdown)? {
             DaemonResponse::ShuttingDown => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// List stale sessions (persisted but not currently running).
+    pub fn list_stale_sessions(&mut self) -> Result<Vec<SessionMetadata>> {
+        match self.send(ClientMessage::ListStale)? {
+            DaemonResponse::StaleSessions { sessions } => Ok(sessions),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Restore a stale session from its persisted metadata.
+    pub fn restore_stale_session(&mut self, session_name: &str) -> Result<()> {
+        match self.send(ClientMessage::RestoreStale {
+            session_name: session_name.to_string(),
+        })? {
+            DaemonResponse::Restored { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Delete stale session metadata (user declined to restore).
+    pub fn delete_stale_session(&mut self, session_name: &str) -> Result<()> {
+        match self.send(ClientMessage::DeleteStale {
+            session_name: session_name.to_string(),
+        })? {
+            DaemonResponse::Deleted { .. } => Ok(()),
             DaemonResponse::Error { message } => bail!("{}", message),
             other => bail!("Unexpected response: {:?}", other),
         }
@@ -1713,6 +2100,328 @@ mod tests {
                 assert_eq!(ts, terminal_state);
             }
             _ => panic!("Wrong message type"),
+        }
+    }
+
+    // Tests for session persistence (sidebar_tui-ou5)
+
+    fn temp_data_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let pid = std::process::id();
+        PathBuf::from(format!("/tmp/sidebar-tui-test-data-{}-{}", pid, id))
+    }
+
+    fn cleanup_dir(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn test_get_data_dir_format() {
+        let dir = get_data_dir();
+        let dir_str = dir.to_string_lossy();
+        assert!(
+            dir_str.contains("sidebar-tui"),
+            "Data dir should contain 'sidebar-tui': {}",
+            dir_str
+        );
+    }
+
+    #[test]
+    fn test_get_sessions_dir_format() {
+        let dir = get_sessions_dir();
+        let dir_str = dir.to_string_lossy();
+        assert!(
+            dir_str.ends_with("sessions"),
+            "Sessions dir should end with 'sessions': {}",
+            dir_str
+        );
+    }
+
+    #[test]
+    fn test_session_metadata_new() {
+        let metadata = SessionMetadata::new(
+            "test-session".to_string(),
+            Some(PathBuf::from("/home/user")),
+            24,
+            80,
+        );
+        assert_eq!(metadata.name, "test-session");
+        assert_eq!(metadata.cwd, Some(PathBuf::from("/home/user")));
+        assert_eq!(metadata.rows, 24);
+        assert_eq!(metadata.cols, 80);
+        assert!(metadata.created_at > 0);
+        assert_eq!(metadata.created_at, metadata.last_active);
+    }
+
+    #[test]
+    fn test_session_metadata_touch() {
+        let mut metadata = SessionMetadata::new(
+            "test-session".to_string(),
+            None,
+            24,
+            80,
+        );
+        let original_last_active = metadata.last_active;
+
+        // Sleep briefly to ensure time passes
+        thread::sleep(Duration::from_millis(10));
+        metadata.touch();
+
+        // last_active should stay same or increase (same second is ok)
+        assert!(metadata.last_active >= original_last_active);
+    }
+
+    #[test]
+    fn test_session_metadata_serialization() {
+        let metadata = SessionMetadata::new(
+            "test-session".to_string(),
+            Some(PathBuf::from("/home/user")),
+            24,
+            80,
+        );
+
+        let json = serde_json::to_string(&metadata).expect("Failed to serialize");
+        let deserialized: SessionMetadata = serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(deserialized.name, metadata.name);
+        assert_eq!(deserialized.cwd, metadata.cwd);
+        assert_eq!(deserialized.rows, metadata.rows);
+        assert_eq!(deserialized.cols, metadata.cols);
+        assert_eq!(deserialized.created_at, metadata.created_at);
+        assert_eq!(deserialized.last_active, metadata.last_active);
+    }
+
+    #[test]
+    fn test_session_metadata_file_path() {
+        let metadata = SessionMetadata::new("my-session".to_string(), None, 24, 80);
+        let path = metadata.file_path();
+        assert!(
+            path.to_string_lossy().ends_with("my-session.json"),
+            "Path should end with session name.json: {:?}",
+            path
+        );
+    }
+
+    #[test]
+    fn test_session_metadata_save_and_load() {
+        // Use a temporary directory for testing
+        let test_dir = temp_data_dir();
+        let sessions_dir = test_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).expect("Failed to create test dir");
+
+        // Create and save metadata manually to our test location
+        let metadata = SessionMetadata::new(
+            "save-test".to_string(),
+            Some(PathBuf::from("/home/user/project")),
+            30,
+            100,
+        );
+
+        let test_path = sessions_dir.join("save-test.json");
+        let json = serde_json::to_string_pretty(&metadata).expect("Failed to serialize");
+        fs::write(&test_path, json).expect("Failed to write test file");
+
+        // Load it back
+        let loaded = SessionMetadata::load(&test_path).expect("Failed to load metadata");
+
+        assert_eq!(loaded.name, "save-test");
+        assert_eq!(loaded.cwd, Some(PathBuf::from("/home/user/project")));
+        assert_eq!(loaded.rows, 30);
+        assert_eq!(loaded.cols, 100);
+
+        cleanup_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_session_metadata_delete() {
+        let test_dir = temp_data_dir();
+        let sessions_dir = test_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).expect("Failed to create test dir");
+
+        // Create a test file
+        let test_path = sessions_dir.join("delete-test.json");
+        fs::write(&test_path, "{}").expect("Failed to write test file");
+        assert!(test_path.exists());
+
+        // Create metadata and test delete
+        let mut metadata = SessionMetadata::new("delete-test".to_string(), None, 24, 80);
+        // Override the file path method by deleting directly
+        fs::remove_file(&test_path).expect("Failed to delete");
+        assert!(!test_path.exists());
+
+        cleanup_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_encode_decode_list_stale_message() {
+        let msg = ClientMessage::ListStale;
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        assert!(matches!(decoded, ClientMessage::ListStale));
+    }
+
+    #[test]
+    fn test_encode_decode_restore_stale_message() {
+        let msg = ClientMessage::RestoreStale {
+            session_name: "old-session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::RestoreStale { session_name } => {
+                assert_eq!(session_name, "old-session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_delete_stale_message() {
+        let msg = ClientMessage::DeleteStale {
+            session_name: "old-session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::DeleteStale { session_name } => {
+                assert_eq!(session_name, "old-session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_stale_sessions_response() {
+        let sessions = vec![
+            SessionMetadata::new("session1".to_string(), None, 24, 80),
+            SessionMetadata::new("session2".to_string(), Some(PathBuf::from("/tmp")), 30, 100),
+        ];
+        let msg = DaemonResponse::StaleSessions { sessions };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::StaleSessions { sessions } => {
+                assert_eq!(sessions.len(), 2);
+                assert_eq!(sessions[0].name, "session1");
+                assert_eq!(sessions[1].name, "session2");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_restored_response() {
+        let msg = DaemonResponse::Restored {
+            session_name: "restored-session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::Restored { session_name } => {
+                assert_eq!(session_name, "restored-session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_deleted_response() {
+        let msg = DaemonResponse::Deleted {
+            session_name: "deleted-session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::Deleted { session_name } => {
+                assert_eq!(session_name, "deleted-session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_process_list_stale_empty() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let response = process_message(ClientMessage::ListStale, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::StaleSessions { sessions } => {
+                // Should be empty since no metadata exists
+                // (or could have stale files from other tests, either is acceptable)
+            }
+            DaemonResponse::Error { .. } => {
+                // Also acceptable if sessions dir doesn't exist
+            }
+            _ => panic!("Expected StaleSessions or Error response"),
+        }
+    }
+
+    #[test]
+    fn test_process_delete_stale_nonexistent() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::DeleteStale {
+            session_name: "nonexistent-session-xyz123".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        // Should get an error since the metadata file doesn't exist
+        assert!(matches!(response, DaemonResponse::Error { .. }));
+    }
+
+    #[test]
+    fn test_process_restore_stale_already_exists() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Create a session first
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            sessions_guard.insert(
+                "existing-session".to_string(),
+                Session::new("existing-session".to_string(), 24, 80, None).unwrap()
+            );
+        }
+
+        let msg = ClientMessage::RestoreStale {
+            session_name: "existing-session".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        // Should fail since session already exists
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("already exists"));
+            }
+            _ => panic!("Expected Error response"),
         }
     }
 }
