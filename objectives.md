@@ -28,3 +28,4 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 2. Figure out how on earth agents can automtically test a TUI that requires user input and interaction, in a real Apple terminal environment. Be scrappy and figure it out.
 3. Test just the TUI with a moc terminal.
 4. Figure out how to do the terminal side of things.
+5. Anything else needed.
