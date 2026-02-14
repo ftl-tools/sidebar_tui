@@ -2246,7 +2246,7 @@ mod tests {
         assert!(test_path.exists());
 
         // Create metadata and test delete
-        let mut metadata = SessionMetadata::new("delete-test".to_string(), None, 24, 80);
+        let _metadata = SessionMetadata::new("delete-test".to_string(), None, 24, 80);
         // Override the file path method by deleting directly
         fs::remove_file(&test_path).expect("Failed to delete");
         assert!(!test_path.exists());
@@ -2368,7 +2368,7 @@ mod tests {
         let response = process_message(ClientMessage::ListStale, &sessions, &shutdown, &mut current_session);
 
         match response {
-            DaemonResponse::StaleSessions { sessions } => {
+            DaemonResponse::StaleSessions { sessions: _ } => {
                 // Should be empty since no metadata exists
                 // (or could have stale files from other tests, either is acceptable)
             }

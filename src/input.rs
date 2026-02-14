@@ -196,7 +196,7 @@ fn encode_function_key(n: u8, ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
     let modifier = encode_modifier(ctrl, alt, shift);
 
     // F1-F4 use SS3 encoding when no modifiers
-    if modifier == 0 && n >= 1 && n <= 4 {
+    if modifier == 0 && (1..=4).contains(&n) {
         let code = match n {
             1 => 'P',
             2 => 'Q',
@@ -208,7 +208,7 @@ fn encode_function_key(n: u8, ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
     }
 
     // F1-F4 with modifiers
-    if n >= 1 && n <= 4 {
+    if (1..=4).contains(&n) {
         let code = match n {
             1 => 'P',
             2 => 'Q',
