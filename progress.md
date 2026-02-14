@@ -47,3 +47,7 @@ Completed the resize handling issue (sidebar_tui-cch). The resize handling was a
 ## 2026-02-14 - CLI Build and E2E Tests Complete
 
 Completed CLI build issue (sidebar_tui-a97): installed the `sb` binary globally via `cargo install --path .` to ~/.cargo/bin/sb and added cargo bin to PATH in ~/.zshrc. Then implemented all 4 required E2E tests (sidebar_tui-aun, sidebar_tui-xml, sidebar_tui-ikz, sidebar_tui-0sh) using expectrl for PTY management and vt100 for terminal emulation parsing. Tests cover: layout verification (sidebar 20 chars, blue header, centered text), git status output matching, vi editing workflow (open file, insert text, save, verify changes), and backspace input handling. Completed the final review (sidebar_tui-8cl), verifying all 85 tests pass (78 unit + 5 E2E + 2 integration), no tests skipped, all objectives met. The basic Sidebar TUI is now complete with a functional embedded terminal.
+
+## 2026-02-14 - Session Persistence Planning
+
+Reviewed project status: all 90 tests pass (83 unit + 5 E2E + 2 integration), no issues open. However, discovered one unimplemented basic objective: "The terminal session should be automatically saved and restored when reopening the TUI." This requires persisting vi/interactive sessions across TUI restarts and reboots. Created two research issues: (1) sidebar_tui-uzt for researching session persistence approaches (tmux, screen, CRIU, PTY detachment), and (2) sidebar_tui-yuv for researching Rust tmux integration libraries. Next agent should pick up the research to determine the best persistence strategy.
