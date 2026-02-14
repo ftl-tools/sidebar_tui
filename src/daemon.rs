@@ -21,6 +21,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::pty::{spawn_shell, PtyEvent, PtyHandle};
 
+/// Terminal state for restoring session on reconnect.
+/// Contains the formatted escape sequence bytes that will restore
+/// the terminal to its previous visual state (cursor position, colors, text).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalState {
+    /// Escape sequence bytes to restore the terminal screen.
+    pub contents: Vec<u8>,
+    /// Cursor position (row, col) - 0-indexed.
+    pub cursor_position: (u16, u16),
+    /// Terminal dimensions when state was captured.
+    pub rows: u16,
+    pub cols: u16,
+}
+
 /// Message types for communication between TUI client and daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -126,6 +140,8 @@ pub struct Daemon {
 /// A single terminal session managed by the daemon.
 ///
 /// The session owns the PTY and manages communication with clients.
+/// The session also maintains a vt100 parser to track terminal state
+/// for restoring sessions on client reconnect.
 pub struct Session {
     pub name: String,
     pub rows: u16,
@@ -140,6 +156,9 @@ pub struct Session {
     pub shell_running: Arc<AtomicBool>,
     /// Handle for the PTY reader thread that forwards output to clients.
     _pty_reader_handle: Option<JoinHandle<()>>,
+    /// vt100 parser for tracking terminal state.
+    /// Used to restore terminal contents when a client reconnects.
+    terminal_parser: vt100::Parser,
 }
 
 impl Session {
@@ -147,6 +166,9 @@ impl Session {
     pub fn new(name: String, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<Self> {
         let pty = spawn_shell(rows, cols, cwd)?;
         let shell_running = Arc::new(AtomicBool::new(true));
+        // Initialize vt100 parser with same dimensions as PTY.
+        // The third argument is scrollback lines (0 = no scrollback).
+        let terminal_parser = vt100::Parser::new(rows, cols, 0);
 
         Ok(Self {
             name,
@@ -157,6 +179,7 @@ impl Session {
             client_output_tx: Vec::new(),
             shell_running,
             _pty_reader_handle: None,
+            terminal_parser,
         })
     }
 
@@ -172,6 +195,7 @@ impl Session {
             client_output_tx: Vec::new(),
             shell_running: Arc::new(AtomicBool::new(true)),
             _pty_reader_handle: None,
+            terminal_parser: vt100::Parser::new(rows, cols, 0),
         }
     }
 
@@ -202,10 +226,11 @@ impl Session {
         self.pty.write(data)
     }
 
-    /// Resize the PTY.
+    /// Resize the PTY and vt100 parser.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.rows = rows;
         self.cols = cols;
+        self.terminal_parser.set_size(rows, cols);
         self.pty.resize(rows, cols)
     }
 
@@ -214,11 +239,13 @@ impl Session {
         self.pty.is_running()
     }
 
-    /// Process pending PTY output and broadcast to clients.
+    /// Process pending PTY output, feed through vt100 parser, and broadcast to clients.
     pub fn process_pty_output(&mut self) {
         loop {
             match self.pty.rx.try_recv() {
                 Ok(PtyEvent::Output(data)) => {
+                    // Feed through vt100 parser to track terminal state
+                    self.terminal_parser.process(&data);
                     self.broadcast_to_clients(&data);
                 }
                 Ok(PtyEvent::Exited) => {
@@ -232,6 +259,34 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Get the current terminal state for session restoration.
+    /// Returns formatted escape sequences that will restore the terminal
+    /// to its current visual state including cursor position and colors.
+    pub fn get_terminal_state(&self) -> TerminalState {
+        let screen = self.terminal_parser.screen();
+        let cursor_position = screen.cursor_position();
+
+        TerminalState {
+            contents: screen.contents_formatted(),
+            cursor_position,
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+
+    /// Process raw bytes through the terminal parser without sending to clients.
+    /// Used for testing terminal state tracking.
+    #[cfg(test)]
+    pub fn process_raw(&mut self, data: &[u8]) {
+        self.terminal_parser.process(data);
+    }
+
+    /// Get the plain text contents of the terminal (for testing).
+    #[cfg(test)]
+    pub fn terminal_contents(&self) -> String {
+        self.terminal_parser.screen().contents()
     }
 
     pub fn info(&self) -> SessionInfo {
@@ -440,6 +495,8 @@ fn handle_client(
                     loop {
                         match session.pty.rx.try_recv() {
                             Ok(PtyEvent::Output(data)) => {
+                                // Feed through vt100 parser to track terminal state
+                                session.terminal_parser.process(&data);
                                 outputs.push(data);
                             }
                             Ok(PtyEvent::Exited) => {
@@ -515,6 +572,7 @@ fn process_message(
         ClientMessage::Attach { session_name, rows, cols, cwd } => {
             let mut sessions_guard = sessions.lock().unwrap();
             let is_new = !sessions_guard.contains_key(&session_name);
+            let mut terminal_state = None;
 
             // Create new session if it doesn't exist
             if is_new {
@@ -530,9 +588,13 @@ fn process_message(
                     }
                 }
             } else {
-                // Update existing session
+                // Reattaching to existing session - get terminal state for restoration
                 if let Some(session) = sessions_guard.get_mut(&session_name) {
                     session.is_attached = true;
+                    // Get the current terminal state before resizing
+                    let state = session.get_terminal_state();
+                    terminal_state = Some(state.contents);
+                    // Now resize to match client dimensions
                     if let Err(e) = session.resize(rows, cols) {
                         eprintln!("Warning: failed to resize session: {:?}", e);
                     }
@@ -544,7 +606,7 @@ fn process_message(
             DaemonResponse::Attached {
                 session_name,
                 is_new,
-                terminal_state: None, // Will be implemented in sidebar_tui-1f8
+                terminal_state,
             }
         }
         ClientMessage::Detach => {
@@ -766,7 +828,6 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
-    use crate::pty::spawn_shell;
 
     fn temp_socket_path() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -1444,5 +1505,214 @@ mod tests {
         }
 
         assert!(received, "Should receive echo output from session PTY");
+    }
+
+    // Tests for terminal state serialization (sidebar_tui-1f8)
+
+    #[test]
+    fn test_session_terminal_state_initial() {
+        let session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+        let state = session.get_terminal_state();
+
+        // Initial state should have the correct dimensions
+        assert_eq!(state.rows, 24);
+        assert_eq!(state.cols, 80);
+        // Initial cursor should be at top-left
+        assert_eq!(state.cursor_position, (0, 0));
+    }
+
+    #[test]
+    fn test_session_terminal_state_after_text() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Process some text directly to the parser
+        session.process_raw(b"Hello, World!");
+
+        let state = session.get_terminal_state();
+
+        // Contents should include the text
+        let contents_str = String::from_utf8_lossy(&state.contents);
+        assert!(contents_str.contains("Hello, World!"), "State should contain the text");
+
+        // Cursor should be after the text
+        assert_eq!(state.cursor_position.0, 0, "Cursor row should be 0");
+        assert_eq!(state.cursor_position.1, 13, "Cursor col should be 13 (after 'Hello, World!')");
+    }
+
+    #[test]
+    fn test_session_terminal_state_with_colors() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Process red text (ESC[31m = red foreground)
+        session.process_raw(b"\x1b[31mRED\x1b[m");
+
+        let state = session.get_terminal_state();
+
+        // Contents_formatted should include color escape sequences
+        // The exact format depends on vt100 crate output, but it should contain the text
+        let contents_str = String::from_utf8_lossy(&state.contents);
+        assert!(contents_str.contains("RED"), "State should contain the text");
+        // The escape codes should be present for color
+        assert!(state.contents.iter().any(|&b| b == 0x1b), "State should contain escape sequences");
+    }
+
+    #[test]
+    fn test_session_terminal_state_with_newlines() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Process multi-line text
+        session.process_raw(b"Line 1\r\nLine 2\r\nLine 3");
+
+        let state = session.get_terminal_state();
+        let contents_str = String::from_utf8_lossy(&state.contents);
+
+        assert!(contents_str.contains("Line 1"), "Should contain Line 1");
+        assert!(contents_str.contains("Line 2"), "Should contain Line 2");
+        assert!(contents_str.contains("Line 3"), "Should contain Line 3");
+
+        // Cursor should be on row 2 (third line)
+        assert_eq!(state.cursor_position.0, 2, "Cursor should be on row 2");
+    }
+
+    #[test]
+    fn test_session_terminal_state_with_cursor_movement() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Move cursor to specific position (ESC[5;10H = row 5, col 10, 1-indexed)
+        session.process_raw(b"\x1b[5;10HTEXT");
+
+        let state = session.get_terminal_state();
+
+        // Cursor should be at position (4, 13) - 0-indexed
+        // ESC[5;10H moves to row 5 col 10 (1-indexed) = (4, 9) 0-indexed
+        // Then "TEXT" (4 chars) moves cursor to col 13
+        assert_eq!(state.cursor_position.0, 4, "Cursor row should be 4 (0-indexed)");
+        assert_eq!(state.cursor_position.1, 13, "Cursor col should be 13 (after TEXT)");
+    }
+
+    #[test]
+    fn test_session_terminal_contents_helper() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        session.process_raw(b"Testing terminal contents");
+
+        let contents = session.terminal_contents();
+        assert!(contents.contains("Testing terminal contents"));
+    }
+
+    #[test]
+    fn test_session_resize_updates_parser() {
+        let mut session = Session::new("test".to_string(), 24, 80, None).expect("Failed to create session");
+
+        // Resize session
+        session.resize(40, 120).expect("Failed to resize");
+
+        let state = session.get_terminal_state();
+        assert_eq!(state.rows, 40);
+        assert_eq!(state.cols, 120);
+    }
+
+    #[test]
+    fn test_terminal_state_serialization() {
+        let state = TerminalState {
+            contents: b"Hello\x1b[31mRed\x1b[m".to_vec(),
+            cursor_position: (5, 10),
+            rows: 24,
+            cols: 80,
+        };
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&state).expect("Failed to serialize");
+        let deserialized: TerminalState = serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(deserialized.contents, state.contents);
+        assert_eq!(deserialized.cursor_position, state.cursor_position);
+        assert_eq!(deserialized.rows, state.rows);
+        assert_eq!(deserialized.cols, state.cols);
+    }
+
+    #[test]
+    fn test_process_attach_existing_returns_terminal_state() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Create initial session and add some content
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            let mut session = Session::new("test".to_string(), 24, 80, None).unwrap();
+            session.process_raw(b"Important content to restore");
+            sessions_guard.insert("test".to_string(), session);
+        }
+
+        // Attach to existing session
+        let msg = ClientMessage::Attach {
+            session_name: "test".to_string(),
+            rows: 24,
+            cols: 80,
+            cwd: None,
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Attached { session_name, is_new, terminal_state } => {
+                assert_eq!(session_name, "test");
+                assert!(!is_new, "Should not be a new session");
+                assert!(terminal_state.is_some(), "Should have terminal state for existing session");
+
+                let state_bytes = terminal_state.unwrap();
+                let state_str = String::from_utf8_lossy(&state_bytes);
+                assert!(state_str.contains("Important content to restore"),
+                    "Terminal state should contain the content");
+            }
+            _ => panic!("Expected Attached response"),
+        }
+    }
+
+    #[test]
+    fn test_process_attach_new_has_no_terminal_state() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::Attach {
+            session_name: "brand_new".to_string(),
+            rows: 24,
+            cols: 80,
+            cwd: None,
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Attached { session_name, is_new, terminal_state } => {
+                assert_eq!(session_name, "brand_new");
+                assert!(is_new, "Should be a new session");
+                assert!(terminal_state.is_none(), "New session should not have terminal state");
+            }
+            _ => panic!("Expected Attached response"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_terminal_state_in_response() {
+        let terminal_state = Some(b"\x1b[2J\x1b[H\x1b[31mRed Text\x1b[m".to_vec());
+        let msg = DaemonResponse::Attached {
+            session_name: "test".to_string(),
+            is_new: false,
+            terminal_state: terminal_state.clone(),
+        };
+
+        let encoded = encode_message(&msg).unwrap();
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::Attached { terminal_state: ts, .. } => {
+                assert_eq!(ts, terminal_state);
+            }
+            _ => panic!("Wrong message type"),
+        }
     }
 }
