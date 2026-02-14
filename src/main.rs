@@ -1,6 +1,8 @@
+mod input;
 mod pty;
 mod terminal;
 
+use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -11,8 +13,8 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
-// Terminal module will be used once PTY integration is wired up
-#[allow(unused_imports)]
+use crate::input::key_to_bytes;
+use crate::pty::{spawn_shell, PtyEvent, PtyHandle};
 use crate::terminal::Terminal;
 
 fn main() -> Result<()> {
@@ -23,10 +25,102 @@ fn main() -> Result<()> {
     result
 }
 
-fn run(terminal: &mut DefaultTerminal) -> Result<()> {
+/// Application state
+struct App {
+    /// Terminal emulator for parsing PTY output
+    term_emulator: Terminal,
+    /// PTY handle for the shell process
+    pty: PtyHandle,
+}
+
+impl App {
+    fn new(rows: u16, cols: u16) -> Result<Self> {
+        let term_emulator = Terminal::new(rows, cols);
+        let pty = spawn_shell(rows, cols, None)?;
+        Ok(Self { term_emulator, pty })
+    }
+
+    /// Process any pending PTY output.
+    fn process_pty_output(&mut self) {
+        loop {
+            match self.pty.rx.try_recv() {
+                Ok(PtyEvent::Output(data)) => {
+                    self.term_emulator.process(&data);
+                }
+                Ok(PtyEvent::Exited) => {
+                    // Shell exited, we could handle this differently
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Resize the terminal emulator and PTY.
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        self.term_emulator.resize(rows, cols);
+        self.pty.resize(rows, cols)?;
+        Ok(())
+    }
+
+    /// Send keyboard input to the PTY.
+    fn send_input(&mut self, bytes: &[u8]) -> Result<()> {
+        if !bytes.is_empty() {
+            self.pty.write(bytes)?;
+        }
+        Ok(())
+    }
+}
+
+fn run(ratatui_term: &mut DefaultTerminal) -> Result<()> {
+    // Get initial terminal size
+    let size = ratatui_term.size()?;
+    // Calculate terminal view area (minus sidebar)
+    let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH);
+    let term_rows = size.height;
+
+    let mut app = App::new(term_rows, term_cols)?;
+    let mut last_size = (size.width, size.height);
+
     loop {
-        terminal.draw(render)?;
-        if should_quit()? {
+        // Process any pending PTY output
+        app.process_pty_output();
+
+        // Render the UI
+        ratatui_term.draw(|frame| render_app(frame, &app))?;
+
+        // Handle input events
+        if event::poll(Duration::from_millis(16)).context("event poll failed")? {
+            match event::read().context("event read failed")? {
+                Event::Key(key) => {
+                    // Check for Ctrl+Q to quit
+                    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
+                        break;
+                    }
+
+                    // Forward other keys to PTY
+                    let bytes = key_to_bytes(&key);
+                    app.send_input(&bytes)?;
+                }
+                Event::Resize(width, height) => {
+                    if (width, height) != last_size {
+                        last_size = (width, height);
+                        let term_cols = width.saturating_sub(SIDEBAR_WIDTH);
+                        app.resize(height, term_cols)?;
+                    }
+                }
+                Event::Mouse(_) => {
+                    // Mouse events not handled yet
+                }
+                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
+                    // Focus and paste events not handled yet
+                }
+            }
+        }
+
+        // Check if the shell has exited
+        if !app.pty.is_running() {
             break;
         }
     }
@@ -36,6 +130,20 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
 /// Sidebar width in characters
 pub const SIDEBAR_WIDTH: u16 = 20;
 
+/// Render the application UI with terminal emulator content.
+fn render_app(frame: &mut Frame, app: &App) {
+    // Create horizontal layout: sidebar (20 chars) + terminal view (rest)
+    let chunks = Layout::horizontal([
+        Constraint::Length(SIDEBAR_WIDTH),
+        Constraint::Fill(1),
+    ])
+    .split(frame.area());
+
+    render_sidebar(frame, chunks[0]);
+    render_terminal_emulator(frame, chunks[1], app);
+}
+
+/// Render the static UI layout (for tests without PTY).
 pub fn render(frame: &mut Frame) {
     // Create horizontal layout: sidebar (20 chars) + terminal view (rest)
     let chunks = Layout::horizontal([
@@ -69,21 +177,17 @@ fn render_sidebar(frame: &mut Frame, area: Rect) {
 }
 
 fn render_terminal_view(frame: &mut Frame, area: Rect) {
-    // Terminal view - placeholder for now, will be replaced with actual terminal emulator
+    // Terminal view - placeholder for static tests
     let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q to quit)")
         .style(Style::default().bg(Color::Black).fg(Color::White));
     frame.render_widget(terminal_placeholder, area);
 }
 
-fn should_quit() -> Result<bool> {
-    if event::poll(Duration::from_millis(250)).context("event poll failed")? {
-        if let Event::Key(key) = event::read().context("event read failed")? {
-            if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
-                return Ok(true);
-            }
-        }
+fn render_terminal_emulator(frame: &mut Frame, area: Rect, app: &App) {
+    // Render the terminal emulator content with cursor
+    if let Some((cursor_x, cursor_y)) = app.term_emulator.render_with_cursor(frame, area) {
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
-    Ok(false)
 }
 
 #[cfg(test)]

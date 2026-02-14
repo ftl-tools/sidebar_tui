@@ -76,6 +76,7 @@ impl PtyHandle {
     }
 
     /// Wait for the child process to exit.
+    #[allow(dead_code)]
     pub fn wait(&mut self) -> Result<()> {
         self.child.wait().context("failed to wait for PTY child")?;
         Ok(())

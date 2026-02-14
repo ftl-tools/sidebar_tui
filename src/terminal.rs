@@ -37,21 +37,25 @@ impl Terminal {
     }
 
     /// Get the current size of the terminal as (rows, cols).
+    #[allow(dead_code)]
     pub fn size(&self) -> (u16, u16) {
         self.parser.screen().size()
     }
 
     /// Get the current cursor position as (row, col).
+    #[allow(dead_code)]
     pub fn cursor_position(&self) -> (u16, u16) {
         self.parser.screen().cursor_position()
     }
 
     /// Get the plain text contents of the terminal (no formatting).
+    #[allow(dead_code)]
     pub fn contents(&self) -> String {
         self.parser.screen().contents()
     }
 
     /// Access the underlying vt100 screen for advanced operations.
+    #[allow(dead_code)]
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
