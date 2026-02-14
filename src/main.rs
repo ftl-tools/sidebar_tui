@@ -1,135 +1,358 @@
-use std::sync::mpsc::TryRecvError;
+use std::env;
+use std::io::{self, Write as IoWrite};
+use std::os::unix::net::UnixStream;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
+use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use color_eyre::eyre::Context;
+use color_eyre::eyre::{Context, bail};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
+use sidebar_tui::daemon::{
+    self, ClientMessage, DaemonClient, DaemonResponse, get_socket_path,
+    ensure_runtime_dir, decode_message, encode_message,
+};
 use sidebar_tui::input::key_to_bytes;
-use sidebar_tui::pty::{spawn_shell, PtyEvent, PtyHandle};
 use sidebar_tui::terminal::Terminal;
+
+/// Sidebar TUI - A terminal session manager
+#[derive(Parser, Debug)]
+#[command(name = "sb")]
+#[command(about = "A terminal session manager with session persistence", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Session name to attach to (default: "main")
+    #[arg(short, long, default_value = "main")]
+    session: String,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// List all active sessions
+    List,
+    /// Kill a session
+    Kill {
+        /// Name of the session to kill
+        session: String,
+    },
+    /// Attach to a session (or create if it doesn't exist)
+    Attach {
+        /// Session name
+        #[arg(default_value = "main")]
+        session: String,
+    },
+    /// Start the session daemon
+    Daemon,
+}
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let mut terminal = ratatui::init();
-    let result = run(&mut terminal);
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::List) => cmd_list(),
+        Some(Commands::Kill { session }) => cmd_kill(&session),
+        Some(Commands::Attach { session }) => cmd_attach(&session),
+        Some(Commands::Daemon) => cmd_daemon(),
+        None => cmd_attach(&cli.session),
+    }
+}
+
+/// List all active sessions.
+fn cmd_list() -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    let sessions = client.list_sessions()?;
+
+    if sessions.is_empty() {
+        println!("No active sessions");
+    } else {
+        println!("{:<20} {:<10} {:>5}x{:<5}", "NAME", "STATUS", "ROWS", "COLS");
+        for session in sessions {
+            let status = if session.is_attached { "attached" } else { "detached" };
+            println!(
+                "{:<20} {:<10} {:>5}x{:<5}",
+                session.name, status, session.rows, session.cols
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Kill a session.
+fn cmd_kill(session_name: &str) -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    client.kill_session(session_name)?;
+    println!("Killed session '{}'", session_name);
+    Ok(())
+}
+
+/// Start the daemon process (runs in foreground).
+fn cmd_daemon() -> Result<()> {
+    let daemon = daemon::Daemon::new()?;
+    println!("Starting daemon at {:?}", daemon.socket_path());
+    daemon.run()
+}
+
+/// Attach to a session (or create if it doesn't exist).
+fn cmd_attach(session_name: &str) -> Result<()> {
+    // Ensure daemon is running
+    ensure_daemon_running()?;
+
+    // Connect to daemon
+    let socket_path = get_socket_path();
+    let mut stream = UnixStream::connect(&socket_path)
+        .context("Failed to connect to daemon")?;
+
+    // Set read timeout for non-blocking reads
+    stream.set_read_timeout(Some(Duration::from_millis(1)))
+        .context("Failed to set read timeout")?;
+
+    // Initialize TUI
+    let mut ratatui_term = ratatui::init();
+    let result = run_attached(&mut ratatui_term, &mut stream, session_name);
     ratatui::restore();
     result
 }
 
-/// Application state
-struct App {
+/// Connect to the daemon, starting it if necessary.
+fn connect_to_daemon() -> Result<DaemonClient> {
+    ensure_daemon_running()?;
+    DaemonClient::connect()
+}
+
+/// Ensure the daemon is running, starting it if necessary.
+fn ensure_daemon_running() -> Result<()> {
+    ensure_runtime_dir()?;
+    let socket_path = get_socket_path();
+
+    // Try to connect to see if daemon is already running
+    if UnixStream::connect(&socket_path).is_ok() {
+        return Ok(());
+    }
+
+    // Start daemon in background
+    start_daemon_background()?;
+
+    // Wait for daemon to be ready
+    for _ in 0..50 {
+        if UnixStream::connect(&socket_path).is_ok() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    bail!("Daemon failed to start within timeout")
+}
+
+/// Start the daemon as a background process.
+fn start_daemon_background() -> Result<()> {
+    // Get path to current executable
+    let exe = env::current_exe().context("Failed to get current executable path")?;
+
+    // Fork daemon process
+    Command::new(exe)
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Failed to spawn daemon process")?;
+
+    Ok(())
+}
+
+/// Application state for daemon-connected mode.
+struct DaemonApp {
     /// Terminal emulator for parsing PTY output
     term_emulator: Terminal,
-    /// PTY handle for the shell process
-    pty: PtyHandle,
+    /// Current session name (kept for future use with multiple sessions)
+    #[allow(dead_code)]
+    session_name: String,
 }
 
-impl App {
-    fn new(rows: u16, cols: u16) -> Result<Self> {
-        let term_emulator = Terminal::new(rows, cols);
-        let pty = spawn_shell(rows, cols, None)?;
-        Ok(Self { term_emulator, pty })
-    }
-
-    /// Process any pending PTY output.
-    fn process_pty_output(&mut self) {
-        loop {
-            match self.pty.rx.try_recv() {
-                Ok(PtyEvent::Output(data)) => {
-                    self.term_emulator.process(&data);
-                }
-                Ok(PtyEvent::Exited) => {
-                    // Shell exited, we could handle this differently
-                    break;
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
+impl DaemonApp {
+    fn new(rows: u16, cols: u16, session_name: &str) -> Self {
+        Self {
+            term_emulator: Terminal::new(rows, cols),
+            session_name: session_name.to_string(),
         }
     }
 
-    /// Resize the terminal emulator and PTY.
-    fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+    /// Process data received from the daemon.
+    fn process_output(&mut self, data: &[u8]) {
+        self.term_emulator.process(data);
+    }
+
+    /// Resize the terminal emulator.
+    fn resize(&mut self, rows: u16, cols: u16) {
         self.term_emulator.resize(rows, cols);
-        self.pty.resize(rows, cols)?;
-        Ok(())
-    }
-
-    /// Send keyboard input to the PTY.
-    fn send_input(&mut self, bytes: &[u8]) -> Result<()> {
-        if !bytes.is_empty() {
-            self.pty.write(bytes)?;
-        }
-        Ok(())
     }
 }
 
-fn run(ratatui_term: &mut DefaultTerminal) -> Result<()> {
+/// Run the TUI attached to a daemon session.
+fn run_attached(
+    ratatui_term: &mut DefaultTerminal,
+    stream: &mut UnixStream,
+    session_name: &str,
+) -> Result<()> {
     // Get initial terminal size
     let size = ratatui_term.size()?;
-    // Calculate terminal view area (minus sidebar)
     let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH);
     let term_rows = size.height;
 
-    let mut app = App::new(term_rows, term_cols)?;
+    // Get current working directory
+    let cwd = env::current_dir().ok();
+
+    // Send attach message
+    let attach_msg = ClientMessage::Attach {
+        session_name: session_name.to_string(),
+        rows: term_rows,
+        cols: term_cols,
+        cwd,
+    };
+    let encoded = encode_message(&attach_msg)?;
+    stream.write_all(&encoded)?;
+    stream.flush()?;
+
+    // Read attach response
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let response: DaemonResponse = decode_message(stream)
+        .context("Failed to read attach response")?;
+
+    let terminal_state = match response {
+        DaemonResponse::Attached { session_name: _, is_new: _, terminal_state } => {
+            terminal_state
+        }
+        DaemonResponse::Error { message } => {
+            bail!("Failed to attach: {}", message);
+        }
+        other => {
+            bail!("Unexpected response: {:?}", other);
+        }
+    };
+
+    // Create app
+    let mut app = DaemonApp::new(term_rows, term_cols, session_name);
+
+    // Restore terminal state if reattaching
+    if let Some(state_bytes) = terminal_state {
+        app.process_output(&state_bytes);
+    }
+
     let mut last_size = (size.width, size.height);
 
+    // Set stream back to non-blocking for the main loop
+    stream.set_read_timeout(Some(Duration::from_millis(1)))?;
+
     loop {
-        // Process any pending PTY output
-        app.process_pty_output();
+        // Try to read output from daemon
+        match try_read_response(stream) {
+            Ok(Some(DaemonResponse::Output { data })) => {
+                if !data.is_empty() {
+                    app.process_output(&data);
+                }
+            }
+            Ok(Some(DaemonResponse::ShuttingDown)) => {
+                break;
+            }
+            Ok(Some(DaemonResponse::Error { message })) => {
+                bail!("Daemon error: {}", message);
+            }
+            Ok(Some(_)) => {
+                // Other responses, ignore
+            }
+            Ok(None) => {
+                // No data available
+            }
+            Err(e) => {
+                // Check if it's a non-blocking "no data" error
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut {
+                    // No data, continue
+                } else {
+                    // Real error or disconnect
+                    bail!("Connection error: {}", e);
+                }
+            }
+        }
 
         // Render the UI
-        ratatui_term.draw(|frame| render_app(frame, &app))?;
+        ratatui_term.draw(|frame| render_daemon_app(frame, &app))?;
 
         // Handle input events
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) => {
-                    // Check for Ctrl+Q or Ctrl+B to quit
+                    // Check for Ctrl+Q or Ctrl+B to quit (detach)
                     if key.modifiers == KeyModifiers::CONTROL
                         && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'))
                     {
+                        // Send detach message
+                        let detach_msg = ClientMessage::Detach;
+                        let encoded = encode_message(&detach_msg)?;
+                        stream.write_all(&encoded)?;
+                        stream.flush()?;
                         break;
                     }
 
-                    // Forward other keys to PTY
+                    // Forward other keys to daemon
                     let bytes = key_to_bytes(&key);
-                    app.send_input(&bytes)?;
+                    if !bytes.is_empty() {
+                        let input_msg = ClientMessage::Input { data: bytes };
+                        let encoded = encode_message(&input_msg)?;
+                        stream.write_all(&encoded)?;
+                        stream.flush()?;
+                    }
                 }
                 Event::Resize(width, height) => {
                     if (width, height) != last_size {
                         last_size = (width, height);
                         let term_cols = width.saturating_sub(SIDEBAR_WIDTH);
-                        app.resize(height, term_cols)?;
+                        app.resize(height, term_cols);
+
+                        // Send resize to daemon
+                        let resize_msg = ClientMessage::Resize {
+                            rows: height,
+                            cols: term_cols,
+                        };
+                        let encoded = encode_message(&resize_msg)?;
+                        stream.write_all(&encoded)?;
+                        stream.flush()?;
                     }
                 }
-                Event::Mouse(_) => {
-                    // Mouse events not handled yet
-                }
-                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
-                    // Focus and paste events not handled yet
+                Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
+                    // Not handled yet
                 }
             }
         }
-
-        // Check if the shell has exited
-        if !app.pty.is_running() {
-            break;
-        }
     }
+
     Ok(())
+}
+
+/// Try to read a response from the stream without blocking.
+fn try_read_response(stream: &mut UnixStream) -> io::Result<Option<DaemonResponse>> {
+    match decode_message::<DaemonResponse>(stream) {
+        Ok(response) => Ok(Some(response)),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// Sidebar width in characters
 pub const SIDEBAR_WIDTH: u16 = 20;
 
-/// Render the application UI with terminal emulator content.
-fn render_app(frame: &mut Frame, app: &App) {
+/// Render the application UI with daemon-connected terminal emulator.
+fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
     // Create horizontal layout: sidebar (20 chars) + terminal view (rest)
     let chunks = Layout::horizontal([
         Constraint::Length(SIDEBAR_WIDTH),
@@ -138,7 +361,7 @@ fn render_app(frame: &mut Frame, app: &App) {
     .split(frame.area());
 
     render_sidebar(frame, chunks[0]);
-    render_terminal_emulator(frame, chunks[1], app);
+    render_terminal_emulator(frame, chunks[1], &app.term_emulator);
 }
 
 /// Render the static UI layout (for tests without PTY).
@@ -181,9 +404,9 @@ fn render_terminal_view(frame: &mut Frame, area: Rect) {
     frame.render_widget(terminal_placeholder, area);
 }
 
-fn render_terminal_emulator(frame: &mut Frame, area: Rect, app: &App) {
+fn render_terminal_emulator(frame: &mut Frame, area: Rect, term: &Terminal) {
     // Render the terminal emulator content with cursor
-    if let Some((cursor_x, cursor_y)) = app.term_emulator.render_with_cursor(frame, area) {
+    if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, area) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
@@ -497,5 +720,80 @@ mod tests {
         let is_quit = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
         assert!(!is_quit, "Plain 'b' should not be a quit key");
+    }
+
+    #[test]
+    fn test_daemon_app_creation() {
+        let app = DaemonApp::new(24, 80, "test");
+        assert_eq!(app.session_name, "test");
+    }
+
+    #[test]
+    fn test_daemon_app_process_output() {
+        let mut app = DaemonApp::new(24, 80, "test");
+        app.process_output(b"Hello, World!");
+        // Verify terminal emulator received the data
+        let contents = app.term_emulator.contents();
+        assert!(contents.contains("Hello, World!"));
+    }
+
+    #[test]
+    fn test_daemon_app_resize() {
+        let mut app = DaemonApp::new(24, 80, "test");
+        app.resize(30, 100);
+        // Verify resize happened (no panics)
+    }
+
+    #[test]
+    fn test_cli_parsing_list() {
+        let cli = Cli::try_parse_from(["sb", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::List)));
+    }
+
+    #[test]
+    fn test_cli_parsing_kill() {
+        let cli = Cli::try_parse_from(["sb", "kill", "mysession"]).unwrap();
+        match cli.command {
+            Some(Commands::Kill { session }) => assert_eq!(session, "mysession"),
+            _ => panic!("Expected Kill command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_attach() {
+        let cli = Cli::try_parse_from(["sb", "attach", "mysession"]).unwrap();
+        match cli.command {
+            Some(Commands::Attach { session }) => assert_eq!(session, "mysession"),
+            _ => panic!("Expected Attach command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_attach_default() {
+        let cli = Cli::try_parse_from(["sb", "attach"]).unwrap();
+        match cli.command {
+            Some(Commands::Attach { session }) => assert_eq!(session, "main"),
+            _ => panic!("Expected Attach command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_daemon() {
+        let cli = Cli::try_parse_from(["sb", "daemon"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Daemon)));
+    }
+
+    #[test]
+    fn test_cli_parsing_no_command() {
+        let cli = Cli::try_parse_from(["sb"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.session, "main");
+    }
+
+    #[test]
+    fn test_cli_parsing_session_flag() {
+        let cli = Cli::try_parse_from(["sb", "-s", "mysession"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.session, "mysession");
     }
 }

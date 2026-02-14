@@ -5,8 +5,18 @@
 
 use std::io::Write;
 use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use expectrl::spawn;
+
+/// Atomic counter to generate unique session names for each test
+static SESSION_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn get_unique_session_name() -> String {
+    let id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    format!("test-{}-{}", pid, id)
+}
 
 fn get_binary_path() -> String {
     let manifest_dir =
@@ -18,14 +28,17 @@ fn get_binary_path() -> String {
 struct SbSession {
     session: expectrl::session::OsSession,
     parser: vt100::Parser,
+    session_name: String,
 }
 
 impl SbSession {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let binary_path = get_binary_path();
+        let session_name = get_unique_session_name();
 
-        // Spawn the sb binary
-        let mut session = spawn(&binary_path)?;
+        // Spawn sb with a unique session name to avoid state from other tests
+        let cmd = format!("{} -s {}", binary_path, session_name);
+        let mut session = spawn(&cmd)?;
 
         // Set a reasonable timeout
         session.set_expect_timeout(Some(Duration::from_secs(5)));
@@ -34,7 +47,7 @@ impl SbSession {
         // Use 80x24 as the standard terminal size
         let parser = vt100::Parser::new(24, 80, 0);
 
-        Ok(Self { session, parser })
+        Ok(Self { session, parser, session_name })
     }
 
     /// Read all available output and process it through vt100
@@ -112,6 +125,12 @@ impl Drop for SbSession {
         // Try to clean up by quitting
         let _ = self.quit();
         let _ = self.session.get_process_mut().exit(true);
+
+        // Kill the session to clean up daemon resources
+        let binary_path = get_binary_path();
+        let _ = std::process::Command::new(&binary_path)
+            .args(["kill", &self.session_name])
+            .output();
     }
 }
 
@@ -361,10 +380,15 @@ fn test_backspace_input_handling() {
     session
         .send("echo \"hello world\"")
         .expect("Failed to send echo command");
+
+    // Wait for characters to be echoed
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
     session.send_enter().expect("Failed to send enter");
 
     // Wait for command to execute
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(2000));
     session.read_and_parse().expect("Failed to read output");
 
     // Get screen contents and verify "hello world" appears
