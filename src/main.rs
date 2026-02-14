@@ -1,4 +1,5 @@
 mod pty;
+mod terminal;
 
 use std::time::Duration;
 
@@ -9,6 +10,10 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
+
+// Terminal module will be used once PTY integration is wired up
+#[allow(unused_imports)]
+use crate::terminal::Terminal;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
