@@ -51,18 +51,24 @@ impl AppState {
         }
 
         match key.code {
-            // Navigation (arrows and vim-style j/k)
-            // TODO: sidebar_tui-xjh - Live preview feature disabled due to message flow issues
-            // The async Preview message interferes with the buffered message reader,
-            // causing connection errors. Need to refactor the message handling to
-            // either use fully synchronous or fully asynchronous operations.
+            // Navigation (arrows and vim-style j/k) with live preview
             KeyCode::Up | KeyCode::Char('k') => {
                 self.select_previous();
-                EventResult::Consumed
+                // Return PreviewSession to show terminal content as user navigates
+                if let Some(session) = self.sessions.get(self.selected_index) {
+                    EventResult::PreviewSession { name: session.name.clone() }
+                } else {
+                    EventResult::Consumed
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
-                EventResult::Consumed
+                // Return PreviewSession to show terminal content as user navigates
+                if let Some(session) = self.sessions.get(self.selected_index) {
+                    EventResult::PreviewSession { name: session.name.clone() }
+                } else {
+                    EventResult::Consumed
+                }
             }
 
             // Select (focus terminal)
@@ -338,25 +344,30 @@ mod tests {
         assert_eq!(state.selected_index, 0);
 
         let result = state.handle_key(key(KeyCode::Down));
-        assert_eq!(result, EventResult::Consumed);
+        // Navigation returns PreviewSession for live preview
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
-        state.handle_key(key(KeyCode::Down));
+        let result = state.handle_key(key(KeyCode::Down));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
-        // At bottom, should stay
-        state.handle_key(key(KeyCode::Down));
+        // At bottom, should stay but still return preview for current selection
+        let result = state.handle_key(key(KeyCode::Down));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
         let result = state.handle_key(key(KeyCode::Up));
-        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
-        state.handle_key(key(KeyCode::Up));
+        let result = state.handle_key(key(KeyCode::Up));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
 
-        // At top, should stay
-        state.handle_key(key(KeyCode::Up));
+        // At top, should stay but still return preview for current selection
+        let result = state.handle_key(key(KeyCode::Up));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
     }
 
@@ -371,28 +382,32 @@ mod tests {
 
         assert_eq!(state.selected_index, 0);
 
-        // j moves down (vim-style)
+        // j moves down (vim-style) and returns PreviewSession
         let result = state.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
-        state.handle_key(key(KeyCode::Char('j')));
+        let result = state.handle_key(key(KeyCode::Char('j')));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
-        // At bottom, should stay
-        state.handle_key(key(KeyCode::Char('j')));
+        // At bottom, should stay but still return preview
+        let result = state.handle_key(key(KeyCode::Char('j')));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
-        // k moves up (vim-style)
+        // k moves up (vim-style) and returns PreviewSession
         let result = state.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
-        state.handle_key(key(KeyCode::Char('k')));
+        let result = state.handle_key(key(KeyCode::Char('k')));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
 
-        // At top, should stay
-        state.handle_key(key(KeyCode::Char('k')));
+        // At top, should stay but still return preview
+        let result = state.handle_key(key(KeyCode::Char('k')));
+        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
     }
 
