@@ -12,5 +12,6 @@ pub mod env_capture;
 pub mod input;
 pub mod input_handler;
 pub mod pty;
+pub mod sidebar;
 pub mod state;
 pub mod terminal;

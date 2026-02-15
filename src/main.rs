@@ -20,6 +20,8 @@ use sidebar_tui::daemon::{
     ensure_runtime_dir, decode_message, encode_message,
 };
 use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
+use sidebar_tui::sidebar::Sidebar;
+use sidebar_tui::state::AppState;
 use sidebar_tui::terminal::Terminal;
 
 /// Build version including git hash
@@ -484,14 +486,18 @@ fn pad_rect_horizontal(rect: Rect, padding: u16) -> Rect {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect) {
-    // Sidebar with border outline (darker gray)
-    let sidebar_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title("Sidebar TUI")
-        .title_style(Style::default().fg(Color::Blue));
+    // Use a default AppState for static rendering (welcome state)
+    let state = AppState::default();
+    let sidebar = Sidebar::new(&state);
+    frame.render_widget(sidebar, area);
+}
 
-    frame.render_widget(sidebar_block, area);
+/// Render sidebar with specific application state.
+/// Currently unused but will be needed when integrating with daemon session list.
+#[allow(dead_code)]
+fn render_sidebar_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
+    let sidebar = Sidebar::new(state);
+    frame.render_widget(sidebar, area);
 }
 
 fn render_terminal_view(frame: &mut Frame, area: Rect) {
@@ -528,6 +534,7 @@ fn render_terminal_emulator(frame: &mut Frame, area: Rect, term: &Terminal) {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use sidebar_tui::colors;
     use ratatui::Terminal;
 
     #[test]
@@ -564,17 +571,17 @@ mod tests {
             corner.symbol()
         );
 
-        // Check border has dark gray foreground
+        // Check border color - sidebar is focused by default, so should be WHITE (255)
         assert_eq!(
             corner.fg,
-            Color::DarkGray,
-            "Sidebar border should have dark gray foreground, got: {:?}",
+            colors::WHITE,
+            "Sidebar border should have white foreground when focused, got: {:?}",
             corner.fg
         );
     }
 
     #[test]
-    fn test_sidebar_title_is_blue() {
+    fn test_sidebar_title_is_purple() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -582,13 +589,13 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title "Sidebar TUI" starts after the border character (position 1)
+        // Title "Sidebar TUI" starts inside the border (position 1, row 1)
         // Find the 'S' in "Sidebar TUI" and check its foreground color
-        let cell = &buffer[(1, 0)];
+        let cell = &buffer[(1, 1)];
         assert_eq!(
             cell.fg,
-            Color::Blue,
-            "Sidebar title text should have blue foreground, got: {:?}",
+            colors::PURPLE,
+            "Sidebar title text should have purple foreground, got: {:?}",
             cell.fg
         );
     }
@@ -602,11 +609,11 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title should start right after the left border character
-        // Extract first row within sidebar (after left border)
+        // Title should start right after the left border character on row 1 (inside border)
+        // Extract first content row within sidebar (after left border)
         let mut title_content = String::new();
-        for x in 1..SIDEBAR_WIDTH {
-            let cell = &buffer[(x, 0)];
+        for x in 1..(SIDEBAR_WIDTH - 1) {
+            let cell = &buffer[(x, 1)];
             title_content.push_str(cell.symbol());
         }
 

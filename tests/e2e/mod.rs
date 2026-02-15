@@ -151,17 +151,27 @@ fn test_layout_matches_spec() {
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
-    // Verify "Sidebar TUI" appears in the first row
-    let first_row = session.row_contents(0);
+    // Verify sidebar has border (check corner character at row 0, col 0)
+    if let Some(corner_cell) = session.cell_at(0, 0) {
+        let corner_char = corner_cell.contents();
+        assert!(
+            corner_char == "┌" || corner_char == "╭",
+            "Sidebar should have border corner at (0,0), got: '{}'",
+            corner_char
+        );
+    }
+
+    // Verify "Sidebar TUI" appears on row 1 (inside the border)
+    let second_row = session.row_contents(1);
     assert!(
-        first_row.contains("Sidebar TUI"),
-        "First row should contain 'Sidebar TUI', got: '{}'",
-        first_row
+        second_row.contains("Sidebar TUI"),
+        "Second row should contain 'Sidebar TUI', got: '{}'",
+        second_row
     );
 
-    // The sidebar header should be within the first 28 columns
+    // The sidebar title should be within the first 28 columns
     // Use char-based slicing to handle UTF-8 border characters
-    let sidebar_chars: Vec<char> = first_row.chars().take(28).collect();
+    let sidebar_chars: Vec<char> = second_row.chars().take(28).collect();
     let sidebar_portion: String = sidebar_chars.into_iter().collect();
     assert!(
         sidebar_portion.contains("Sidebar TUI"),
@@ -169,9 +179,9 @@ fn test_layout_matches_spec() {
         sidebar_portion
     );
 
-    // Title should be left-aligned (starts right after border character at position 1)
-    // The first char should be a border corner (┌), then "Sidebar TUI" starts
-    let chars: Vec<char> = first_row.chars().collect();
+    // Title should be left-aligned (starts right after left border character at position 1)
+    // The first char should be a border (│), then "Sidebar TUI" starts
+    let chars: Vec<char> = second_row.chars().collect();
     if chars.len() > 1 {
         // Check that title starts at position 1 (after border)
         let title_start: String = chars[1..].iter().take(11).collect();
@@ -182,28 +192,15 @@ fn test_layout_matches_spec() {
         );
     }
 
-    // Verify the title text has blue foreground color
+    // Verify the title text has purple foreground color (ANSI 165)
     // Note: vt100 uses different color representations
-    if let Some(title_cell) = session.cell_at(0, 1) {
+    if let Some(title_cell) = session.cell_at(1, 1) {
         let fg_color = title_cell.fgcolor();
-        // Blue is typically index 4 or an RGB value
+        // Purple is ANSI index 165
         assert!(
-            matches!(
-                fg_color,
-                vt100::Color::Idx(4) | vt100::Color::Rgb(0, 0, _)
-            ),
-            "Title should have blue foreground, got: {:?}",
+            matches!(fg_color, vt100::Color::Idx(165)),
+            "Title should have purple foreground (165), got: {:?}",
             fg_color
-        );
-    }
-
-    // Verify sidebar has border (check corner character at 0,0)
-    if let Some(corner_cell) = session.cell_at(0, 0) {
-        let corner_char = corner_cell.contents();
-        assert!(
-            corner_char == "┌" || corner_char == "╭",
-            "Sidebar should have border corner at (0,0), got: '{}'",
-            corner_char
         );
     }
 
