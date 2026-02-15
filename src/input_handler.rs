@@ -266,8 +266,12 @@ impl AppState {
     /// Handle key events for confirmation prompts.
     fn handle_confirming_key(&mut self, key: KeyEvent) -> EventResult {
         if let AppMode::Confirming(ref confirm) = self.mode {
+            // Check if 'q' should also confirm (only for Quit action)
+            let is_quit_confirm = matches!(confirm.action, ConfirmAction::Quit)
+                && key.code == KeyCode::Char('q');
+
             match key.code {
-                // Confirm (yes)
+                // Confirm (yes, or 'q' for quit specifically)
                 KeyCode::Char('y') => {
                     let action = confirm.action.clone();
                     self.mode = AppMode::Normal;
@@ -288,6 +292,11 @@ impl AppState {
                             }
                         }
                     }
+                }
+                // 'q' is alternative to 'y' for quit confirmation only
+                KeyCode::Char('q') if is_quit_confirm => {
+                    self.mode = AppMode::Normal;
+                    EventResult::Quit
                 }
                 // Cancel (no)
                 KeyCode::Char('n') | KeyCode::Esc => {
@@ -841,5 +850,32 @@ mod tests {
         let result = state.handle_key(key(KeyCode::Char('x')));
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_))); // Still confirming
+    }
+
+    #[test]
+    fn test_confirm_quit_q_returns_quit() {
+        let mut state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
+
+        let result = state.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(result, EventResult::Quit);
+        assert!(matches!(state.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn test_confirm_delete_q_does_not_confirm() {
+        let mut state = AppState {
+            sessions: vec![Session::new("test")],
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar)),
+            ..Default::default()
+        };
+
+        let result = state.handle_key(key(KeyCode::Char('q')));
+        // 'q' should NOT confirm delete - only quit confirmation
+        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(state.mode, AppMode::Confirming(_))); // Still confirming
+        assert_eq!(state.sessions.len(), 1); // Session not deleted
     }
 }

@@ -15,7 +15,7 @@ use ratatui::{
 };
 
 use crate::colors;
-use crate::state::{AppMode, AppState, Focus};
+use crate::state::{AppMode, AppState, ConfirmAction, Focus};
 
 /// Information about a single keybinding to display in the hint bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,10 +428,18 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             KeybindingInfo::new("enter", "Rename"),
             KeybindingInfo::new("esc", "Cancel"),
         ],
-        AppMode::Confirming(_) => vec![
-            KeybindingInfo::new("y", "Yes"),
-            KeybindingInfo::new("n", "No"),
-        ],
+        AppMode::Confirming(confirm_state) => {
+            // Show "y/q" for quit confirmation, just "y" for others
+            let yes_key = if matches!(confirm_state.action, ConfirmAction::Quit) {
+                "y/q"
+            } else {
+                "y"
+            };
+            vec![
+                KeybindingInfo::new(yes_key, "Yes"),
+                KeybindingInfo::new("n", "No"),
+            ]
+        }
     }
 }
 
@@ -961,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_bindings_confirming_mode() {
+    fn test_get_bindings_confirming_quit_mode() {
         use crate::state::{ConfirmState, ConfirmAction};
 
         let state = AppState {
@@ -971,7 +979,26 @@ mod tests {
 
         let bindings = get_bindings_for_state(&state);
 
-        assert!(bindings.iter().any(|b| b.key == "y"), "Should have 'y' binding");
+        // Quit confirmation should show "y/q" as the yes key
+        assert!(bindings.iter().any(|b| b.key == "y/q"), "Should have 'y/q' binding for quit");
+        assert!(bindings.iter().any(|b| b.key == "n"), "Should have 'n' binding");
+    }
+
+    #[test]
+    fn test_get_bindings_confirming_delete_mode() {
+        use crate::state::{ConfirmState, ConfirmAction, Session};
+
+        let state = AppState {
+            sessions: vec![Session::new("test")],
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar)),
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+
+        // Delete confirmation should show just "y" as the yes key (not "y/q")
+        assert!(bindings.iter().any(|b| b.key == "y"), "Should have 'y' binding for delete");
+        assert!(!bindings.iter().any(|b| b.key == "y/q"), "Should NOT have 'y/q' binding for delete");
         assert!(bindings.iter().any(|b| b.key == "n"), "Should have 'n' binding");
     }
 

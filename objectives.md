@@ -34,8 +34,6 @@ After the last couple sprints a couple things got dropped, a couple existing fea
 
   I don't know why this is happening, but every few builds I see it again.
 
-- In the quit confirmation prompt, `q` should be an alternative to `y` for confirming that you want to quit.
-
 ## Spec
 
 The general requirements are as follows:
@@ -112,8 +110,8 @@ The general requirements are as follows:
     - This should work similarly to drafting a new session in create mode, but instead of an empty name there should be the current session name with the cursor at the end. The user can then backspace and type to change the name. The same character restrictions apply as when drafting a new session.
     - `enter` - Rename: Rename the session to the current name. Exit rename mode and focus on the terminal pane.
     - `esc` - Cancel: Exit rename mode without changing the session name, and return focus to wherever it was before renaming was started.
-  - `q` - Quit: Show an important confirmation prompt in the hint bar to quit the TUI.
-    - `y` - Yes: Quit the TUI and return to the normal terminal.
+  - `q` - Quit: Show a confirmation prompt in the hint bar to quit the TUI.
+    - `y` or `q` - Yes: Quit the TUI and return to the normal terminal.
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
 
 #### Terminal Pane
