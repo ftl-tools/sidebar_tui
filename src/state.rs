@@ -295,7 +295,7 @@ pub enum EventResult {
 }
 
 /// Main application state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AppState {
     /// Which pane currently has focus.
     pub focus: Focus,
@@ -311,18 +311,6 @@ pub struct AppState {
     pub previous_session: Option<usize>,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            focus: Focus::default(),
-            mode: AppMode::default(),
-            sessions: Vec::new(),
-            selected_index: 0,
-            scroll_offset: 0,
-            previous_session: None,
-        }
-    }
-}
 
 impl AppState {
     /// Create a new AppState with the given sessions.
@@ -472,10 +460,11 @@ impl AppState {
             }
             // Adjust previous_session
             if let Some(prev) = self.previous_session {
-                if prev == index {
-                    self.previous_session = None;
-                } else if prev > index {
-                    self.previous_session = Some(prev - 1);
+                use std::cmp::Ordering;
+                match prev.cmp(&index) {
+                    Ordering::Equal => self.previous_session = None,
+                    Ordering::Greater => self.previous_session = Some(prev - 1),
+                    Ordering::Less => {}
                 }
             }
             true
@@ -744,8 +733,10 @@ mod tests {
         let with_sessions = AppState::with_sessions(vec![Session::new("test")]);
         assert!(!with_sessions.is_welcome_state());
 
-        let mut modal_state = AppState::default();
-        modal_state.mode = AppMode::CreateMode { previous_focus: Focus::Sidebar };
+        let modal_state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
         assert!(!modal_state.is_welcome_state());
     }
 
@@ -801,8 +792,10 @@ mod tests {
 
     #[test]
     fn test_app_state_focus_sidebar() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         state.focus_sidebar();
         assert_eq!(state.focus, Focus::Sidebar);
@@ -810,8 +803,10 @@ mod tests {
 
     #[test]
     fn test_app_state_enter_create_mode() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         state.enter_create_mode();
         match &state.mode {
@@ -824,9 +819,11 @@ mod tests {
 
     #[test]
     fn test_app_state_start_drafting() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.enter_create_mode();
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::CreateMode { previous_focus: Focus::Terminal },
+            ..Default::default()
+        };
 
         state.start_drafting(SessionType::Agent);
         match &state.mode {
@@ -841,10 +838,11 @@ mod tests {
 
     #[test]
     fn test_app_state_cancel_drafting() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Terminal)),
+            ..Default::default()
+        };
 
         state.cancel_drafting();
         assert_eq!(state.mode, AppMode::Normal);
@@ -881,8 +879,10 @@ mod tests {
 
     #[test]
     fn test_app_state_request_confirmation() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         state.request_confirmation(ConfirmAction::Quit);
         match &state.mode {
@@ -896,9 +896,11 @@ mod tests {
 
     #[test]
     fn test_app_state_cancel_confirmation() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.request_confirmation(ConfirmAction::Quit);
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Terminal)),
+            ..Default::default()
+        };
 
         state.cancel_confirmation();
         assert_eq!(state.mode, AppMode::Normal);
@@ -1011,9 +1013,11 @@ mod tests {
 
     #[test]
     fn test_cancel_create_mode() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.enter_create_mode();
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::CreateMode { previous_focus: Focus::Terminal },
+            ..Default::default()
+        };
 
         state.cancel_create_mode();
         assert_eq!(state.mode, AppMode::Normal);

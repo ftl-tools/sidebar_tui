@@ -1336,8 +1336,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1359,8 +1361,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1393,8 +1397,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1416,8 +1422,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1441,8 +1449,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1465,8 +1475,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1493,8 +1505,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::CreateMode { previous_focus: Focus::Sidebar };
+        let state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1549,8 +1563,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1572,8 +1588,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1600,8 +1618,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 
@@ -1673,8 +1693,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
 

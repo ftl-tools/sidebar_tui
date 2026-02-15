@@ -1353,6 +1353,7 @@ pub fn decode_message<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> i
 
 /// Buffered message reader that handles partial reads gracefully.
 /// This is safe to use with non-blocking I/O and short timeouts.
+#[derive(Default)]
 pub struct MessageReader {
     /// Buffer for accumulating partial messages.
     buffer: Vec<u8>,

@@ -282,7 +282,7 @@ fn test_vi_editing_workflow() {
 
     // Ensure cleanup even if test fails
     struct Cleanup<'a>(&'a str);
-    impl<'a> Drop for Cleanup<'a> {
+    impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
             let _ = fs::remove_file(self.0);
         }
@@ -446,7 +446,7 @@ fn test_session_persistence_across_restart() {
         session: String,
         binary_path: String,
     }
-    impl<'a> Drop for Cleanup<'a> {
+    impl Drop for Cleanup<'_> {
         fn drop(&mut self) {
             let _ = fs::remove_file(self.file);
             let _ = fs::remove_file(self.swap_file);

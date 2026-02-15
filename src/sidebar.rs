@@ -512,8 +512,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_focused_border_is_white() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         // Top-left corner
         let cell = &buf[(0, 0)];
@@ -522,8 +524,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_unfocused_border_is_dark_grey() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         // Top-left corner
         let cell = &buf[(0, 0)];
@@ -540,8 +544,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_welcome_shows_n_when_focused() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         // Should show 'n' not 'ctrl+n'
         assert!(buffer_contains(&buf, "Press"));

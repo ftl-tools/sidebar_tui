@@ -301,7 +301,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Session;
+    use crate::state::{Session, DraftingState, RenamingState, ConfirmState};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -382,8 +382,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_enter_does_nothing_when_empty() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.focus, Focus::Sidebar); // Should stay on sidebar
@@ -391,12 +393,12 @@ mod tests {
 
     #[test]
     fn test_sidebar_esc_jump_back() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-        ]);
-        state.focus = Focus::Sidebar;
-        state.selected_index = 0;
+        let mut state = AppState {
+            sessions: vec![Session::new("a"), Session::new("b")],
+            focus: Focus::Sidebar,
+            selected_index: 0,
+            ..Default::default()
+        };
         state.focus_terminal(); // Sets previous_session to 0
         state.focus_sidebar();
         state.select_next(); // Now at 1
@@ -409,8 +411,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_n_enters_create_mode() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('n')));
         assert_eq!(result, EventResult::Consumed);
@@ -419,8 +423,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_ctrl_n_enters_create_mode() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         let result = state.handle_key(ctrl_key('n'));
         assert_eq!(result, EventResult::Consumed);
@@ -429,8 +435,11 @@ mod tests {
 
     #[test]
     fn test_sidebar_d_requests_delete_confirmation() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            sessions: vec![Session::new("test")],
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('d')));
         assert_eq!(result, EventResult::Consumed);
@@ -442,8 +451,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_d_does_nothing_when_empty() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('d')));
         assert!(matches!(state.mode, AppMode::Normal));
@@ -451,8 +462,11 @@ mod tests {
 
     #[test]
     fn test_sidebar_r_starts_renaming() {
-        let mut state = AppState::with_sessions(vec![Session::new("old_name")]);
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            sessions: vec![Session::new("old_name")],
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('r')));
         assert_eq!(result, EventResult::Consumed);
@@ -461,8 +475,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_r_does_nothing_when_empty() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('r')));
         assert!(matches!(state.mode, AppMode::Normal));
@@ -470,8 +486,10 @@ mod tests {
 
     #[test]
     fn test_sidebar_q_requests_quit_confirmation() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('q')));
         assert_eq!(result, EventResult::Consumed);
@@ -485,8 +503,10 @@ mod tests {
 
     #[test]
     fn test_terminal_ctrl_b_focuses_sidebar() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let result = state.handle_key(ctrl_key('b'));
         assert_eq!(result, EventResult::Consumed);
@@ -495,8 +515,10 @@ mod tests {
 
     #[test]
     fn test_terminal_ctrl_t_focuses_sidebar() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let result = state.handle_key(ctrl_key('t'));
         assert_eq!(result, EventResult::Consumed);
@@ -505,8 +527,10 @@ mod tests {
 
     #[test]
     fn test_terminal_ctrl_n_enters_create_mode() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let result = state.handle_key(ctrl_key('n'));
         assert_eq!(result, EventResult::Consumed);
@@ -515,8 +539,10 @@ mod tests {
 
     #[test]
     fn test_terminal_regular_keys_not_consumed() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('a')));
         assert_eq!(result, EventResult::NotConsumed);
@@ -529,8 +555,10 @@ mod tests {
 
     #[test]
     fn test_create_mode_t_starts_terminal_drafting() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
+        let mut state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('t')));
         assert_eq!(result, EventResult::Consumed);
@@ -542,8 +570,10 @@ mod tests {
 
     #[test]
     fn test_create_mode_a_starts_agent_drafting() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
+        let mut state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('a')));
         assert_eq!(result, EventResult::Consumed);
@@ -555,9 +585,11 @@ mod tests {
 
     #[test]
     fn test_create_mode_esc_cancels() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.enter_create_mode();
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::CreateMode { previous_focus: Focus::Terminal },
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Esc));
         assert_eq!(result, EventResult::Consumed);
@@ -567,8 +599,10 @@ mod tests {
 
     #[test]
     fn test_create_mode_other_keys_consumed_but_ignored() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
+        let mut state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('x')));
         assert_eq!(result, EventResult::Consumed);
@@ -579,9 +613,10 @@ mod tests {
 
     #[test]
     fn test_drafting_character_input() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('t')));
         state.handle_key(key(KeyCode::Char('e')));
@@ -597,9 +632,10 @@ mod tests {
 
     #[test]
     fn test_drafting_backspace() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('a')));
         state.handle_key(key(KeyCode::Char('b')));
@@ -614,9 +650,10 @@ mod tests {
 
     #[test]
     fn test_drafting_cursor_movement() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('a')));
         state.handle_key(key(KeyCode::Char('b')));
@@ -641,9 +678,10 @@ mod tests {
 
     #[test]
     fn test_drafting_enter_creates_session() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Char('t')));
         state.handle_key(key(KeyCode::Char('e')));
@@ -661,9 +699,10 @@ mod tests {
 
     #[test]
     fn test_drafting_enter_with_empty_name_does_nothing() {
-        let mut state = AppState::default();
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Enter));
         assert_eq!(result, EventResult::Consumed);
@@ -672,10 +711,11 @@ mod tests {
 
     #[test]
     fn test_drafting_esc_cancels() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.enter_create_mode();
-        state.start_drafting(SessionType::Terminal);
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Terminal)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Esc));
         assert_eq!(result, EventResult::Consumed);
@@ -687,9 +727,12 @@ mod tests {
 
     #[test]
     fn test_renaming_enter_completes_rename() {
-        let mut state = AppState::with_sessions(vec![Session::new("old")]);
-        state.focus = Focus::Sidebar;
-        state.start_renaming();
+        let mut state = AppState {
+            sessions: vec![Session::new("old")],
+            focus: Focus::Sidebar,
+            mode: AppMode::Renaming(RenamingState::new(0, "old", Focus::Sidebar)),
+            ..Default::default()
+        };
 
         // Clear the name and type new one
         state.handle_key(key(KeyCode::Backspace));
@@ -710,9 +753,12 @@ mod tests {
 
     #[test]
     fn test_renaming_esc_cancels() {
-        let mut state = AppState::with_sessions(vec![Session::new("original")]);
-        state.focus = Focus::Sidebar;
-        state.start_renaming();
+        let mut state = AppState {
+            sessions: vec![Session::new("original")],
+            focus: Focus::Sidebar,
+            mode: AppMode::Renaming(RenamingState::new(0, "original", Focus::Sidebar)),
+            ..Default::default()
+        };
 
         state.handle_key(key(KeyCode::Backspace));
         state.handle_key(key(KeyCode::Char('x')));
@@ -728,8 +774,10 @@ mod tests {
 
     #[test]
     fn test_confirm_quit_y_returns_quit() {
-        let mut state = AppState::default();
-        state.request_confirmation(ConfirmAction::Quit);
+        let mut state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('y')));
         assert_eq!(result, EventResult::Quit);
@@ -738,11 +786,11 @@ mod tests {
 
     #[test]
     fn test_confirm_delete_y_removes_session() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-        ]);
-        state.request_confirmation(ConfirmAction::DeleteSession(0));
+        let mut state = AppState {
+            sessions: vec![Session::new("a"), Session::new("b")],
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('y')));
         // Now returns DeleteSession instead of Consumed
@@ -753,9 +801,11 @@ mod tests {
 
     #[test]
     fn test_confirm_n_cancels() {
-        let mut state = AppState::default();
-        state.focus = Focus::Sidebar;
-        state.request_confirmation(ConfirmAction::Quit);
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('n')));
         assert_eq!(result, EventResult::Consumed);
@@ -765,9 +815,11 @@ mod tests {
 
     #[test]
     fn test_confirm_esc_cancels() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
-        state.request_confirmation(ConfirmAction::Quit);
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Terminal)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Esc));
         assert_eq!(result, EventResult::Consumed);
@@ -777,8 +829,10 @@ mod tests {
 
     #[test]
     fn test_confirm_other_keys_consumed() {
-        let mut state = AppState::default();
-        state.request_confirmation(ConfirmAction::Quit);
+        let mut state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let result = state.handle_key(key(KeyCode::Char('x')));
         assert_eq!(result, EventResult::Consumed);

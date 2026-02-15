@@ -587,10 +587,12 @@ mod tests {
 
     #[test]
     fn test_hint_bar_set_bindings() {
-        let mut bar = HintBar::default();
-        bar.mode = HintBarMode::Confirm {
-            message: "test".to_string(),
-            important: false,
+        let mut bar = HintBar {
+            mode: HintBarMode::Confirm {
+                message: "test".to_string(),
+                important: false,
+            },
+            ..Default::default()
         };
 
         bar.set_bindings(vec![KeybindingInfo::new("x", "Exit")]);
@@ -918,8 +920,10 @@ mod tests {
 
     #[test]
     fn test_get_bindings_terminal_focused() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let bindings = get_bindings_for_state(&state);
 
@@ -929,8 +933,10 @@ mod tests {
 
     #[test]
     fn test_get_bindings_create_mode() {
-        let mut state = AppState::default();
-        state.mode = AppMode::CreateMode { previous_focus: Focus::Sidebar };
+        let state = AppState {
+            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            ..Default::default()
+        };
 
         let bindings = get_bindings_for_state(&state);
 
@@ -943,8 +949,10 @@ mod tests {
     fn test_get_bindings_drafting_mode() {
         use crate::state::{DraftingState, SessionType};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let bindings = get_bindings_for_state(&state);
 
@@ -956,8 +964,10 @@ mod tests {
     fn test_get_bindings_confirming_mode() {
         use crate::state::{ConfirmState, ConfirmAction};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let bindings = get_bindings_for_state(&state);
 
@@ -974,8 +984,10 @@ mod tests {
 
     #[test]
     fn test_get_quit_path_terminal_focused() {
-        let mut state = AppState::default();
-        state.focus = Focus::Terminal;
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
 
         let quit_path = get_quit_path_for_state(&state);
         assert_eq!(quit_path, "ctrl + b → q Quit");
@@ -985,8 +997,10 @@ mod tests {
     fn test_get_quit_path_drafting_mode() {
         use crate::state::{DraftingState, SessionType};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let quit_path = get_quit_path_for_state(&state);
         assert_eq!(quit_path, "esc → q Quit");
@@ -996,8 +1010,10 @@ mod tests {
     fn test_get_quit_path_confirming_mode() {
         use crate::state::{ConfirmState, ConfirmAction};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let quit_path = get_quit_path_for_state(&state);
         assert_eq!(quit_path, "n → q Quit");
@@ -1017,9 +1033,11 @@ mod tests {
     fn test_hint_bar_for_state_confirming_important() {
         use crate::state::{ConfirmState, ConfirmAction, Session};
 
-        let mut state = AppState::default();
-        state.sessions.push(Session::new("test"));
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+        let state = AppState {
+            sessions: vec![Session::new("test")],
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let hint_bar = hint_bar_for_state(&state);
 
@@ -1036,8 +1054,10 @@ mod tests {
     fn test_hint_bar_for_state_confirming_not_important() {
         use crate::state::{ConfirmState, ConfirmAction};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+        let state = AppState {
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            ..Default::default()
+        };
 
         let hint_bar = hint_bar_for_state(&state);
 
