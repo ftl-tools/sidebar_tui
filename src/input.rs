@@ -268,6 +268,23 @@ fn encode_modifier(ctrl: bool, alt: bool, shift: bool) -> u8 {
     }
 }
 
+/// Encode a mouse scroll event as SGR mouse escape sequence.
+/// This is used to forward scroll wheel events to the terminal/PTY.
+///
+/// # Arguments
+/// * `scroll_up` - True for scroll up, false for scroll down
+/// * `col` - 1-indexed column position
+/// * `row` - 1-indexed row position
+///
+/// # Returns
+/// SGR-encoded mouse escape sequence bytes
+pub fn encode_mouse_scroll(scroll_up: bool, col: u16, row: u16) -> Vec<u8> {
+    // SGR mouse encoding: \x1b[<button;col;rowM
+    // Button 64 = scroll up, Button 65 = scroll down
+    let button = if scroll_up { 64 } else { 65 };
+    format!("\x1b[<{};{};{}M", button, col, row).into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +531,33 @@ mod tests {
     fn test_unicode_cjk_char() {
         let event = key_event(KeyCode::Char('日'), KeyModifiers::NONE);
         assert_eq!(key_to_bytes(&event), "日".as_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_encode_mouse_scroll_up() {
+        // Scroll up at column 10, row 5 should produce SGR sequence with button 64
+        let result = encode_mouse_scroll(true, 10, 5);
+        assert_eq!(result, b"\x1b[<64;10;5M".to_vec());
+    }
+
+    #[test]
+    fn test_encode_mouse_scroll_down() {
+        // Scroll down at column 10, row 5 should produce SGR sequence with button 65
+        let result = encode_mouse_scroll(false, 10, 5);
+        assert_eq!(result, b"\x1b[<65;10;5M".to_vec());
+    }
+
+    #[test]
+    fn test_encode_mouse_scroll_at_origin() {
+        // Scroll at position (1, 1)
+        let result = encode_mouse_scroll(true, 1, 1);
+        assert_eq!(result, b"\x1b[<64;1;1M".to_vec());
+    }
+
+    #[test]
+    fn test_encode_mouse_scroll_large_position() {
+        // Scroll at large position (200, 100)
+        let result = encode_mouse_scroll(false, 200, 100);
+        assert_eq!(result, b"\x1b[<65;200;100M".to_vec());
     }
 }

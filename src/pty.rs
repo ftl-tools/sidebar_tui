@@ -56,6 +56,51 @@ impl PtyHandle {
         Ok(())
     }
 
+    /// Get the process ID of the child shell.
+    /// Returns None if the process has already exited.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    /// Gracefully shutdown the shell process.
+    /// Sends SIGHUP to trigger shell cleanup (history save), waits briefly,
+    /// then force kills if the process doesn't exit.
+    #[cfg(unix)]
+    pub fn graceful_shutdown(&mut self) {
+        use std::time::{Duration, Instant};
+
+        if let Some(pid) = self.child.process_id() {
+            // Send SIGHUP to trigger graceful shutdown (shell saves history)
+            unsafe {
+                libc::kill(pid as i32, libc::SIGHUP);
+            }
+
+            // Wait up to 1 second for graceful exit
+            let start = Instant::now();
+            let timeout = Duration::from_secs(1);
+
+            while start.elapsed() < timeout {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return, // Process exited
+                    Ok(None) => {
+                        // Still running, wait a bit
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break, // Error checking status
+                }
+            }
+
+            // Force kill if still running
+            let _ = self.child.kill();
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn graceful_shutdown(&mut self) {
+        // On non-Unix, just kill directly
+        let _ = self.child.kill();
+    }
+
     /// Resize the PTY to the given dimensions.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         self.master
@@ -90,6 +135,22 @@ impl PtyHandle {
 /// * `cols` - Number of columns for the terminal
 /// * `cwd` - Working directory for the shell (uses current dir if None)
 pub fn spawn_shell(rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<PtyHandle> {
+    spawn_shell_with_env(rows, cols, cwd, None)
+}
+
+/// Spawn a new shell in a PTY with optional environment variables.
+///
+/// # Arguments
+/// * `rows` - Number of rows for the terminal
+/// * `cols` - Number of columns for the terminal
+/// * `cwd` - Working directory for the shell (uses current dir if None)
+/// * `environment` - Optional environment variables to inject into the shell
+pub fn spawn_shell_with_env(
+    rows: u16,
+    cols: u16,
+    cwd: Option<PathBuf>,
+    environment: Option<std::collections::HashMap<String, String>>,
+) -> Result<PtyHandle> {
     let pty_system = native_pty_system();
 
     // Open PTY with the given size
@@ -113,6 +174,14 @@ pub fn spawn_shell(rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<PtyHand
     } else {
         let current_dir = std::env::current_dir().context("failed to get current directory")?;
         cmd.cwd(current_dir);
+    }
+
+    // Inject environment variables if provided
+    // These are restored from a previous session
+    if let Some(env) = environment {
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
     }
 
     // Spawn the shell

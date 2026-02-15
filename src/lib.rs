@@ -6,6 +6,7 @@
 //! - Session daemon for persistence across TUI restarts
 
 pub mod daemon;
+pub mod env_capture;
 pub mod input;
 pub mod pty;
 pub mod terminal;

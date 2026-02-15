@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{self, Write as IoWrite};
+use std::io::Write as IoWrite;
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -8,22 +8,32 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::execute;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use sidebar_tui::daemon::{
-    self, ClientMessage, DaemonClient, DaemonResponse, get_socket_path,
+    self, ClientMessage, DaemonClient, DaemonResponse, MessageReader, get_socket_path,
     ensure_runtime_dir, decode_message, encode_message,
 };
-use sidebar_tui::input::key_to_bytes;
+use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
 use sidebar_tui::terminal::Terminal;
+
+/// Build version including git hash
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_HASH"),
+    ")"
+);
 
 /// Sidebar TUI - A terminal session manager
 #[derive(Parser, Debug)]
 #[command(name = "sb")]
+#[command(version = VERSION)]
 #[command(about = "A terminal session manager with session persistence", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -169,9 +179,15 @@ fn cmd_attach(session_name: &str) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
-    // Initialize TUI
+    // Initialize TUI and enable mouse capture for scroll wheel support
     let mut ratatui_term = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)
+        .context("Failed to enable mouse capture")?;
+
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
+
+    // Disable mouse capture before restoring terminal
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -257,10 +273,12 @@ fn run_attached(
     stream: &mut UnixStream,
     session_name: &str,
 ) -> Result<()> {
-    // Get initial terminal size
+    // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
     let size = ratatui_term.size()?;
-    let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH);
-    let term_rows = size.height;
+    // Subtract sidebar width, 2*h_padding (left + right), and 2 for terminal border (left + right)
+    let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+    // Subtract 2 for terminal border (top + bottom)
+    let term_rows = size.height.saturating_sub(2);
 
     // Get current working directory
     let cwd = env::current_dir().ok();
@@ -303,12 +321,16 @@ fn run_attached(
 
     let mut last_size = (size.width, size.height);
 
-    // Set stream back to non-blocking for the main loop
-    stream.set_read_timeout(Some(Duration::from_millis(1)))?;
+    // Set stream to non-blocking for the main loop
+    stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+
+    // Create buffered message reader to handle partial reads safely
+    let mut msg_reader = MessageReader::new();
 
     loop {
-        // Try to read output from daemon
-        match try_read_response(stream) {
+        // Try to read output from daemon using buffered reader
+        // This handles partial reads gracefully without desynchronizing the stream
+        match msg_reader.try_read::<DaemonResponse>(stream) {
             Ok(Some(DaemonResponse::Output { data })) => {
                 if !data.is_empty() {
                     app.process_output(&data);
@@ -324,16 +346,11 @@ fn run_attached(
                 // Other responses, ignore
             }
             Ok(None) => {
-                // No data available
+                // No complete message available yet, continue
             }
             Err(e) => {
-                // Check if it's a non-blocking "no data" error
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut {
-                    // No data, continue
-                } else {
-                    // Real error or disconnect
-                    bail!("Connection error: {}", e);
-                }
+                // Real error - connection closed or invalid data
+                bail!("Connection error: {}", e);
             }
         }
 
@@ -368,12 +385,15 @@ fn run_attached(
                 Event::Resize(width, height) => {
                     if (width, height) != last_size {
                         last_size = (width, height);
-                        let term_cols = width.saturating_sub(SIDEBAR_WIDTH);
-                        app.resize(height, term_cols);
+                        // Account for sidebar, horizontal padding (left + right), and terminal border
+                        let term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+                        // Account for terminal border (top + bottom)
+                        let term_rows = height.saturating_sub(2);
+                        app.resize(term_rows, term_cols);
 
                         // Send resize to daemon
                         let resize_msg = ClientMessage::Resize {
-                            rows: height,
+                            rows: term_rows,
                             cols: term_cols,
                         };
                         let encoded = encode_message(&resize_msg)?;
@@ -381,7 +401,31 @@ fn run_attached(
                         stream.flush()?;
                     }
                 }
-                Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
+                Event::Mouse(mouse_event) => {
+                    // Handle mouse scroll wheel events - forward to active terminal
+                    // Mouse events were previously ignored. Now scroll wheel events are captured
+                    // and sent to the PTY so applications like vim, less, etc. can handle them.
+                    // Only handle scroll events that are within the terminal area (after sidebar)
+                    if mouse_event.column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING {
+                        let bytes = match mouse_event.kind {
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                // Translate screen position to terminal-relative position (1-indexed)
+                                let term_col = mouse_event.column - SIDEBAR_WIDTH - TERMINAL_H_PADDING + 1;
+                                let term_row = mouse_event.row + 1;
+                                let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp);
+                                encode_mouse_scroll(scroll_up, term_col, term_row)
+                            }
+                            _ => Vec::new(),
+                        };
+                        if !bytes.is_empty() {
+                            let input_msg = ClientMessage::Input { data: bytes };
+                            let encoded = encode_message(&input_msg)?;
+                            stream.write_all(&encoded)?;
+                            stream.flush()?;
+                        }
+                    }
+                }
+                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {
                     // Not handled yet
                 }
             }
@@ -391,22 +435,15 @@ fn run_attached(
     Ok(())
 }
 
-/// Try to read a response from the stream without blocking.
-fn try_read_response(stream: &mut UnixStream) -> io::Result<Option<DaemonResponse>> {
-    match decode_message::<DaemonResponse>(stream) {
-        Ok(response) => Ok(Some(response)),
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
 /// Sidebar width in characters
-pub const SIDEBAR_WIDTH: u16 = 20;
+pub const SIDEBAR_WIDTH: u16 = 28;
+
+/// Horizontal padding on left and right of terminal view (2 characters each side)
+pub const TERMINAL_H_PADDING: u16 = 2;
 
 /// Render the application UI with daemon-connected terminal emulator.
 fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
-    // Create horizontal layout: sidebar (20 chars) + terminal view (rest)
+    // Create horizontal layout: sidebar (28 chars) + terminal view (rest)
     let chunks = Layout::horizontal([
         Constraint::Length(SIDEBAR_WIDTH),
         Constraint::Fill(1),
@@ -414,12 +451,15 @@ fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
     .split(frame.area());
 
     render_sidebar(frame, chunks[0]);
-    render_terminal_emulator(frame, chunks[1], &app.term_emulator);
+
+    // Add 2 char horizontal padding (left + right) for visual separation
+    let terminal_area = pad_rect_horizontal(chunks[1], TERMINAL_H_PADDING);
+    render_terminal_emulator(frame, terminal_area, &app.term_emulator);
 }
 
 /// Render the static UI layout (for tests without PTY).
 pub fn render(frame: &mut Frame) {
-    // Create horizontal layout: sidebar (20 chars) + terminal view (rest)
+    // Create horizontal layout: sidebar (28 chars) + terminal view (rest)
     let chunks = Layout::horizontal([
         Constraint::Length(SIDEBAR_WIDTH),
         Constraint::Fill(1),
@@ -427,39 +467,59 @@ pub fn render(frame: &mut Frame) {
     .split(frame.area());
 
     render_sidebar(frame, chunks[0]);
-    render_terminal_view(frame, chunks[1]);
+
+    // Add 2 char horizontal padding (left + right) for visual separation
+    let terminal_area = pad_rect_horizontal(chunks[1], TERMINAL_H_PADDING);
+    render_terminal_view(frame, terminal_area);
+}
+
+/// Shrink a rect by horizontal padding only (left and right sides)
+fn pad_rect_horizontal(rect: Rect, padding: u16) -> Rect {
+    Rect {
+        x: rect.x.saturating_add(padding),
+        y: rect.y,
+        width: rect.width.saturating_sub(padding * 2),
+        height: rect.height,
+    }
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect) {
-    // Split sidebar into header row and body
-    let sidebar_chunks = Layout::vertical([
-        Constraint::Length(1), // Header row
-        Constraint::Fill(1),   // Body
-    ])
-    .split(area);
+    // Sidebar with border outline (darker gray)
+    let sidebar_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title("Sidebar TUI")
+        .title_style(Style::default().fg(Color::Blue));
 
-    // Header: blue background, black text, centered
-    let header = Paragraph::new("Sidebar TUI")
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Black).bg(Color::Blue));
-    frame.render_widget(header, sidebar_chunks[0]);
-
-    // Body: lighter background (dark gray), empty for now
-    let body = Paragraph::new("")
-        .style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(body, sidebar_chunks[1]);
+    frame.render_widget(sidebar_block, area);
 }
 
 fn render_terminal_view(frame: &mut Frame, area: Rect) {
-    // Terminal view - placeholder for static tests
+    // Terminal view with border outline (lighter gray than sidebar)
+    let terminal_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Gray));
+
+    let inner_area = terminal_block.inner(area);
+    frame.render_widget(terminal_block, area);
+
+    // Placeholder text for static tests
     let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-    frame.render_widget(terminal_placeholder, area);
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(terminal_placeholder, inner_area);
 }
 
 fn render_terminal_emulator(frame: &mut Frame, area: Rect, term: &Terminal) {
-    // Render the terminal emulator content with cursor
-    if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, area) {
+    // Terminal view with border outline (lighter gray than sidebar)
+    let terminal_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Gray));
+
+    let inner_area = terminal_block.inner(area);
+    frame.render_widget(terminal_block, area);
+
+    // Render the terminal emulator content with cursor inside the border
+    if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, inner_area) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
@@ -488,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_header_has_blue_background() {
+    fn test_sidebar_has_border() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -496,81 +556,25 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Check that the header row (first row, first 20 columns) has blue background
-        for x in 0..SIDEBAR_WIDTH {
-            let cell = &buffer[(x, 0)];
-            assert_eq!(
-                cell.bg,
-                Color::Blue,
-                "Sidebar header at ({}, 0) should have blue background, got: {:?}",
-                x,
-                cell.bg
-            );
-        }
-    }
-
-    #[test]
-    fn test_sidebar_header_has_black_text() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal.draw(render).unwrap();
-
-        let buffer = terminal.backend().buffer();
-
-        // Find the 'S' in "Sidebar TUI" and check its foreground color
-        let header_text = "Sidebar TUI";
-        let start_x = (SIDEBAR_WIDTH - header_text.len() as u16) / 2;
-
-        for (i, _) in header_text.chars().enumerate() {
-            let cell = &buffer[(start_x + i as u16, 0)];
-            assert_eq!(
-                cell.fg,
-                Color::Black,
-                "Sidebar header text at ({}, 0) should have black foreground, got: {:?}",
-                start_x + i as u16,
-                cell.fg
-            );
-        }
-    }
-
-    #[test]
-    fn test_sidebar_header_is_centered() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal.draw(render).unwrap();
-
-        let buffer = terminal.backend().buffer();
-
-        // Extract first row within sidebar width
-        let mut header_content = String::new();
-        for x in 0..SIDEBAR_WIDTH {
-            let cell = &buffer[(x, 0)];
-            header_content.push_str(cell.symbol());
-        }
-
-        // "Sidebar TUI" is 11 chars, sidebar is 20, so 9 spaces total
-        // Ratatui centers with floor(remaining/2) on left, so we get 4 left + 5 right
-        // Verify the text is roughly centered (within 1 char tolerance)
-        let trimmed = header_content.trim();
-        assert_eq!(
-            trimmed, "Sidebar TUI",
-            "Header should contain 'Sidebar TUI'"
-        );
-
-        // Count leading spaces
-        let leading_spaces = header_content.len() - header_content.trim_start().len();
-        // Should be approximately centered: 9 total spaces / 2 = 4-5 on each side
+        // Check top-left corner has border character
+        let corner = &buffer[(0, 0)];
         assert!(
-            leading_spaces >= 4 && leading_spaces <= 5,
-            "Header should have 4-5 leading spaces for centering, got: {}",
-            leading_spaces
+            corner.symbol() == "┌" || corner.symbol() == "╭",
+            "Sidebar top-left should have border corner, got: {}",
+            corner.symbol()
+        );
+
+        // Check border has dark gray foreground
+        assert_eq!(
+            corner.fg,
+            Color::DarkGray,
+            "Sidebar border should have dark gray foreground, got: {:?}",
+            corner.fg
         );
     }
 
     #[test]
-    fn test_sidebar_body_has_lighter_background() {
+    fn test_sidebar_title_is_blue() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -578,48 +582,19 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Check that the sidebar body (row 1+, first 20 columns) has dark gray background
-        for y in 1..24u16 {
-            for x in 0..SIDEBAR_WIDTH {
-                let cell = &buffer[(x, y)];
-                assert_eq!(
-                    cell.bg,
-                    Color::DarkGray,
-                    "Sidebar body at ({}, {}) should have dark gray background, got: {:?}",
-                    x,
-                    y,
-                    cell.bg
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_sidebar_is_20_chars_wide() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal.draw(render).unwrap();
-
-        let buffer = terminal.backend().buffer();
-
-        // The sidebar should be exactly 20 characters wide
-        // Check that column 19 (last sidebar column) has sidebar styling
-        // and column 20 (first terminal column) has terminal styling
+        // Title "Sidebar TUI" starts after the border character (position 1)
+        // Find the 'S' in "Sidebar TUI" and check its foreground color
+        let cell = &buffer[(1, 0)];
         assert_eq!(
-            buffer[(19, 0)].bg,
+            cell.fg,
             Color::Blue,
-            "Column 19 (last sidebar header) should be blue"
-        );
-        assert_eq!(
-            buffer[(20, 0)].bg,
-            Color::Black,
-            "Column 20 (first terminal column) should be black"
+            "Sidebar title text should have blue foreground, got: {:?}",
+            cell.fg
         );
     }
 
     #[test]
-    fn test_terminal_view_fills_rest() {
+    fn test_sidebar_title_is_left_aligned() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -627,17 +602,101 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal view should start at column 20 and have black background
-        for x in 20..80u16 {
+        // Title should start right after the left border character
+        // Extract first row within sidebar (after left border)
+        let mut title_content = String::new();
+        for x in 1..SIDEBAR_WIDTH {
             let cell = &buffer[(x, 0)];
-            assert_eq!(
-                cell.bg,
-                Color::Black,
-                "Terminal view at ({}, 0) should have black background, got: {:?}",
-                x,
-                cell.bg
-            );
+            title_content.push_str(cell.symbol());
         }
+
+        // The title should start at the beginning (left-aligned)
+        assert!(
+            title_content.starts_with("Sidebar TUI"),
+            "Title should be left-aligned, got: '{}'",
+            title_content
+        );
+    }
+
+    #[test]
+    fn test_sidebar_has_no_background_color() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Check that the sidebar body (inside the border) has no special background
+        // Check a cell inside the sidebar (not on the border)
+        let cell = &buffer[(2, 2)];
+        assert_eq!(
+            cell.bg,
+            Color::Reset,
+            "Sidebar body should have no special background, got: {:?}",
+            cell.bg
+        );
+    }
+
+    #[test]
+    fn test_sidebar_is_28_chars_wide() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // The sidebar should be exactly SIDEBAR_WIDTH (28) characters wide
+        // Check that last sidebar column has the right border character
+        let last_sidebar_col = SIDEBAR_WIDTH - 1;
+        let first_after_sidebar = SIDEBAR_WIDTH;
+
+        let last_cell = &buffer[(last_sidebar_col, 0)];
+        assert!(
+            last_cell.symbol() == "┐" || last_cell.symbol() == "╮" || last_cell.symbol() == "─",
+            "Column {} (last sidebar) should be a border char, got: {}",
+            last_sidebar_col,
+            last_cell.symbol()
+        );
+
+        // After sidebar is padding, which has no border styling
+        let after_cell = &buffer[(first_after_sidebar, 0)];
+        assert_ne!(
+            after_cell.fg,
+            Color::DarkGray,
+            "Column {} (after sidebar) should not have sidebar border color",
+            first_after_sidebar
+        );
+    }
+
+    #[test]
+    fn test_terminal_view_has_border() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Terminal view starts after sidebar + horizontal padding
+        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        let corner = &buffer[(term_start_x, 0)];
+
+        // Check top-left corner of terminal has border character
+        assert!(
+            corner.symbol() == "┌" || corner.symbol() == "╭",
+            "Terminal top-left should have border corner, got: {}",
+            corner.symbol()
+        );
+
+        // Check border has gray foreground (lighter than sidebar's dark gray)
+        assert_eq!(
+            corner.fg,
+            Color::Gray,
+            "Terminal border should have gray foreground (lighter than sidebar), got: {:?}",
+            corner.fg
+        );
     }
 
     #[test]
@@ -689,26 +748,26 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_width_excludes_sidebar() {
-        // When window is 100 wide, terminal should be 100 - SIDEBAR_WIDTH = 80
+    fn test_terminal_width_excludes_sidebar_padding_and_border() {
+        // When window is 100 wide, terminal should be 100 - 28 (sidebar) - 4 (h_padding) - 2 (border) = 66
         let window_width: u16 = 100;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
-        assert_eq!(term_cols, 80);
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+        assert_eq!(term_cols, 66);
     }
 
     #[test]
     fn test_terminal_width_handles_small_window() {
-        // When window is smaller than sidebar, terminal width should be 0 (saturating sub)
+        // When window is smaller than sidebar + h_padding + border, terminal width should be 0 (saturating sub)
         let window_width: u16 = 15;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
         assert_eq!(term_cols, 0);
     }
 
     #[test]
     fn test_terminal_width_at_boundary() {
-        // When window is exactly sidebar width, terminal should be 0
-        let window_width: u16 = SIDEBAR_WIDTH;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH);
+        // When window is exactly sidebar width + h_padding + border, terminal should be 0
+        let window_width: u16 = SIDEBAR_WIDTH + TERMINAL_H_PADDING * 2 + 2;
+        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
         assert_eq!(term_cols, 0);
     }
 
@@ -872,5 +931,39 @@ mod tests {
             Some(Commands::Forget { session }) => assert_eq!(session, "old-session"),
             _ => panic!("Expected Forget command"),
         }
+    }
+
+    #[test]
+    fn test_mouse_scroll_position_translation() {
+        // Test that screen coordinates are correctly translated to terminal-relative coordinates
+        // Screen column 32 with sidebar width 28 and padding 2 should become terminal column 3
+        // (32 - 28 - 2 + 1 = 3)
+        let screen_col: u16 = 32;
+        let term_col = screen_col - SIDEBAR_WIDTH - TERMINAL_H_PADDING + 1;
+        assert_eq!(term_col, 3);
+    }
+
+    #[test]
+    fn test_mouse_scroll_row_is_one_indexed() {
+        // Screen row 0 should become terminal row 1 (1-indexed)
+        let screen_row: u16 = 0;
+        let term_row = screen_row + 1;
+        assert_eq!(term_row, 1);
+    }
+
+    #[test]
+    fn test_mouse_scroll_in_sidebar_area_is_ignored() {
+        // Events in sidebar area (column < SIDEBAR_WIDTH + TERMINAL_H_PADDING) should be ignored
+        let mouse_column: u16 = 25; // Inside sidebar
+        let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        assert!(!should_handle, "Scroll in sidebar area should be ignored");
+    }
+
+    #[test]
+    fn test_mouse_scroll_in_terminal_area_is_handled() {
+        // Events in terminal area (column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING) should be handled
+        let mouse_column: u16 = 35; // Inside terminal area
+        let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        assert!(should_handle, "Scroll in terminal area should be handled");
     }
 }
