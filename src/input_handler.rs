@@ -64,7 +64,13 @@ impl AppState {
             // Select (focus terminal)
             KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
                 if !self.sessions.is_empty() {
+                    let name = self.sessions.get(self.selected_index)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
                     self.focus_terminal();
+                    if !name.is_empty() {
+                        return EventResult::SwitchSession { name };
+                    }
                 }
                 EventResult::Consumed
             }
@@ -206,8 +212,17 @@ impl AppState {
                 KeyCode::Enter => {
                     let index = rename.session_index;
                     let new_name = rename.new_name.clone();
-                    if !new_name.is_empty() {
-                        self.rename_session(index, new_name);
+                    // Get old name before updating local state
+                    let old_name = self.sessions.get(index)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    if !new_name.is_empty() && !old_name.is_empty() {
+                        // Update local state
+                        self.rename_session(index, new_name.clone());
+                        self.mode = AppMode::Normal;
+                        self.focus_terminal();
+                        // Return RenameSession event for daemon to handle
+                        return EventResult::RenameSession { old_name, new_name };
                     }
                     self.mode = AppMode::Normal;
                     self.focus_terminal();
@@ -255,8 +270,18 @@ impl AppState {
                     match action {
                         ConfirmAction::Quit => EventResult::Quit,
                         ConfirmAction::DeleteSession(index) => {
-                            self.remove_session(index);
-                            EventResult::Consumed
+                            // Get the session name before removing from local state
+                            let name = self.sessions.get(index)
+                                .map(|s| s.name.clone())
+                                .unwrap_or_default();
+                            if !name.is_empty() {
+                                // Remove from local state
+                                self.remove_session(index);
+                                // Return DeleteSession event for daemon to handle
+                                EventResult::DeleteSession { name }
+                            } else {
+                                EventResult::Consumed
+                            }
                         }
                     }
                 }
@@ -328,7 +353,8 @@ mod tests {
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Enter));
-        assert_eq!(result, EventResult::Consumed);
+        // Now returns SwitchSession instead of Consumed
+        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
@@ -338,7 +364,8 @@ mod tests {
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Char(' ')));
-        assert_eq!(result, EventResult::Consumed);
+        // Now returns SwitchSession instead of Consumed
+        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
@@ -348,7 +375,8 @@ mod tests {
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Right));
-        assert_eq!(result, EventResult::Consumed);
+        // Now returns SwitchSession instead of Consumed
+        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
@@ -672,7 +700,9 @@ mod tests {
         state.handle_key(key(KeyCode::Char('w')));
 
         let result = state.handle_key(key(KeyCode::Enter));
-        assert_eq!(result, EventResult::Consumed);
+        // Now returns RenameSession instead of Consumed
+        assert!(matches!(result, EventResult::RenameSession { old_name, new_name }
+            if old_name == "old" && new_name == "new"));
         assert!(matches!(state.mode, AppMode::Normal));
         assert_eq!(state.sessions[0].name, "new");
         assert_eq!(state.focus, Focus::Terminal); // Spec says focus terminal after rename
@@ -715,7 +745,8 @@ mod tests {
         state.request_confirmation(ConfirmAction::DeleteSession(0));
 
         let result = state.handle_key(key(KeyCode::Char('y')));
-        assert_eq!(result, EventResult::Consumed);
+        // Now returns DeleteSession instead of Consumed
+        assert!(matches!(result, EventResult::DeleteSession { name } if name == "a"));
         assert_eq!(state.sessions.len(), 1);
         assert_eq!(state.sessions[0].name, "b");
     }

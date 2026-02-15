@@ -157,6 +157,8 @@ pub enum ClientMessage {
     RestoreStale { session_name: String },
     /// Delete stale session metadata (user declined to restore).
     DeleteStale { session_name: String },
+    /// Rename a session.
+    Rename { old_name: String, new_name: String },
     /// Shutdown the daemon.
     Shutdown,
 }
@@ -185,6 +187,8 @@ pub enum DaemonResponse {
     Deleted { session_name: String },
     /// Session was killed.
     Killed { session_name: String },
+    /// Session was renamed.
+    Renamed { old_name: String, new_name: String },
     /// Error occurred.
     Error { message: String },
     /// Daemon is shutting down.
@@ -1264,6 +1268,47 @@ fn process_message(
                 }
             }
         }
+        ClientMessage::Rename { old_name, new_name } => {
+            // Validate the new name is not empty
+            if new_name.is_empty() {
+                return DaemonResponse::Error {
+                    message: "New session name cannot be empty".to_string(),
+                };
+            }
+
+            let mut sessions_guard = sessions.lock().unwrap();
+
+            // Check if new name already exists
+            if sessions_guard.contains_key(&new_name) {
+                return DaemonResponse::Error {
+                    message: format!("Session '{}' already exists", new_name),
+                };
+            }
+
+            // Remove the old session
+            if let Some(mut session) = sessions_guard.remove(&old_name) {
+                // Delete old metadata files
+                if let Err(e) = session.delete_metadata() {
+                    eprintln!("Warning: Failed to delete old session metadata: {:?}", e);
+                }
+                let _ = PersistedSessionState::delete(&old_name);
+
+                // Update session name and save new metadata
+                session.name = new_name.clone();
+                session.metadata.name = new_name.clone();
+                session.metadata.touch();
+                if let Err(e) = session.metadata.save() {
+                    eprintln!("Warning: Failed to save renamed session metadata: {:?}", e);
+                }
+
+                sessions_guard.insert(new_name.clone(), session);
+                DaemonResponse::Renamed { old_name, new_name }
+            } else {
+                DaemonResponse::Error {
+                    message: format!("Session '{}' not found", old_name),
+                }
+            }
+        }
         ClientMessage::Shutdown => {
             shutdown.store(true, Ordering::SeqCst);
             DaemonResponse::ShuttingDown
@@ -1554,6 +1599,18 @@ impl DaemonClient {
             session_name: session_name.to_string(),
         })? {
             DaemonResponse::Deleted { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Rename a session.
+    pub fn rename_session(&mut self, old_name: &str, new_name: &str) -> Result<()> {
+        match self.send(ClientMessage::Rename {
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+        })? {
+            DaemonResponse::Renamed { .. } => Ok(()),
             DaemonResponse::Error { message } => bail!("{}", message),
             other => bail!("Unexpected response: {:?}", other),
         }
@@ -2837,5 +2894,153 @@ mod tests {
 
         // Clean up
         let _ = session.metadata.delete();
+    }
+
+    // Tests for session rename functionality (sidebar_tui-1pk)
+
+    #[test]
+    fn test_encode_decode_rename_message() {
+        let msg = ClientMessage::Rename {
+            old_name: "old_session".to_string(),
+            new_name: "new_session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::Rename { old_name, new_name } => {
+                assert_eq!(old_name, "old_session");
+                assert_eq!(new_name, "new_session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_renamed_response() {
+        let msg = DaemonResponse::Renamed {
+            old_name: "old_session".to_string(),
+            new_name: "new_session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::Renamed { old_name, new_name } => {
+                assert_eq!(old_name, "old_session");
+                assert_eq!(new_name, "new_session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_process_rename_success() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Add session
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            sessions_guard.insert("old_name".to_string(), Session::new("old_name".to_string(), 24, 80, None).unwrap());
+        }
+
+        let msg = ClientMessage::Rename {
+            old_name: "old_name".to_string(),
+            new_name: "new_name".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Renamed { old_name, new_name } => {
+                assert_eq!(old_name, "old_name");
+                assert_eq!(new_name, "new_name");
+            }
+            _ => panic!("Expected Renamed response, got {:?}", response),
+        }
+
+        // Verify session was renamed
+        let sessions_guard = sessions.lock().unwrap();
+        assert!(!sessions_guard.contains_key("old_name"), "Old name should not exist");
+        assert!(sessions_guard.contains_key("new_name"), "New name should exist");
+        assert_eq!(sessions_guard.get("new_name").unwrap().name, "new_name");
+    }
+
+    #[test]
+    fn test_process_rename_nonexistent() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::Rename {
+            old_name: "nonexistent".to_string(),
+            new_name: "new_name".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        assert!(matches!(response, DaemonResponse::Error { .. }));
+    }
+
+    #[test]
+    fn test_process_rename_conflict() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Add two sessions
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            sessions_guard.insert("session1".to_string(), Session::new("session1".to_string(), 24, 80, None).unwrap());
+            sessions_guard.insert("session2".to_string(), Session::new("session2".to_string(), 24, 80, None).unwrap());
+        }
+
+        // Try to rename session1 to session2 (already exists)
+        let msg = ClientMessage::Rename {
+            old_name: "session1".to_string(),
+            new_name: "session2".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        assert!(matches!(response, DaemonResponse::Error { .. }));
+
+        // Verify nothing changed
+        let sessions_guard = sessions.lock().unwrap();
+        assert!(sessions_guard.contains_key("session1"), "session1 should still exist");
+        assert!(sessions_guard.contains_key("session2"), "session2 should still exist");
+    }
+
+    #[test]
+    fn test_process_rename_empty_name() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Add session
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            sessions_guard.insert("old_name".to_string(), Session::new("old_name".to_string(), 24, 80, None).unwrap());
+        }
+
+        // Try to rename to empty string
+        let msg = ClientMessage::Rename {
+            old_name: "old_name".to_string(),
+            new_name: "".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        assert!(matches!(response, DaemonResponse::Error { .. }));
+
+        // Verify session was not changed
+        let sessions_guard = sessions.lock().unwrap();
+        assert!(sessions_guard.contains_key("old_name"), "old_name should still exist");
     }
 }

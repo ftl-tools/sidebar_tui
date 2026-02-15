@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{self, Event, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -22,7 +22,7 @@ use sidebar_tui::daemon::{
 use sidebar_tui::hint_bar::hint_bar_for_state;
 use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
-use sidebar_tui::state::{AppMode, AppState, Focus};
+use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType};
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::colors;
 
@@ -247,19 +247,23 @@ fn start_daemon_background() -> Result<()> {
 struct DaemonApp {
     /// Terminal emulator for parsing PTY output
     term_emulator: Terminal,
-    /// Current session name (kept for future use with multiple sessions)
-    #[allow(dead_code)]
+    /// Current session name
     session_name: String,
     /// Application UI state (focus, mode, sessions list)
     app_state: AppState,
 }
 
 impl DaemonApp {
-    fn new(rows: u16, cols: u16, session_name: &str) -> Self {
+    fn new(rows: u16, cols: u16, session_name: &str, sessions: Vec<Session>) -> Self {
+        let mut app_state = AppState::with_sessions(sessions);
+        // If we have sessions, focus on terminal
+        if !app_state.sessions.is_empty() {
+            app_state.focus = Focus::Terminal;
+        }
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
-            app_state: AppState::default(),
+            app_state,
         }
     }
 
@@ -274,6 +278,18 @@ impl DaemonApp {
     }
 }
 
+/// Helper to send a message to the daemon and read the response.
+fn send_daemon_message(stream: &mut UnixStream, msg: ClientMessage) -> Result<DaemonResponse> {
+    let encoded = encode_message(&msg)?;
+    stream.write_all(&encoded)?;
+    stream.flush()?;
+    // Use a longer timeout for synchronous operations
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let response: DaemonResponse = decode_message(stream)
+        .context("Failed to read daemon response")?;
+    Ok(response)
+}
+
 /// Run the TUI attached to a daemon session.
 fn run_attached(
     ratatui_term: &mut DefaultTerminal,
@@ -284,31 +300,45 @@ fn run_attached(
     let size = ratatui_term.size()?;
     // Subtract sidebar width, 2*h_padding (left + right), and 2 for terminal border (left + right)
     let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
-    // Subtract 2 for terminal border (top + bottom)
-    let term_rows = size.height.saturating_sub(2);
+    // Subtract 2 for terminal border (top + bottom), and hint bar height (1)
+    let term_rows = size.height.saturating_sub(3);
 
     // Get current working directory
     let cwd = env::current_dir().ok();
 
+    // Load session list from daemon
+    let session_list_response = send_daemon_message(stream, ClientMessage::List)?;
+    let daemon_sessions = match session_list_response {
+        DaemonResponse::Sessions { names } => names,
+        DaemonResponse::Error { message } => {
+            bail!("Failed to list sessions: {}", message);
+        }
+        other => {
+            bail!("Unexpected response: {:?}", other);
+        }
+    };
+
+    // Convert daemon sessions to AppState sessions
+    let sessions: Vec<Session> = daemon_sessions
+        .iter()
+        .map(|info| {
+            let mut session = Session::new(&info.name);
+            session.is_attached = info.is_attached;
+            session
+        })
+        .collect();
+
     // Send attach message
-    let attach_msg = ClientMessage::Attach {
+    let attach_response = send_daemon_message(stream, ClientMessage::Attach {
         session_name: session_name.to_string(),
         rows: term_rows,
         cols: term_cols,
-        cwd,
-    };
-    let encoded = encode_message(&attach_msg)?;
-    stream.write_all(&encoded)?;
-    stream.flush()?;
+        cwd: cwd.clone(),
+    })?;
 
-    // Read attach response
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let response: DaemonResponse = decode_message(stream)
-        .context("Failed to read attach response")?;
-
-    let terminal_state = match response {
-        DaemonResponse::Attached { session_name: _, is_new: _, terminal_state } => {
-            terminal_state
+    let terminal_state = match attach_response {
+        DaemonResponse::Attached { session_name: _, is_new, terminal_state } => {
+            (is_new, terminal_state)
         }
         DaemonResponse::Error { message } => {
             bail!("Failed to attach: {}", message);
@@ -318,11 +348,25 @@ fn run_attached(
         }
     };
 
-    // Create app
-    let mut app = DaemonApp::new(term_rows, term_cols, session_name);
+    // Build initial session list for AppState
+    let mut initial_sessions = sessions;
+    // If this was a new session, add it to the front of the list
+    if terminal_state.0 {
+        initial_sessions.insert(0, Session::attached(session_name));
+    } else {
+        // Mark the current session as attached
+        for s in &mut initial_sessions {
+            if s.name == session_name {
+                s.is_attached = true;
+            }
+        }
+    }
+
+    // Create app with session list
+    let mut app = DaemonApp::new(term_rows, term_cols, session_name, initial_sessions);
 
     // Restore terminal state if reattaching
-    if let Some(state_bytes) = terminal_state {
+    if let Some(state_bytes) = terminal_state.1 {
         app.process_output(&state_bytes);
     }
 
@@ -368,25 +412,176 @@ fn run_attached(
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) => {
-                    // Check for Ctrl+Q or Ctrl+B to quit (detach)
-                    if key.modifiers == KeyModifiers::CONTROL
-                        && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'))
-                    {
-                        // Send detach message
-                        let detach_msg = ClientMessage::Detach;
-                        let encoded = encode_message(&detach_msg)?;
-                        stream.write_all(&encoded)?;
-                        stream.flush()?;
-                        break;
-                    }
+                    // Route key through state machine
+                    let result = app.app_state.handle_key(key);
 
-                    // Forward other keys to daemon
-                    let bytes = key_to_bytes(&key);
-                    if !bytes.is_empty() {
-                        let input_msg = ClientMessage::Input { data: bytes };
-                        let encoded = encode_message(&input_msg)?;
-                        stream.write_all(&encoded)?;
-                        stream.flush()?;
+                    match result {
+                        EventResult::Quit => {
+                            // Send detach message and exit
+                            let detach_msg = ClientMessage::Detach;
+                            let encoded = encode_message(&detach_msg)?;
+                            stream.write_all(&encoded)?;
+                            stream.flush()?;
+                            break;
+                        }
+                        EventResult::CreateSession { name, session_type } => {
+                            // Create new session via daemon
+                            let create_response = send_daemon_message(stream, ClientMessage::Attach {
+                                session_name: name.clone(),
+                                rows: term_rows,
+                                cols: term_cols,
+                                cwd: cwd.clone(),
+                            })?;
+
+                            match create_response {
+                                DaemonResponse::Attached { session_name: attached_name, is_new: _, terminal_state: new_state } => {
+                                    // Add session to local state
+                                    app.app_state.add_session(Session::attached(&attached_name));
+                                    app.session_name = attached_name;
+                                    app.app_state.focus = Focus::Terminal;
+
+                                    // Clear terminal emulator for new session
+                                    app.term_emulator = Terminal::new(term_rows, term_cols);
+
+                                    // Restore terminal state if reattaching
+                                    if let Some(state_bytes) = new_state {
+                                        app.process_output(&state_bytes);
+                                    }
+
+                                    // For agent sessions, send the claude command
+                                    if session_type == SessionType::Agent {
+                                        let claude_cmd = b"claude\n";
+                                        let input_msg = ClientMessage::Input { data: claude_cmd.to_vec() };
+                                        let encoded = encode_message(&input_msg)?;
+                                        stream.write_all(&encoded)?;
+                                        stream.flush()?;
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to create session: {}", message);
+                                }
+                                _ => {}
+                            }
+                            // Reset stream timeout after synchronous operation
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::DeleteSession { name } => {
+                            // Kill session via daemon
+                            let kill_response = send_daemon_message(stream, ClientMessage::Kill {
+                                session_name: name.clone(),
+                            })?;
+
+                            match kill_response {
+                                DaemonResponse::Killed { .. } => {
+                                    // If we deleted the current session, switch to another
+                                    if app.session_name == name {
+                                        if let Some(session) = app.app_state.sessions.first() {
+                                            // Switch to first available session
+                                            let switch_response = send_daemon_message(stream, ClientMessage::Attach {
+                                                session_name: session.name.clone(),
+                                                rows: term_rows,
+                                                cols: term_cols,
+                                                cwd: cwd.clone(),
+                                            })?;
+
+                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                                app.session_name = attached_name;
+                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                if let Some(state_bytes) = new_state {
+                                                    app.process_output(&state_bytes);
+                                                }
+                                            }
+                                        } else {
+                                            // No sessions left, clear terminal
+                                            app.session_name = String::new();
+                                            app.term_emulator = Terminal::new(term_rows, term_cols);
+                                        }
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to delete session: {}", message);
+                                }
+                                _ => {}
+                            }
+                            // Reset stream timeout after synchronous operation
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::RenameSession { old_name, new_name } => {
+                            // Rename session via daemon
+                            let rename_response = send_daemon_message(stream, ClientMessage::Rename {
+                                old_name: old_name.clone(),
+                                new_name: new_name.clone(),
+                            })?;
+
+                            match rename_response {
+                                DaemonResponse::Renamed { .. } => {
+                                    // Update current session name if it was renamed
+                                    if app.session_name == old_name {
+                                        app.session_name = new_name;
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to rename session: {}", message);
+                                    // Revert local state change
+                                    if let Some(session) = app.app_state.sessions.iter_mut()
+                                        .find(|s| s.name == new_name) {
+                                        session.name = old_name;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            // Reset stream timeout after synchronous operation
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::SwitchSession { name } => {
+                            // Only switch if it's a different session
+                            if name != app.session_name {
+                                // Detach from current session
+                                let _ = send_daemon_message(stream, ClientMessage::Detach);
+
+                                // Attach to new session
+                                let switch_response = send_daemon_message(stream, ClientMessage::Attach {
+                                    session_name: name.clone(),
+                                    rows: term_rows,
+                                    cols: term_cols,
+                                    cwd: cwd.clone(),
+                                })?;
+
+                                match switch_response {
+                                    DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } => {
+                                        app.session_name = attached_name;
+                                        app.term_emulator = Terminal::new(term_rows, term_cols);
+                                        if let Some(state_bytes) = new_state {
+                                            app.process_output(&state_bytes);
+                                        }
+                                    }
+                                    DaemonResponse::Error { message } => {
+                                        eprintln!("Failed to switch session: {}", message);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Reset stream timeout after synchronous operation
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::Consumed => {
+                            // Event was consumed by UI state machine, nothing to forward
+                        }
+                        EventResult::NotConsumed => {
+                            // Event not consumed - only forward to terminal if terminal is focused and in Normal mode
+                            if app.app_state.focus == Focus::Terminal
+                                && matches!(app.app_state.mode, AppMode::Normal)
+                                && !app.session_name.is_empty()
+                            {
+                                let bytes = key_to_bytes(&key);
+                                if !bytes.is_empty() {
+                                    let input_msg = ClientMessage::Input { data: bytes };
+                                    let encoded = encode_message(&input_msg)?;
+                                    stream.write_all(&encoded)?;
+                                    stream.flush()?;
+                                }
+                            }
+                        }
                     }
                 }
                 Event::Resize(width, height) => {
@@ -394,8 +589,8 @@ fn run_attached(
                         last_size = (width, height);
                         // Account for sidebar, horizontal padding (left + right), and terminal border
                         let term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
-                        // Account for terminal border (top + bottom)
-                        let term_rows = height.saturating_sub(2);
+                        // Account for terminal border (top + bottom), and hint bar height (1)
+                        let term_rows = height.saturating_sub(3);
                         app.resize(term_rows, term_cols);
 
                         // Send resize to daemon
@@ -410,10 +605,12 @@ fn run_attached(
                 }
                 Event::Mouse(mouse_event) => {
                     // Handle mouse scroll wheel events - forward to active terminal
-                    // Mouse events were previously ignored. Now scroll wheel events are captured
-                    // and sent to the PTY so applications like vim, less, etc. can handle them.
-                    // Only handle scroll events that are within the terminal area (after sidebar)
-                    if mouse_event.column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING {
+                    // Only if terminal is focused and in Normal mode
+                    if app.app_state.focus == Focus::Terminal
+                        && matches!(app.app_state.mode, AppMode::Normal)
+                        && mouse_event.column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING
+                        && !app.session_name.is_empty()
+                    {
                         let bytes = match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                                 // Translate screen position to terminal-relative position (1-indexed)
@@ -612,6 +809,7 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Ter
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use sidebar_tui::colors;
@@ -923,13 +1121,13 @@ mod tests {
 
     #[test]
     fn test_daemon_app_creation() {
-        let app = DaemonApp::new(24, 80, "test");
+        let app = DaemonApp::new(24, 80, "test", vec![]);
         assert_eq!(app.session_name, "test");
     }
 
     #[test]
     fn test_daemon_app_process_output() {
-        let mut app = DaemonApp::new(24, 80, "test");
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
         app.process_output(b"Hello, World!");
         // Verify terminal emulator received the data
         let contents = app.term_emulator.contents();
@@ -938,7 +1136,7 @@ mod tests {
 
     #[test]
     fn test_daemon_app_resize() {
-        let mut app = DaemonApp::new(24, 80, "test");
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
         app.resize(30, 100);
         // Verify resize happened (no panics)
     }

@@ -275,6 +275,23 @@ pub enum EventResult {
         /// Type of session (Terminal or Agent).
         session_type: SessionType,
     },
+    /// Delete a session by name.
+    DeleteSession {
+        /// Name of the session to delete.
+        name: String,
+    },
+    /// Rename a session.
+    RenameSession {
+        /// Old session name.
+        old_name: String,
+        /// New session name.
+        new_name: String,
+    },
+    /// Switch to a different session by name.
+    SwitchSession {
+        /// Name of the session to switch to.
+        name: String,
+    },
 }
 
 /// Main application state.
