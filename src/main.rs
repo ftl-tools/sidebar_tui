@@ -1343,4 +1343,152 @@ mod tests {
             content
         );
     }
+
+    #[test]
+    fn test_quit_confirmation_shows_prompt_message() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Should show quit confirmation message
+        assert!(
+            content.contains("Quit Sidebar TUI?"),
+            "Hint bar should show quit confirmation message, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_quit_confirmation_shows_yes_no_bindings() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Should show y/n keybindings
+        assert!(
+            content.contains("Yes"),
+            "Hint bar should show 'Yes' binding, got: {}",
+            content
+        );
+        assert!(
+            content.contains("No"),
+            "Hint bar should show 'No' binding, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_quit_confirmation_has_dark_grey_background() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Quit confirmation is NOT important, so hint bar background should be dark grey
+        let last_row = 23;
+        let cell = &buffer[(0, last_row)];
+        assert_eq!(
+            cell.bg,
+            colors::DARK_GREY,
+            "Quit confirmation hint bar should have dark grey background, got: {:?}",
+            cell.bg
+        );
+    }
+
+    #[test]
+    fn test_delete_confirmation_shows_prompt_message() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction, Session};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Should show delete confirmation message
+        assert!(
+            content.contains("Delete this session permanently?"),
+            "Hint bar should show delete confirmation message, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_delete_confirmation_has_red_background() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction, Session};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Delete confirmation IS important, so hint bar background should be dark red (88)
+        let last_row = 23;
+        let cell = &buffer[(0, last_row)];
+        assert_eq!(
+            cell.bg,
+            colors::DARK_RED,
+            "Delete confirmation hint bar should have dark red background, got: {:?}",
+            cell.bg
+        );
+    }
+
+    #[test]
+    fn test_confirmation_quit_path_shows_n_to_quit() {
+        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // During confirmation, quit path should show "n → q Quit"
+        // (pressing n cancels, then q quits)
+        assert!(
+            content.contains("n →") || content.contains("n → q"),
+            "Confirmation quit path should show 'n →' path, got: {}",
+            content
+        );
+    }
 }
