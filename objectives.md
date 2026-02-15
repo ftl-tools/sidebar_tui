@@ -8,51 +8,49 @@ The general requirements are as follows:
 
 - You MUST use rust. Research and use any other tools that are needed to accomplish the objectives.
 - There are several OpenSource, example projects that have been cloned into refrences that prove out similar functionality to what we want using similar tech. Use these as references to figure out how to build the TUI and terminal functionality we need.
-- Running `sb` should open the TUI.
 - Running `ctrl + q` or `ctrl + b` should quit the TUI and return me to my normal terminal.
 - You must create at the very least the following E2E tests. They must all work in the Apple terminal on my computer:
   - You have used the Sidebar TUI and it's layout matches the spec above exactly.
   - You can run `git status` in the TUI terminal and it has the same output as running `git status` in a normal terminal.
   - You can run `vi` in the TUI terminal, open a file, edit it, save it, and exit, and the file is changed as expected.
   - In the TUI terminal, you can start typing `git status`, backspace before you send it, type `echo "hello world"`, send that, and see the expected output in the TUI terminal.
+  - There must be at least one E2E test that works on the real Sidebar TUI in the Apple terminal for each individual bullet point in this spec.
 - NO E2E or unit tests are skipped, FOR ANY REASON. Install requirements if missing, or do WHATEVER IS REQUIRED to unblock them.
 - The cli had been built and linked globally.
-- The terminal session should be automatically saved and restored when reopening the TUI. E.G. if I'm editing something in vi I want to come back and pick up where I left off. This should work even if I turn off my computer and come back later. (Let me know if this is possible.)
 
 ### TUI
 
-The TUI has three components: the sidebar pane, the terminal pane, and the hint bar. They should be laid out like so:
-
-```
-┌──────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
-│ Sidebar TUI              ││ (base) melchiahmauck@Melchiahs-MacBook-Air sidebar_tui % █           │
-│ ...                      ││                                                                      │
-│ Name of Terminal Session ││                                                                      │
-│ Really, really long name ││                                                                      │
-│ │for this specific       ││                                                                      │
-│ └terminal session.       ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ Terminal Session         ││                                                                      │
-│ ...                      ││                                                                      │
-└──────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
- ctrl + n New  ctrl + b Focus on sidebar                                       │ ctrl + b -> q Quit
-```
-
+- Running `sb` should open the TUI.
+- The TUI has three components: the sidebar pane, the terminal pane, and the hint bar. They should be laid out like so:
+  ```
+  ┌──────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
+  │ Sidebar TUI              ││ (base) melchiahmauck@Melchiahs-MacBook-Air sidebar_tui % █           │
+  │ ...                      ││                                                                      │
+  │ Name of Terminal Session ││                                                                      │
+  │ Really, really long name ││                                                                      │
+  │ │for this specific       ││                                                                      │
+  │ └terminal session.       ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ Terminal Session         ││                                                                      │
+  │ ...                      ││                                                                      │
+  └──────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
+  ctrl + n New  ctrl + b Focus on sidebar                                       │ ctrl + b -> q Quit
+  ```
 - On Mac, Windows, and Linux we use `ctrl` for the modifier key. This might change in the future, so below we refer to this as `mod`. In the TUI though we should show the actual keybinding. (Down the road if we vary this based on OS or if we allow users to customize it we whould still show the actual keybinding.)
 
 #### Sidebar Pane
@@ -112,7 +110,7 @@ The TUI has three components: the sidebar pane, the terminal pane, and the hint 
   - The user should be allowed to type uppercase and lowercase letters, numbers, spaces, and the following special characters: `-`, `_`, and `.`. Any other characters should be ignored.
   - The terminal pane should be blank durring this time and should not be interactive. The user should not be able to focus on it or type in it.
   - The following keybindings should work when drafting a new session:
-    - `enter` - Create: Create the new session with the current name. Focus on the terminal pane.
+    - `enter` - Create: Create the new session with the current name. Focus on the terminal pane. The new session should be created in the working directory that this Sidebar TUI instance was launched from, and should have the same env vars as the terminal that launched this Sidebar TUI. If multiple Sidebar TUI instances are openned they they might each have different working directories and env vars, and the sessions they create should reflect that, even though all terminal sessions, once created, are shared between Sidebar TUI instances.
     - `esc` - Cancel: Remove the new, draft session row from the sidebar list and exit create mode. This should return focus to wherever it was before entering create mode.
 - Obviously other keybindings should not work when in create or draft mode. Only the ones listed above.
 
@@ -131,7 +129,7 @@ The TUI has three components: the sidebar pane, the terminal pane, and the hint 
 
 #### First-time Start Up
 
-...
+If this is the first time starting up the TUI and there are no existing terminal sessions, the terminal pane should be blank and the sidebar pane should be focused. There should be some text in the sidebare pane that says something like "Welcome to Sidebar TUI press `n` to create your first terminal session!" This text should be colored grey (color 238) and should be centered in the sidebar pane. The keybinding in this text should be colored purple (color 165), and should change dynamically if the user changes focus to the empty terminal pane before creating their first session.
 
 ## Order
 
