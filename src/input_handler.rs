@@ -52,6 +52,10 @@ impl AppState {
 
         match key.code {
             // Navigation
+            // TODO: sidebar_tui-xjh - Live preview feature disabled due to message flow issues
+            // The async Preview message interferes with the buffered message reader,
+            // causing connection errors. Need to refactor the message handling to
+            // either use fully synchronous or fully asynchronous operations.
             KeyCode::Up => {
                 self.select_previous();
                 EventResult::Consumed

@@ -159,6 +159,8 @@ pub enum ClientMessage {
     DeleteStale { session_name: String },
     /// Rename a session.
     Rename { old_name: String, new_name: String },
+    /// Get terminal state for preview (without attaching).
+    Preview { session_name: String },
     /// Shutdown the daemon.
     Shutdown,
 }
@@ -189,6 +191,12 @@ pub enum DaemonResponse {
     Killed { session_name: String },
     /// Session was renamed.
     Renamed { old_name: String, new_name: String },
+    /// Terminal state for preview (without attaching).
+    Previewed {
+        session_name: String,
+        /// Serialized terminal state for preview.
+        terminal_state: Option<Vec<u8>>,
+    },
     /// Error occurred.
     Error { message: String },
     /// Daemon is shutting down.
@@ -1310,6 +1318,21 @@ fn process_message(
                 }
             }
         }
+        ClientMessage::Preview { session_name } => {
+            let sessions_guard = sessions.lock().unwrap();
+            if let Some(session) = sessions_guard.get(&session_name) {
+                // Get terminal state for preview using the same method as session attach
+                let state = session.get_terminal_state();
+                DaemonResponse::Previewed {
+                    session_name,
+                    terminal_state: Some(state.contents),
+                }
+            } else {
+                DaemonResponse::Error {
+                    message: format!("Session '{}' not found", session_name),
+                }
+            }
+        }
         ClientMessage::Shutdown => {
             shutdown.store(true, Ordering::SeqCst);
             DaemonResponse::ShuttingDown
@@ -1369,6 +1392,25 @@ impl MessageReader {
             buffer: Vec::new(),
             expected_len: None,
         }
+    }
+
+    /// Clear the internal buffer. Call this before doing synchronous reads
+    /// that bypass the MessageReader to avoid message corruption.
+    /// WARNING: Any partial message data will be lost.
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.expected_len = None;
+    }
+
+    /// Check if there's buffered data that hasn't been processed yet.
+    pub fn has_buffered_data(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
+    /// Try to parse any complete messages from the existing buffer without reading more.
+    /// Use this to drain buffered messages before synchronous operations.
+    pub fn try_parse_buffered<T: for<'de> Deserialize<'de>>(&mut self) -> io::Result<Option<T>> {
+        self.try_parse()
     }
 
     /// Try to read a complete message from the stream.
@@ -1613,6 +1655,17 @@ impl DaemonClient {
             new_name: new_name.to_string(),
         })? {
             DaemonResponse::Renamed { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Get terminal state for preview (without attaching).
+    pub fn preview_session(&mut self, session_name: &str) -> Result<Option<Vec<u8>>> {
+        match self.send(ClientMessage::Preview {
+            session_name: session_name.to_string(),
+        })? {
+            DaemonResponse::Previewed { terminal_state, .. } => Ok(terminal_state),
             DaemonResponse::Error { message } => bail!("{}", message),
             other => bail!("Unexpected response: {:?}", other),
         }
@@ -3044,5 +3097,95 @@ mod tests {
         // Verify session was not changed
         let sessions_guard = sessions.lock().unwrap();
         assert!(sessions_guard.contains_key("old_name"), "old_name should still exist");
+    }
+
+    // Tests for preview functionality (sidebar_tui-xjh)
+
+    #[test]
+    fn test_encode_decode_preview_message() {
+        let msg = ClientMessage::Preview {
+            session_name: "test_session".to_string(),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: ClientMessage = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            ClientMessage::Preview { session_name } => {
+                assert_eq!(session_name, "test_session");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_previewed_response() {
+        let msg = DaemonResponse::Previewed {
+            session_name: "test_session".to_string(),
+            terminal_state: Some(b"Hello, World!".to_vec()),
+        };
+        let encoded = encode_message(&msg).unwrap();
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded: DaemonResponse = decode_message(&mut cursor).unwrap();
+
+        match decoded {
+            DaemonResponse::Previewed { session_name, terminal_state } => {
+                assert_eq!(session_name, "test_session");
+                assert_eq!(terminal_state, Some(b"Hello, World!".to_vec()));
+            }
+            _ => panic!("Wrong response type"),
+        }
+    }
+
+    #[test]
+    fn test_process_preview_existing_session() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Add a session with some terminal content
+        {
+            let mut sessions_guard = sessions.lock().unwrap();
+            let mut session = Session::new("preview_test".to_string(), 24, 80, None).unwrap();
+            // Add some content to the terminal
+            session.process_raw(b"Hello, Preview!");
+            sessions_guard.insert("preview_test".to_string(), session);
+        }
+
+        // Request preview
+        let msg = ClientMessage::Preview {
+            session_name: "preview_test".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Previewed { session_name, terminal_state } => {
+                assert_eq!(session_name, "preview_test");
+                assert!(terminal_state.is_some());
+                let state_bytes = terminal_state.unwrap();
+                let contents = String::from_utf8_lossy(&state_bytes);
+                assert!(contents.contains("Hello, Preview!"), "Preview should contain terminal content");
+            }
+            _ => panic!("Expected Previewed response, got {:?}", response),
+        }
+    }
+
+    #[test]
+    fn test_process_preview_nonexistent_session() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // Request preview for nonexistent session
+        let msg = ClientMessage::Preview {
+            session_name: "nonexistent".to_string(),
+        };
+
+        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+
+        assert!(matches!(response, DaemonResponse::Error { .. }));
     }
 }

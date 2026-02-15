@@ -34,7 +34,10 @@ After the last couple sprints a couple things got dropped, a couple existing fea
   ```
   Error: Claude Code cannot be launched inside another Claude Code session. Nested sessions share runtime resources and wil crash all active sessions. To bypass this check, unset the CLAUDECODE environment variable.
   ```
-  I don't know why this is happening, btu 
+
+  I don't know why this is happening, but every few builds I see it again.
+
+- In the quit confirmation prompt, `q` should be an alternative to `y` for confirming that you want to quit.
 
 ## Spec
 

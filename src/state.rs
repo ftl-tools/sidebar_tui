@@ -292,6 +292,12 @@ pub enum EventResult {
         /// Name of the session to switch to.
         name: String,
     },
+    /// Preview a session's terminal content (without fully attaching).
+    /// Used when navigating the sidebar to show a live preview.
+    PreviewSession {
+        /// Name of the session to preview.
+        name: String,
+    },
 }
 
 /// Main application state.

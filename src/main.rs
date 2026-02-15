@@ -393,6 +393,13 @@ fn run_attached(
             Ok(Some(DaemonResponse::Error { message })) => {
                 bail!("Daemon error: {}", message);
             }
+            Ok(Some(DaemonResponse::Previewed { terminal_state, .. })) => {
+                // Update terminal emulator with preview content
+                app.term_emulator = Terminal::new(term_rows, term_cols);
+                if let Some(state_bytes) = terminal_state {
+                    app.process_output(&state_bytes);
+                }
+            }
             Ok(Some(_)) => {
                 // Other responses, ignore
             }
@@ -563,6 +570,17 @@ fn run_attached(
                             }
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::PreviewSession { name } => {
+                            // Request terminal state preview for the selected session
+                            // Send the preview request asynchronously - response will be
+                            // handled in the main message loop above
+                            let preview_msg = ClientMessage::Preview {
+                                session_name: name.clone(),
+                            };
+                            let encoded = encode_message(&preview_msg)?;
+                            stream.write_all(&encoded)?;
+                            stream.flush()?;
                         }
                         EventResult::Consumed => {
                             // Event was consumed by UI state machine, nothing to forward
