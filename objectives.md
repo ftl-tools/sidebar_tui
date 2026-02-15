@@ -2,6 +2,32 @@
 
 I want a simple TUI for managing terminal sessions in a sidebar in a way that works with my workflow. I want to have sessions grouped into threads on the side bar, and to be able to easily create new ones and switch between them. The full spec is here @eventual_objectives.md but that is too much to start with, so we'll get the basic functionality working first and then iterate from there.
 
+## Indbox/Updates
+
+After the last couple sprints a couple things got dropped, a couple existing features need clarified, and we've updated a couple new ones. Please implement these and add them to the spec below as you implement each one:
+
+- We've replaced (color 56) with (color 54)
+- The sidebar should have one char of padding on the left and right between the session names and the sidebar border.
+- The terminal padding is currently being applied outside of the border it should be inside the border between the border and the terminal content.
+- The quit hotkey text in the hint bar should be purple and the "Quit" should be white like the other hotkey hints.
+- The `│` seperator in the hint bar should be more gray (color 242).
+- When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it.
+- When I focus on the sidebar pane and then press `enter` to focus on this terminal session, the TUI crashes with the following message. It does this whether I move the selection or just leave it. Just crashes when I press `enter` to select a session in the sidebar. This is a critical bug that prevents the core functionality of selecting and switching between sessions from working, so please prioritize this fix:
+
+  ```
+  Error:
+    0: Broken pipe (os error 32)
+
+  Location:
+    src/main.rs:284
+
+  Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+  Run with RUST_BACKTRACE=full to include source snippets.
+  ```
+
+- The outline of the focused pane is too bright, let's make it (color 250). This should apply to both the sidebar and terminal panes when they are focused.
+- When the sidebar pane is focused, `h` and `j` should also work as alternatives to the up and down arrows for moving the selection up and down.
+
 ## Spec
 
 The general requirements are as follows:
