@@ -1419,8 +1419,10 @@ mod tests {
         // The only conditions are: Normal mode, mouse in terminal area, session exists.
         use sidebar_tui::state::{AppMode, Focus, AppState};
 
-        let mut state = AppState::default();
-        state.mode = AppMode::Normal;
+        let mut state = AppState {
+            mode: AppMode::Normal,
+            ..Default::default()
+        };
 
         // Scroll should work when sidebar is focused
         state.focus = Focus::Sidebar;
