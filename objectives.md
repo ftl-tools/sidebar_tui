@@ -2,12 +2,6 @@
 
 I want a simple TUI for managing terminal sessions in a sidebar in a way that works with my workflow. I want to have sessions grouped into threads on the side bar, and to be able to easily create new ones and switch between them. The full spec is here @eventual_objectives.md but that is too much to start with, so we'll get the basic functionality working first and then iterate from there.
 
-## Inbox/Updates
-
-Remaining items:
-
-- When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it. (BLOCKED - sidebar_tui-xjh: requires architectural refactor of message handling)
-
 ## Spec
 
 The general requirements are as follows:
