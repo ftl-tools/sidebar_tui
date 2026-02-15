@@ -884,9 +884,9 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title "Sidebar TUI" starts inside the border (position 1, row 1)
+        // Title "Sidebar TUI" starts inside the border + padding (position 2, row 1)
         // Find the 'S' in "Sidebar TUI" and check its foreground color
-        let cell = &buffer[(1, 1)];
+        let cell = &buffer[(2, 1)];
         assert_eq!(
             cell.fg,
             colors::PURPLE,
@@ -904,15 +904,16 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title should start right after the left border character on row 1 (inside border)
-        // Extract first content row within sidebar (after left border)
+        // Title should start after left border + padding on row 1 (inside border)
+        // With 1 char padding, content starts at x=2
+        // Extract content row within sidebar (after left border and padding)
         let mut title_content = String::new();
-        for x in 1..(SIDEBAR_WIDTH - 1) {
+        for x in 2..(SIDEBAR_WIDTH - 1) {
             let cell = &buffer[(x, 1)];
             title_content.push_str(cell.symbol());
         }
 
-        // The title should start at the beginning (left-aligned)
+        // The title should start at the beginning (left-aligned after padding)
         assert!(
             title_content.starts_with("Sidebar TUI"),
             "Title should be left-aligned, got: '{}'",

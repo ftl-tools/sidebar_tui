@@ -19,9 +19,12 @@ use crate::state::{AppMode, AppState, Focus};
 /// Width of the sidebar pane including borders.
 pub const SIDEBAR_WIDTH: u16 = 28;
 
-/// Content width inside the sidebar (excluding left border and padding).
-/// SIDEBAR_WIDTH (28) - 2 (left/right borders) = 26 chars for content.
-const CONTENT_WIDTH: usize = (SIDEBAR_WIDTH - 2) as usize;
+/// Padding on each side between border and content.
+const PADDING: u16 = 1;
+
+/// Content width inside the sidebar (excluding borders and padding).
+/// SIDEBAR_WIDTH (28) - 2 (left/right borders) - 2 (left/right padding) = 24 chars for content.
+const CONTENT_WIDTH: usize = (SIDEBAR_WIDTH - 2 - PADDING * 2) as usize;
 
 /// Continuation indicator for wrapped lines (not the first line).
 const CONTINUATION_MIDDLE: &str = "│";
@@ -236,15 +239,15 @@ impl<'a> Sidebar<'a> {
 
     /// Render the sidebar title.
     fn render_title(&self, buf: &mut Buffer, area: Rect) {
-        // Title is "Sidebar TUI" in purple, left-aligned
+        // Title is "Sidebar TUI" in purple, left-aligned with padding
         let title = "Sidebar TUI";
         let style = Style::default().fg(PURPLE);
-        buf.set_string(area.x, area.y, title, style);
+        buf.set_string(area.x + PADDING, area.y, title, style);
     }
 
     /// Render the welcome state message.
     fn render_welcome(&self, buf: &mut Buffer, area: Rect) {
-        // Center the welcome message in the available area
+        // Center the welcome message in the available area (accounting for padding)
         // The message should be colored grey (238) with purple keybinding
         let key = if self.state.focus == Focus::Sidebar {
             "n"
@@ -269,15 +272,19 @@ impl<'a> Sidebar<'a> {
             vec![Span::styled("first session!", Style::default().fg(DARK_GREY))],
         ];
 
+        // Content area starts after padding on left and ends before padding on right
+        let content_x = area.x + PADDING;
+        let content_width = area.width.saturating_sub(PADDING * 2);
+
         for (i, spans) in lines_to_render.iter().enumerate() {
             let y = start_y + i as u16;
             if y >= area.y + area.height {
                 break;
             }
 
-            // Calculate total width for centering
+            // Calculate total width for centering within content area
             let total_width: usize = spans.iter().map(|s| s.content.len()).sum();
-            let x = area.x + (area.width.saturating_sub(total_width as u16)) / 2;
+            let x = content_x + (content_width.saturating_sub(total_width as u16)) / 2;
 
             let mut current_x = x;
             for span in spans {
@@ -293,11 +300,13 @@ impl<'a> Sidebar<'a> {
         let (lines, show_top, show_bottom) = build_sidebar_lines(self.state, visible_rows);
 
         let mut y = area.y;
+        // Content starts after padding
+        let content_x = area.x + PADDING;
 
         // Top truncation indicator
         if show_top {
             let indicator = "...";
-            buf.set_string(area.x, y, indicator, Style::default().fg(DARK_GREY));
+            buf.set_string(content_x, y, indicator, Style::default().fg(DARK_GREY));
             y += 1;
         }
 
@@ -338,14 +347,15 @@ impl<'a> Sidebar<'a> {
             };
 
             // Fill the line with background color if selected
+            // Per spec: highlight starts at first letter (content_x) and goes to right border
             if is_selected {
-                for x in area.x..area.x + area.width {
+                for x in content_x..area.x + area.width {
                     buf[(x, y)].set_style(bg_style);
                 }
             }
 
-            // Render continuation indicator
-            let mut x = area.x;
+            // Render continuation indicator (with padding)
+            let mut x = content_x;
             if *is_continuation {
                 let indicator = if *is_last_line {
                     CONTINUATION_END
@@ -387,7 +397,7 @@ impl<'a> Sidebar<'a> {
         // Bottom truncation indicator
         if show_bottom && y < area.y + area.height {
             let indicator = "...";
-            buf.set_string(area.x, y, indicator, Style::default().fg(DARK_GREY));
+            buf.set_string(content_x, y, indicator, Style::default().fg(DARK_GREY));
         }
     }
 }
@@ -441,7 +451,7 @@ impl Widget for Sidebar<'_> {
 /// Get cursor position for drafting or renaming mode.
 /// Returns (x, y) position if cursor should be shown.
 pub fn get_sidebar_cursor_position(state: &AppState, area: Rect) -> Option<(u16, u16)> {
-    let inner_x = area.x + 1; // Inside border
+    let inner_x = area.x + 1 + PADDING; // Inside border + padding
     let inner_y = area.y + 2; // Below border and title
 
     match &state.mode {
@@ -505,8 +515,8 @@ mod tests {
     fn test_sidebar_title_is_purple() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        // Title starts at x=1, y=1 (inside border)
-        let cell = &buf[(1, 1)];
+        // Title starts at x=2, y=1 (inside border + padding)
+        let cell = &buf[(2, 1)];
         assert_eq!(cell.fg, PURPLE, "Title should be purple");
     }
 
@@ -576,8 +586,8 @@ mod tests {
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
         // Find the 's' of 'selected' and check its background
-        // Session list starts at y=2 (after border and title)
-        let cell = &buf[(1, 2)];
+        // Session list starts at y=2 (after border and title), x=2 (after border + padding)
+        let cell = &buf[(2, 2)];
         assert_eq!(cell.bg, DARK_PURPLE, "Selected session should have dark purple background");
     }
 
@@ -587,8 +597,8 @@ mod tests {
             Session::new("test"),
         ]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        // Find the 't' of 'test'
-        let cell = &buf[(1, 2)];
+        // Find the 't' of 'test' at x=2 (after border + padding)
+        let cell = &buf[(2, 2)];
         assert_eq!(cell.fg, WHITE, "Session name should be white");
     }
 
@@ -711,14 +721,18 @@ mod tests {
         state.focus = Focus::Sidebar;
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
-        // Check that the entire row (within borders) has dark purple background
+        // Check that the row from first letter to right border has dark purple background
+        // Per spec: highlight starts at first letter (after padding at x=2) and goes to right border (x=26)
         // Row 2 is where the session is (after border and title)
         let y = 2;
-        // Check a few cells in the row
-        for x in 1..SIDEBAR_WIDTH - 1 {
+        // Content starts at x=2 (after border + padding) and extends to SIDEBAR_WIDTH - 1 (before right border)
+        for x in 2..SIDEBAR_WIDTH - 1 {
             let cell = &buf[(x, y)];
             assert_eq!(cell.bg, DARK_PURPLE, "Selection highlight should fill the row at x={}", x);
         }
+        // Padding area (x=1) should NOT have background highlight
+        let padding_cell = &buf[(1, y)];
+        assert_ne!(padding_cell.bg, DARK_PURPLE, "Padding area should not have selection highlight");
     }
 
     #[test]
@@ -737,8 +751,8 @@ mod tests {
 
         assert!(cursor.is_some());
         let (x, _y) = cursor.unwrap();
-        // Cursor should be at position 3 (after 'abc')
-        assert_eq!(x, 1 + 3); // inner_x + cursor_position
+        // Cursor should be at position after 'abc': 1 (border) + 1 (padding) + 3 (cursor_position) = 5
+        assert_eq!(x, 1 + 1 + 3); // border + padding + cursor_position
     }
 
     #[test]
@@ -748,7 +762,8 @@ mod tests {
 
     #[test]
     fn test_content_width_constant() {
-        assert_eq!(CONTENT_WIDTH, 26);
+        // CONTENT_WIDTH = SIDEBAR_WIDTH (28) - 2 (borders) - 2 (padding) = 24
+        assert_eq!(CONTENT_WIDTH, 24);
     }
 
     #[test]
@@ -770,5 +785,40 @@ mod tests {
         let state = AppState::with_sessions(vec![Session::new("test")]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         assert!(!buffer_contains(&buf, "Welcome"));
+    }
+
+    #[test]
+    fn test_sidebar_has_padding_between_content_and_border() {
+        // Per spec: The sidebar should have one char of padding on the left and right
+        // between the session names and the sidebar border.
+        let state = AppState::with_sessions(vec![Session::new("test")]);
+        let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
+
+        // Row 2 is where session names appear (after border row 0 and title row 1)
+        let y = 2;
+
+        // x=0 is the left border
+        let border_cell = &buf[(0, y)];
+        assert!(
+            border_cell.symbol() == "│",
+            "Position 0 should be border, got: '{}'",
+            border_cell.symbol()
+        );
+
+        // x=1 should be padding (empty/space)
+        let padding_cell = &buf[(1, y)];
+        assert!(
+            padding_cell.symbol() == " ",
+            "Position 1 should be padding (space), got: '{}'",
+            padding_cell.symbol()
+        );
+
+        // x=2 should be where the session name starts (the 't' of 'test')
+        let content_cell = &buf[(2, y)];
+        assert_eq!(
+            content_cell.symbol(),
+            "t",
+            "Position 2 should be first letter of session name"
+        );
     }
 }

@@ -7,7 +7,6 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 After the last couple sprints a couple things got dropped, a couple existing features need clarified, and we've updated a couple new ones. Please implement these and add them to the spec below as you implement each one:
 
 - We've replaced (color 56) with (color 54)
-- The sidebar should have one char of padding on the left and right between the session names and the sidebar border.
 - The terminal padding is currently being applied outside of the border it should be inside the border between the border and the terminal content.
 - The quit hotkey text in the hint bar should be purple and the "Quit" should be white like the other hotkey hints.
 - The `│` seperator in the hint bar should be more gray (color 242).
@@ -92,6 +91,7 @@ The general requirements are as follows:
 #### Sidebar Pane
 
 - The Sidebar pane should be a fixed width following the design above.
+- There should be one char of padding on the left and right between the session names and the sidebar border.
 - The top row should say "Sidebar TUI" in purple text (color 165). It should be left aligned.
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).

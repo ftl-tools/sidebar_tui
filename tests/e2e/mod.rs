@@ -179,22 +179,23 @@ fn test_layout_matches_spec() {
         sidebar_portion
     );
 
-    // Title should be left-aligned (starts right after left border character at position 1)
-    // The first char should be a border (│), then "Sidebar TUI" starts
+    // Title should be left-aligned (starts after left border + padding at position 2)
+    // The first char should be a border (│), then padding, then "Sidebar TUI" starts
     let chars: Vec<char> = second_row.chars().collect();
-    if chars.len() > 1 {
-        // Check that title starts at position 1 (after border)
-        let title_start: String = chars[1..].iter().take(11).collect();
+    if chars.len() > 2 {
+        // Check that title starts at position 2 (after border + padding)
+        let title_start: String = chars[2..].iter().take(11).collect();
         assert!(
             title_start == "Sidebar TUI",
-            "Title should be left-aligned starting at position 1, got: '{}'",
+            "Title should be left-aligned starting at position 2 (after border + padding), got: '{}'",
             title_start
         );
     }
 
     // Verify the title text has purple foreground color (ANSI 165)
     // Note: vt100 uses different color representations
-    if let Some(title_cell) = session.cell_at(1, 1) {
+    // Title starts at row 1, column 2 (after border + padding)
+    if let Some(title_cell) = session.cell_at(1, 2) {
         let fg_color = title_cell.fgcolor();
         // Purple is ANSI index 165
         assert!(
@@ -916,8 +917,9 @@ fn test_sidebar_session_list() {
     // Verify the selected session has dark purple background (color 54)
     // The session should be on row 2 (after title on row 1, inside border)
     // Check a cell in the session name area for background color
+    // Session names start at column 2 (after border + padding)
     let found_purple_bg = (2..20).any(|row| {
-        if let Some(cell) = session.cell_at(row, 1) {
+        if let Some(cell) = session.cell_at(row, 2) {
             matches!(cell.bgcolor(), vt100::Color::Idx(54))
         } else {
             false
