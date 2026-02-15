@@ -290,6 +290,79 @@ fn send_daemon_message(stream: &mut UnixStream, msg: ClientMessage) -> Result<Da
     Ok(response)
 }
 
+/// Drain all pending async messages before a synchronous operation.
+///
+/// This function processes any buffered messages and reads any in-flight messages
+/// from the socket with a short timeout, preventing message interleaving when
+/// sync operations (like CreateSession, DeleteSession) are called while async
+/// messages (like Preview, Output) may be pending.
+///
+/// Returns Ok(()) on success, or an error if reading fails.
+fn drain_async_messages(
+    msg_reader: &mut MessageReader,
+    stream: &mut UnixStream,
+    app: &mut DaemonApp,
+) -> Result<()> {
+    use std::io;
+
+    // 1. Process any complete messages already buffered
+    while let Some(response) = msg_reader.try_parse_buffered::<DaemonResponse>()? {
+        handle_drained_response(response, app);
+    }
+
+    // 2. Try to read any pending data from the socket with short timeout
+    // This catches messages in flight but not yet buffered
+    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
+    loop {
+        match msg_reader.try_read::<DaemonResponse>(stream) {
+            Ok(Some(response)) => {
+                handle_drained_response(response, app);
+            }
+            Ok(None) => {
+                // No more complete messages available
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => break,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                // Connection closed - this is a real error
+                return Err(e.into());
+            }
+            Err(_) => {
+                // Other errors - just break and let the sync op proceed
+                break;
+            }
+        }
+    }
+
+    // 3. Clear any partial data (will be lost, but sync op will resync)
+    if msg_reader.has_buffered_data() {
+        // Warning: dropping partial message before sync operation
+        msg_reader.clear();
+    }
+
+    Ok(())
+}
+
+/// Handle a response that was drained before a sync operation.
+fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
+    match response {
+        DaemonResponse::Output { data } => {
+            // Process terminal output
+            if !data.is_empty() {
+                app.process_output(&data);
+            }
+        }
+        DaemonResponse::Previewed { terminal_state: Some(state_bytes), .. } => {
+            // Update preview - may be stale if we're about to switch sessions
+            app.process_output(&state_bytes);
+        }
+        // Ignore Previewed with None terminal_state and other responses during drain -
+        // they shouldn't happen but if they do, sync op will get the response it needs
+        _ => {}
+    }
+}
+
 /// Run the TUI attached to a daemon session.
 fn run_attached(
     ratatui_term: &mut DefaultTerminal,
@@ -1812,6 +1885,93 @@ mod tests {
             content.contains("n →") || content.contains("n → q"),
             "Confirmation quit path should show 'n →' path, got: {}",
             content
+        );
+    }
+
+    #[test]
+    fn test_handle_drained_response_output() {
+        // Test that Output responses are processed correctly
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Output {
+            data: b"Hello, World!".to_vec(),
+        };
+
+        handle_drained_response(response, &mut app);
+
+        let contents = app.term_emulator.contents();
+        assert!(
+            contents.contains("Hello, World!"),
+            "Output should be processed, got: {}",
+            contents
+        );
+    }
+
+    #[test]
+    fn test_handle_drained_response_empty_output() {
+        // Test that empty Output responses are handled without panics
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Output { data: vec![] };
+
+        // Should not panic
+        handle_drained_response(response, &mut app);
+    }
+
+    #[test]
+    fn test_handle_drained_response_previewed() {
+        // Test that Previewed responses update terminal state
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Previewed {
+            session_name: "preview".to_string(),
+            terminal_state: Some(b"Preview content".to_vec()),
+        };
+
+        handle_drained_response(response, &mut app);
+
+        let contents = app.term_emulator.contents();
+        assert!(
+            contents.contains("Preview content"),
+            "Preview content should be processed, got: {}",
+            contents
+        );
+    }
+
+    #[test]
+    fn test_handle_drained_response_previewed_none() {
+        // Test that Previewed response with no terminal state is handled
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Previewed {
+            session_name: "preview".to_string(),
+            terminal_state: None,
+        };
+
+        // Should not panic
+        handle_drained_response(response, &mut app);
+    }
+
+    #[test]
+    fn test_handle_drained_response_ignores_other_responses() {
+        // Test that other responses are safely ignored during drain
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+
+        // These should all be safely ignored
+        handle_drained_response(DaemonResponse::Attached {
+            session_name: "test".to_string(),
+            is_new: true,
+            terminal_state: None,
+        }, &mut app);
+
+        handle_drained_response(DaemonResponse::Detached, &mut app);
+
+        handle_drained_response(DaemonResponse::Error {
+            message: "test error".to_string(),
+        }, &mut app);
+
+        // Terminal should still be empty (no output processed)
+        let contents = app.term_emulator.contents();
+        assert!(
+            contents.trim().is_empty(),
+            "Terminal should be empty after ignored responses, got: {}",
+            contents
         );
     }
 }
