@@ -268,6 +268,13 @@ pub enum EventResult {
     NotConsumed,
     /// User requested to quit the TUI.
     Quit,
+    /// Create a new session with the given name and type.
+    CreateSession {
+        /// Name for the new session.
+        name: String,
+        /// Type of session (Terminal or Agent).
+        session_type: SessionType,
+    },
 }
 
 /// Main application state.
