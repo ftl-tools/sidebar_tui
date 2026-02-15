@@ -11,7 +11,7 @@ use color_eyre::eyre::{Context, bail};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
@@ -19,10 +19,12 @@ use sidebar_tui::daemon::{
     self, ClientMessage, DaemonClient, DaemonResponse, MessageReader, get_socket_path,
     ensure_runtime_dir, decode_message, encode_message,
 };
+use sidebar_tui::hint_bar::hint_bar_for_state;
 use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
 use sidebar_tui::sidebar::Sidebar;
-use sidebar_tui::state::AppState;
+use sidebar_tui::state::{AppState, Focus};
 use sidebar_tui::terminal::Terminal;
+use sidebar_tui::colors;
 
 /// Build version including git hash
 const VERSION: &str = concat!(
@@ -248,6 +250,8 @@ struct DaemonApp {
     /// Current session name (kept for future use with multiple sessions)
     #[allow(dead_code)]
     session_name: String,
+    /// Application UI state (focus, mode, sessions list)
+    app_state: AppState,
 }
 
 impl DaemonApp {
@@ -255,6 +259,7 @@ impl DaemonApp {
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
+            app_state: AppState::default(),
         }
     }
 
@@ -445,34 +450,75 @@ pub const TERMINAL_H_PADDING: u16 = 2;
 
 /// Render the application UI with daemon-connected terminal emulator.
 fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
-    // Create horizontal layout: sidebar (28 chars) + terminal view (rest)
-    let chunks = Layout::horizontal([
-        Constraint::Length(SIDEBAR_WIDTH),
-        Constraint::Fill(1),
+    // Calculate hint bar height first
+    let hint_bar = hint_bar_for_state(&app.app_state);
+    let hint_bar_height = hint_bar.calculate_height(frame.area().width);
+
+    // Create vertical layout: main content + hint bar
+    let vertical_chunks = Layout::vertical([
+        Constraint::Min(0),  // Main content
+        Constraint::Length(hint_bar_height),  // Hint bar
     ])
     .split(frame.area());
 
-    render_sidebar(frame, chunks[0]);
+    let main_area = vertical_chunks[0];
+    let hint_bar_area = vertical_chunks[1];
+
+    // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
+    let horizontal_chunks = Layout::horizontal([
+        Constraint::Length(SIDEBAR_WIDTH),
+        Constraint::Fill(1),
+    ])
+    .split(main_area);
+
+    render_sidebar_with_state(frame, horizontal_chunks[0], &app.app_state);
 
     // Add 2 char horizontal padding (left + right) for visual separation
-    let terminal_area = pad_rect_horizontal(chunks[1], TERMINAL_H_PADDING);
-    render_terminal_emulator(frame, terminal_area, &app.term_emulator);
+    let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
+    render_terminal_emulator_with_state(frame, terminal_area, &app.term_emulator, &app.app_state);
+
+    // Render hint bar
+    frame.render_widget(hint_bar, hint_bar_area);
 }
 
 /// Render the static UI layout (for tests without PTY).
 pub fn render(frame: &mut Frame) {
-    // Create horizontal layout: sidebar (28 chars) + terminal view (rest)
-    let chunks = Layout::horizontal([
-        Constraint::Length(SIDEBAR_WIDTH),
-        Constraint::Fill(1),
+    // Use a default AppState for static rendering (welcome state)
+    let state = AppState::default();
+    render_with_state(frame, &state);
+}
+
+/// Render the static UI layout with specific app state.
+pub fn render_with_state(frame: &mut Frame, state: &AppState) {
+    // Calculate hint bar height first
+    let hint_bar = hint_bar_for_state(state);
+    let hint_bar_height = hint_bar.calculate_height(frame.area().width);
+
+    // Create vertical layout: main content + hint bar
+    let vertical_chunks = Layout::vertical([
+        Constraint::Min(0),  // Main content
+        Constraint::Length(hint_bar_height),  // Hint bar
     ])
     .split(frame.area());
 
-    render_sidebar(frame, chunks[0]);
+    let main_area = vertical_chunks[0];
+    let hint_bar_area = vertical_chunks[1];
+
+    // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
+    let horizontal_chunks = Layout::horizontal([
+        Constraint::Length(SIDEBAR_WIDTH),
+        Constraint::Fill(1),
+    ])
+    .split(main_area);
+
+    render_sidebar_with_state(frame, horizontal_chunks[0], state);
 
     // Add 2 char horizontal padding (left + right) for visual separation
-    let terminal_area = pad_rect_horizontal(chunks[1], TERMINAL_H_PADDING);
-    render_terminal_view(frame, terminal_area);
+    let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
+    render_terminal_view_with_state(frame, terminal_area, state);
+
+    // Render hint bar
+    frame.render_widget(hint_bar, hint_bar_area);
 }
 
 /// Shrink a rect by horizontal padding only (left and right sides)
@@ -485,41 +531,46 @@ fn pad_rect_horizontal(rect: Rect, padding: u16) -> Rect {
     }
 }
 
-fn render_sidebar(frame: &mut Frame, area: Rect) {
-    // Use a default AppState for static rendering (welcome state)
-    let state = AppState::default();
-    let sidebar = Sidebar::new(&state);
-    frame.render_widget(sidebar, area);
-}
-
 /// Render sidebar with specific application state.
-/// Currently unused but will be needed when integrating with daemon session list.
-#[allow(dead_code)]
 fn render_sidebar_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
     let sidebar = Sidebar::new(state);
     frame.render_widget(sidebar, area);
 }
 
-fn render_terminal_view(frame: &mut Frame, area: Rect) {
-    // Terminal view with border outline (lighter gray than sidebar)
+/// Render terminal view placeholder with focus-aware border colors.
+fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
+    // Terminal border color depends on focus
+    let border_color = if state.focus == Focus::Terminal {
+        colors::WHITE
+    } else {
+        colors::DARK_GREY
+    };
+
     let terminal_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(Style::default().fg(border_color));
 
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
 
     // Placeholder text for static tests
     let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(colors::WHITE));
     frame.render_widget(terminal_placeholder, inner_area);
 }
 
-fn render_terminal_emulator(frame: &mut Frame, area: Rect, term: &Terminal) {
-    // Terminal view with border outline (lighter gray than sidebar)
+/// Render the terminal emulator with focus-aware border colors.
+fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Terminal, state: &AppState) {
+    // Terminal border color depends on focus
+    let border_color = if state.focus == Focus::Terminal {
+        colors::WHITE
+    } else {
+        colors::DARK_GREY
+    };
+
     let terminal_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(Style::default().fg(border_color));
 
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
@@ -534,6 +585,7 @@ fn render_terminal_emulator(frame: &mut Frame, area: Rect, term: &Terminal) {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use sidebar_tui::colors;
     use ratatui::Terminal;
 
@@ -697,11 +749,11 @@ mod tests {
             corner.symbol()
         );
 
-        // Check border has gray foreground (lighter than sidebar's dark gray)
+        // In default state, sidebar is focused so terminal border should be DARK_GREY (unfocused)
         assert_eq!(
             corner.fg,
-            Color::Gray,
-            "Terminal border should have gray foreground (lighter than sidebar), got: {:?}",
+            colors::DARK_GREY,
+            "Terminal border should have dark grey foreground when unfocused, got: {:?}",
             corner.fg
         );
     }
@@ -972,5 +1024,139 @@ mod tests {
         let mouse_column: u16 = 35; // Inside terminal area
         let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
         assert!(should_handle, "Scroll in terminal area should be handled");
+    }
+
+    #[test]
+    fn test_hint_bar_rendered_at_bottom() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Hint bar should be at the bottom with DARK_GREY background
+        // Last row (y=23) should have hint bar background
+        let cell = &buffer[(0, 23)];
+        assert_eq!(
+            cell.bg,
+            colors::DARK_GREY,
+            "Hint bar should have dark grey background, got: {:?}",
+            cell.bg
+        );
+    }
+
+    #[test]
+    fn test_hint_bar_shows_keybindings() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // In default state (sidebar focused, welcome state), should show "n New" and "q Quit"
+        assert!(
+            content.contains("n New") || content.contains("New"),
+            "Hint bar should show 'New' keybinding, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_hint_bar_shows_quit_path() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Should show quit path on the right
+        assert!(
+            content.contains("Quit"),
+            "Hint bar should show quit path, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_hint_bar_has_correct_keybinding_colors() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Find the 'n' keybinding on the hint bar (last row)
+        let last_row = 23;
+        for x in 0..buffer.area().width {
+            let cell = &buffer[(x, last_row)];
+            if cell.symbol() == "n" && cell.fg == colors::PURPLE {
+                // Found a purple 'n' keybinding
+                return;
+            }
+        }
+        panic!("Hint bar should have purple keybindings");
+    }
+
+    #[test]
+    fn test_terminal_focused_state_hint_bar() {
+        use sidebar_tui::state::AppState;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.focus = Focus::Terminal;
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // When terminal is focused, hint bar should show "ctrl + b" binding
+        assert!(
+            content.contains("ctrl + b") || content.contains("Focus on sidebar"),
+            "Hint bar should show 'ctrl + b' binding when terminal is focused, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_terminal_focused_border_is_white() {
+        use sidebar_tui::state::AppState;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.focus = Focus::Terminal;
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Terminal border should be WHITE when focused
+        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        let corner = &buffer[(term_start_x, 0)];
+        assert_eq!(
+            corner.fg,
+            colors::WHITE,
+            "Terminal border should be white when focused, got: {:?}",
+            corner.fg
+        );
+
+        // Sidebar border should be DARK_GREY when unfocused
+        let sidebar_corner = &buffer[(0, 0)];
+        assert_eq!(
+            sidebar_corner.fg,
+            colors::DARK_GREY,
+            "Sidebar border should be dark grey when unfocused, got: {:?}",
+            sidebar_corner.fg
+        );
     }
 }

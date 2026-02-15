@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use crate::colors;
+use crate::state::{AppMode, AppState, Focus};
 
 /// Information about a single keybinding to display in the hint bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,6 +387,83 @@ impl Widget for HintBar {
             }
         }
     }
+}
+
+/// Get the keybindings for the current app state.
+pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
+    match &state.mode {
+        AppMode::Normal => match state.focus {
+            Focus::Sidebar => {
+                if state.is_welcome_state() {
+                    vec![
+                        KeybindingInfo::new("n", "New"),
+                        KeybindingInfo::new("q", "Quit"),
+                    ]
+                } else {
+                    vec![
+                        KeybindingInfo::new("enter", "Select"),
+                        KeybindingInfo::new("↑/↓", "Navigate"),
+                        KeybindingInfo::new("n", "New"),
+                        KeybindingInfo::new("r", "Rename"),
+                        KeybindingInfo::new("d", "Delete"),
+                        KeybindingInfo::new("q", "Quit"),
+                    ]
+                }
+            }
+            Focus::Terminal => vec![
+                KeybindingInfo::new("ctrl + n", "New"),
+                KeybindingInfo::new("ctrl + b", "Focus on sidebar"),
+            ],
+        },
+        AppMode::CreateMode { .. } => vec![
+            KeybindingInfo::new("t", "Terminal Session"),
+            KeybindingInfo::new("a", "Agent Session"),
+            KeybindingInfo::new("esc", "Cancel"),
+        ],
+        AppMode::Drafting(_) => vec![
+            KeybindingInfo::new("enter", "Create"),
+            KeybindingInfo::new("esc", "Cancel"),
+        ],
+        AppMode::Renaming(_) => vec![
+            KeybindingInfo::new("enter", "Rename"),
+            KeybindingInfo::new("esc", "Cancel"),
+        ],
+        AppMode::Confirming(_) => vec![
+            KeybindingInfo::new("y", "Yes"),
+            KeybindingInfo::new("n", "No"),
+        ],
+    }
+}
+
+/// Get the quit path string for the current app state.
+pub fn get_quit_path_for_state(state: &AppState) -> String {
+    match &state.mode {
+        AppMode::Normal => match state.focus {
+            Focus::Sidebar => "q Quit".to_string(),
+            Focus::Terminal => "ctrl + b → q Quit".to_string(),
+        },
+        AppMode::CreateMode { .. } => "esc → q Quit".to_string(),
+        AppMode::Drafting(_) | AppMode::Renaming(_) => "esc → q Quit".to_string(),
+        AppMode::Confirming(_) => "n → q Quit".to_string(),
+    }
+}
+
+/// Create a HintBar configured for the current app state.
+pub fn hint_bar_for_state(state: &AppState) -> HintBar {
+    let bindings = get_bindings_for_state(state);
+    let quit_path = get_quit_path_for_state(state);
+
+    let mut hint_bar = HintBar::new(bindings, quit_path);
+
+    // If in confirmation mode, show the confirmation prompt
+    if let AppMode::Confirming(confirm_state) = &state.mode {
+        hint_bar.mode = HintBarMode::Confirm {
+            message: confirm_state.message().to_string(),
+            important: confirm_state.is_important(),
+        };
+    }
+
+    hint_bar
 }
 
 #[cfg(test)]
@@ -812,5 +890,162 @@ mod tests {
         // Disabled keybinding should be dark grey
         assert_eq!(buf[(0, 0)].fg, colors::DARK_GREY);
         assert_eq!(buf[(2, 0)].fg, colors::DARK_GREY);
+    }
+
+    // Tests for context-aware binding functions
+    #[test]
+    fn test_get_bindings_sidebar_focused_welcome() {
+        let state = AppState::default();
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "n"), "Should have 'n' binding");
+        assert!(bindings.iter().any(|b| b.key == "q"), "Should have 'q' binding");
+    }
+
+    #[test]
+    fn test_get_bindings_sidebar_focused_with_sessions() {
+        use crate::state::Session;
+
+        let mut state = AppState::default();
+        state.sessions.push(Session::new("test"));
+
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "enter"), "Should have 'enter' binding");
+        assert!(bindings.iter().any(|b| b.key == "r"), "Should have 'r' (rename) binding");
+        assert!(bindings.iter().any(|b| b.key == "d"), "Should have 'd' (delete) binding");
+    }
+
+    #[test]
+    fn test_get_bindings_terminal_focused() {
+        let mut state = AppState::default();
+        state.focus = Focus::Terminal;
+
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "ctrl + n"), "Should have 'ctrl + n' binding");
+        assert!(bindings.iter().any(|b| b.key == "ctrl + b"), "Should have 'ctrl + b' binding");
+    }
+
+    #[test]
+    fn test_get_bindings_create_mode() {
+        let mut state = AppState::default();
+        state.mode = AppMode::CreateMode { previous_focus: Focus::Sidebar };
+
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "t"), "Should have 't' (terminal) binding");
+        assert!(bindings.iter().any(|b| b.key == "a"), "Should have 'a' (agent) binding");
+        assert!(bindings.iter().any(|b| b.key == "esc"), "Should have 'esc' binding");
+    }
+
+    #[test]
+    fn test_get_bindings_drafting_mode() {
+        use crate::state::{DraftingState, SessionType};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "enter"), "Should have 'enter' binding");
+        assert!(bindings.iter().any(|b| b.key == "esc"), "Should have 'esc' binding");
+    }
+
+    #[test]
+    fn test_get_bindings_confirming_mode() {
+        use crate::state::{ConfirmState, ConfirmAction};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        let bindings = get_bindings_for_state(&state);
+
+        assert!(bindings.iter().any(|b| b.key == "y"), "Should have 'y' binding");
+        assert!(bindings.iter().any(|b| b.key == "n"), "Should have 'n' binding");
+    }
+
+    #[test]
+    fn test_get_quit_path_sidebar_focused() {
+        let state = AppState::default();
+        let quit_path = get_quit_path_for_state(&state);
+        assert_eq!(quit_path, "q Quit");
+    }
+
+    #[test]
+    fn test_get_quit_path_terminal_focused() {
+        let mut state = AppState::default();
+        state.focus = Focus::Terminal;
+
+        let quit_path = get_quit_path_for_state(&state);
+        assert_eq!(quit_path, "ctrl + b → q Quit");
+    }
+
+    #[test]
+    fn test_get_quit_path_drafting_mode() {
+        use crate::state::{DraftingState, SessionType};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        let quit_path = get_quit_path_for_state(&state);
+        assert_eq!(quit_path, "esc → q Quit");
+    }
+
+    #[test]
+    fn test_get_quit_path_confirming_mode() {
+        use crate::state::{ConfirmState, ConfirmAction};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        let quit_path = get_quit_path_for_state(&state);
+        assert_eq!(quit_path, "n → q Quit");
+    }
+
+    #[test]
+    fn test_hint_bar_for_state_normal() {
+        let state = AppState::default();
+        let hint_bar = hint_bar_for_state(&state);
+
+        assert_eq!(hint_bar.mode, HintBarMode::Normal);
+        assert_eq!(hint_bar.quit_path, "q Quit");
+        assert!(!hint_bar.bindings.is_empty());
+    }
+
+    #[test]
+    fn test_hint_bar_for_state_confirming_important() {
+        use crate::state::{ConfirmState, ConfirmAction, Session};
+
+        let mut state = AppState::default();
+        state.sessions.push(Session::new("test"));
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+
+        let hint_bar = hint_bar_for_state(&state);
+
+        match &hint_bar.mode {
+            HintBarMode::Confirm { message, important } => {
+                assert!(*important, "Delete should be important");
+                assert!(message.contains("Delete"), "Message should mention delete");
+            }
+            _ => panic!("Should be in Confirm mode"),
+        }
+    }
+
+    #[test]
+    fn test_hint_bar_for_state_confirming_not_important() {
+        use crate::state::{ConfirmState, ConfirmAction};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar));
+
+        let hint_bar = hint_bar_for_state(&state);
+
+        match &hint_bar.mode {
+            HintBarMode::Confirm { important, .. } => {
+                assert!(!important, "Quit should not be important");
+            }
+            _ => panic!("Should be in Confirm mode"),
+        }
     }
 }
