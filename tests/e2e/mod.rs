@@ -1883,3 +1883,544 @@ fn test_agent_session_no_nested_error() {
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
 }
+
+// =========================================================================
+// Live Preview E2E Tests (sidebar_tui-l82)
+// =========================================================================
+
+/// Test basic live preview: navigating sidebar with arrow keys shows previewed
+/// session content in the terminal pane without having to press Enter.
+/// This tests the core PreviewSession functionality.
+#[test]
+#[serial]
+fn test_live_preview_basic() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("preview1-{}-{}", pid, unique_id);
+    let session2_name = format!("preview2-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone(), session2_name.clone()],
+    };
+
+    // Create first session and run a command that produces unique output
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI and shell to initialize
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Run a unique command in session 1 (use short marker to fit in terminal)
+    session.write_all(b"echo MARK_S1\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+
+    // Wait for the marker to appear in output
+    let found = wait_for_text(&mut session, &mut parser, "MARK_S1", 5000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Session 1 with marker:\n{}", screen_contents);
+
+    assert!(
+        found,
+        "Session 1 should show MARK_S1. Got:\n{}",
+        screen_contents
+    );
+
+    // Focus sidebar and create second session
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create session 2 via n -> t -> name -> Enter
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Run a unique command in session 2 (use short marker to fit in terminal)
+    session.write_all(b"echo MARK_S2\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+
+    // Wait for the marker to appear in output
+    let found = wait_for_text(&mut session, &mut parser, "MARK_S2", 5000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Session 2 with marker:\n{}", screen_contents);
+
+    assert!(
+        found,
+        "Session 2 should show MARK_S2. Got:\n{}",
+        screen_contents
+    );
+
+    // Focus sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Currently at session 2 (most recent). Press Down to go to session 1.
+    // Live preview should update terminal to show session 1's content.
+    session.write_all(b"\x1b[B").expect("Failed to send Down");
+    session.flush().expect("Failed to flush");
+
+    // Wait for preview to update with session 1 content
+    let found = wait_for_text(&mut session, &mut parser, "MARK_S1", 3000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Down (preview session 1):\n{}", screen_contents);
+
+    // The terminal should now preview session 1's content (MARK_S1)
+    // without pressing Enter - this is the live preview feature
+    assert!(
+        found,
+        "Live preview should show session 1 content (MARK_S1). Got:\n{}",
+        screen_contents
+    );
+
+    // Press Up to go back to session 2 - preview should update again
+    session.write_all(b"\x1b[A").expect("Failed to send Up");
+    session.flush().expect("Failed to flush");
+
+    // Wait for preview to update with session 2 content
+    let found = wait_for_text(&mut session, &mut parser, "MARK_S2", 3000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Up (preview session 2):\n{}", screen_contents);
+
+    assert!(
+        found,
+        "Live preview should show session 2 content (MARK_S2). Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
+
+/// Test rapid navigation: rapidly pressing up/down keys should not cause
+/// crashes, corruption, or message interleaving issues.
+#[test]
+#[serial]
+fn test_live_preview_rapid_navigation() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("rapid1-{}-{}", pid, unique_id);
+    let session2_name = format!("rapid2-{}-{}", pid, unique_id);
+    let session3_name = format!("rapid3-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone(), session2_name.clone(), session3_name.clone()],
+    };
+
+    // Create first session
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create two more sessions quickly
+    for name in [&session2_name, &session3_name] {
+        session.write_all(&[2]).expect("Failed to send Ctrl+B"); // Focus sidebar
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(300));
+
+        session.write_all(b"n").expect("Failed to send 'n'");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(200));
+
+        session.write_all(b"t").expect("Failed to send 't'");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(200));
+
+        session.write_all(name.as_bytes()).expect("Failed to type name");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(200));
+
+        session.write_all(&[0x0d]).expect("Failed to send Enter");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(1000));
+    }
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Rapidly press Down/Up keys multiple times
+    // This should trigger many PreviewSession events in quick succession
+    for _ in 0..5 {
+        session.write_all(b"\x1b[B").expect("Failed to send Down"); // Down
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(50)); // Very short delay - rapid navigation
+    }
+
+    for _ in 0..5 {
+        session.write_all(b"\x1b[A").expect("Failed to send Up"); // Up
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Quick j/k vim keys
+    for _ in 0..3 {
+        session.write_all(b"j").expect("Failed to send j");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(30));
+        session.write_all(b"k").expect("Failed to send k");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    // Wait for messages to settle
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After rapid navigation:\n{}", screen_contents);
+
+    // TUI should still be running without crashes
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still be running after rapid navigation. Got:\n{}",
+        screen_contents
+    );
+
+    // Verify we can still interact - press Enter to select
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Enter (select):\n{}", screen_contents);
+
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still work after rapid navigation and selection. Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
+
+/// Test preview then select: preview a session, then press Enter to attach.
+/// The correct session should be attached (the one that was previewed).
+#[test]
+#[serial]
+fn test_live_preview_then_select() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("prvsel1-{}-{}", pid, unique_id);
+    let session2_name = format!("prvsel2-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone(), session2_name.clone()],
+    };
+
+    // Create first session with unique marker
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Run unique command in session 1 (short marker)
+    session.write_all(b"echo ATT_1\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+    wait_for_text(&mut session, &mut parser, "ATT_1", 5000);
+
+    // Create session 2 with different marker
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Run unique command in session 2 (short marker)
+    session.write_all(b"echo ATT_2\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+    wait_for_text(&mut session, &mut parser, "ATT_2", 5000);
+
+    // Now we're attached to session 2. Focus sidebar and navigate to session 1
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Press Down to preview session 1
+    session.write_all(b"\x1b[B").expect("Failed to send Down");
+    session.flush().expect("Failed to flush");
+
+    // Wait for preview to update
+    let found = wait_for_text(&mut session, &mut parser, "ATT_1", 3000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Previewing session 1:\n{}", screen_contents);
+
+    // Should see session 1's marker in preview
+    assert!(
+        found,
+        "Preview should show session 1 content (ATT_1). Got:\n{}",
+        screen_contents
+    );
+
+    // Press Enter to actually attach to session 1
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(800));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Enter (attached):\n{}", screen_contents);
+
+    // Should still show session 1's content (now attached, not just preview)
+    assert!(
+        screen_contents.contains("ATT_1"),
+        "Should be attached to session 1. Got:\n{}",
+        screen_contents
+    );
+
+    // Type a command - it should go to session 1
+    session.write_all(b"echo TYPED_1\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+    wait_for_text(&mut session, &mut parser, "TYPED_1", 5000);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After typing command:\n{}", screen_contents);
+
+    assert!(
+        screen_contents.contains("TYPED_1"),
+        "Command should execute in session 1. Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
+
+/// Test preview then create: while previewing a session, create a new session.
+/// This tests that drain_async_messages() properly clears preview messages
+/// before the synchronous create operation.
+#[test]
+#[serial]
+fn test_live_preview_then_create() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("prvcr1-{}-{}", pid, unique_id);
+    let session2_name = format!("prvcr2-{}-{}", pid, unique_id);
+    let new_session_name = format!("prvcrnew-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![
+            session1_name.clone(),
+            session2_name.clone(),
+            new_session_name.clone(),
+        ],
+    };
+
+    // Create two sessions
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create session 2
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Navigate down to preview session 1
+    session.write_all(b"\x1b[B").expect("Failed to send Down");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Now while previewing session 1, start creating a new session (Ctrl+N)
+    // This triggers drain_async_messages() which should clear any pending Preview responses
+    session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N is ASCII 14
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("In create mode:\n{}", screen_contents);
+
+    // Should be in create mode - hint bar should show session type options
+    assert!(
+        screen_contents.contains("Terminal Session") || screen_contents.contains("Agent Session"),
+        "Should be in create mode. Got:\n{}",
+        screen_contents
+    );
+
+    // Create a new terminal session
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(new_session_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After creating new session:\n{}", screen_contents);
+
+    // TUI should still be working - new session should be visible
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still be running. Got:\n{}",
+        screen_contents
+    );
+
+    // Verify we can type in the new session (short marker)
+    session.write_all(b"echo NEWSESS\n").expect("Failed to send command");
+    session.flush().expect("Failed to flush");
+    let found = wait_for_text(&mut session, &mut parser, "NEWSESS", 5000);
+
+    let screen_contents = parser.screen().contents();
+    assert!(
+        found,
+        "Should be able to type in new session. Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
