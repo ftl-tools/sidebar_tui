@@ -176,6 +176,11 @@ pub fn spawn_shell_with_env(
         cmd.cwd(current_dir);
     }
 
+    // Remove CLAUDECODE env var to prevent "nested Claude Code session" errors.
+    // When sb is run from within a Claude Code session, it inherits this env var,
+    // which would cause any `claude` command run in terminal sessions to fail.
+    cmd.env_remove("CLAUDECODE");
+
     // Inject environment variables if provided
     // These are restored from a previous session
     if let Some(env) = environment {
@@ -393,5 +398,74 @@ mod tests {
         handle.resize(12, 40).expect("Second resize failed");
         handle.resize(48, 160).expect("Third resize failed");
         handle.resize(24, 80).expect("Fourth resize failed");
+    }
+
+    #[test]
+    fn test_pty_does_not_inherit_claudecode_env() {
+        // Set CLAUDECODE in our process environment
+        // Safety: This test runs serially, so modifying env vars is safe here
+        unsafe {
+            std::env::set_var("CLAUDECODE", "test_session_id");
+        }
+
+        // Spawn a shell
+        let mut handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
+
+        // Ask the shell to print CLAUDECODE env var
+        handle
+            .write(b"echo CLAUDECODE_IS=$CLAUDECODE\r")
+            .expect("Failed to write to PTY");
+
+        // Wait for output and check that CLAUDECODE is empty
+        let mut output_collected = String::new();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            match handle.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(PtyEvent::Output(data)) => {
+                    output_collected.push_str(&String::from_utf8_lossy(&data));
+                    // Look for the marker that proves CLAUDECODE is empty
+                    if output_collected.contains("CLAUDECODE_IS=\r")
+                        || output_collected.contains("CLAUDECODE_IS=\n")
+                        || (output_collected.contains("CLAUDECODE_IS=")
+                            && !output_collected.contains("CLAUDECODE_IS=test_session_id"))
+                    {
+                        // Clean up the env var we set
+                        // Safety: This test runs serially, so modifying env vars is safe here
+                        unsafe {
+                            std::env::remove_var("CLAUDECODE");
+                        }
+                        // CLAUDECODE was successfully stripped
+                        return;
+                    }
+                    // If the original value appears, that's a failure
+                    if output_collected.contains("CLAUDECODE_IS=test_session_id") {
+                        // Clean up the env var we set
+                        unsafe {
+                            std::env::remove_var("CLAUDECODE");
+                        }
+                        panic!(
+                            "CLAUDECODE env var should have been removed but it was inherited. Output: {}",
+                            output_collected
+                        );
+                    }
+                }
+                Ok(PtyEvent::Exited) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => break,
+            }
+        }
+
+        // Clean up the env var we set
+        // Safety: This test runs serially, so modifying env vars is safe here
+        unsafe {
+            std::env::remove_var("CLAUDECODE");
+        }
+
+        // If we get here, verify we at least got some output
+        assert!(
+            output_collected.contains("CLAUDECODE_IS="),
+            "Should have received echo output. Got: {}",
+            output_collected
+        );
     }
 }

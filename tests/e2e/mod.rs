@@ -1765,3 +1765,121 @@ fn test_session_selection_no_crash() {
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
 }
+
+/// Test that Claude agent sessions work without the "nested session" error.
+/// This is a critical test because Claude Code sets a CLAUDECODE env var,
+/// and if this env var is inherited by terminal sessions, running `claude`
+/// inside them will fail with the nested session error.
+///
+/// Per Inbox/Updates: "There needs to be an E2E test that tests launching `claude`.
+/// Sometimes depending on how we mess with the session logic it shows the error
+/// about nested Claude Code sessions."
+#[test]
+#[serial]
+fn test_agent_session_no_nested_error() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("agent-test-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let agent_session_name = format!("agent-{}-{}", pid, unique_id);
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session_name.clone(), agent_session_name.clone()],
+    };
+
+    // First create a regular session so we have a TUI
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar with Ctrl+B
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Enter create mode with 'n'
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After 'n' (create mode):\n{}", screen_contents);
+
+    // Press 'a' to create an agent session (this runs `claude`)
+    session.write_all(b"a").expect("Failed to send 'a'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Type a name for the agent session
+    session.write_all(agent_session_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Press Enter to create the agent session
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+
+    // Wait for Claude to start - give it time to initialize
+    // Claude should start and NOT show the nested session error
+    std::thread::sleep(Duration::from_millis(3000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After creating agent session:\n{}", screen_contents);
+
+    // The critical check: the nested session error should NOT appear
+    let nested_error = "cannot be launched inside another Claude Code session";
+    let nested_error_alt = "Nested sessions share runtime resources";
+
+    assert!(
+        !screen_contents.contains(nested_error) && !screen_contents.contains(nested_error_alt),
+        "Agent session should NOT show nested Claude Code session error. Got:\n{}",
+        screen_contents
+    );
+
+    // Wait a bit more and check again in case the error appears delayed
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After waiting longer:\n{}", screen_contents);
+
+    assert!(
+        !screen_contents.contains(nested_error) && !screen_contents.contains(nested_error_alt),
+        "Agent session should NOT show nested Claude Code session error (delayed check). Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup - quit the TUI
+    // First send Ctrl+C to stop Claude if it's running
+    session.write_all(&[3]).expect("Failed to send Ctrl+C"); // Ctrl+C
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
