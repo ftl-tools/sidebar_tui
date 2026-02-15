@@ -375,18 +375,61 @@ impl Widget for HintBar {
                 }
             }
 
-            // Render quit path text
+            // Render quit path text with proper coloring
+            // Keys should be purple, "Quit" should be white
             let quit_text_x = quit_start_x + QUIT_SEPARATOR_WIDTH as u16;
-            for (i, c) in self.quit_path.chars().enumerate() {
-                let x = quit_text_x + i as u16;
-                if x < area.x + area.width {
-                    buf[(x, last_line_y)]
-                        .set_char(c)
-                        .set_fg(colors::WHITE);
+            let colored_spans = color_quit_path(&self.quit_path);
+            let mut x = quit_text_x;
+            for (text, color) in colored_spans {
+                for c in text.chars() {
+                    if x < area.x + area.width {
+                        buf[(x, last_line_y)]
+                            .set_char(c)
+                            .set_fg(color);
+                    }
+                    x += 1;
                 }
             }
         }
     }
+}
+
+/// Parse a quit path string and return colored segments.
+/// Keys are colored purple, arrows and "Quit" are colored white.
+/// Example: "ctrl + b → q Quit" -> [("ctrl + b", PURPLE), (" → ", WHITE), ("q", PURPLE), (" ", WHITE), ("Quit", WHITE)]
+fn color_quit_path(quit_path: &str) -> Vec<(&str, ratatui::style::Color)> {
+    use ratatui::style::Color;
+
+    let mut result = Vec::new();
+
+    // Check if it ends with " Quit"
+    if let Some(prefix) = quit_path.strip_suffix(" Quit") {
+        // Split by " → " to find key segments
+        let parts: Vec<&str> = prefix.split(" → ").collect();
+
+        for (i, part) in parts.iter().enumerate() {
+            // Each part is a key - color it purple
+            result.push((*part, colors::PURPLE));
+
+            // Add separator " → " if not the last part
+            if i < parts.len() - 1 {
+                // Find where " → " appears after this part
+                let start = quit_path.find(part).unwrap() + part.len();
+                let arrow_slice = &quit_path[start..start + 4]; // " → " is 4 chars (3 bytes for →)
+                result.push((arrow_slice, colors::WHITE));
+            }
+        }
+
+        // Add " Quit" at the end
+        let quit_start = quit_path.len() - 5; // " Quit" is 5 chars
+        result.push((&quit_path[quit_start..quit_start + 1], Color::Reset)); // space
+        result.push((&quit_path[quit_start + 1..], colors::WHITE)); // "Quit"
+    } else {
+        // Fallback: just render everything white
+        result.push((quit_path, colors::WHITE));
+    }
+
+    result
 }
 
 /// Get the keybindings for the current app state.
@@ -851,6 +894,49 @@ mod tests {
         assert_eq!(buf[(12, 0)].symbol(), "│");
         assert_eq!(buf[(14, 0)].symbol(), "q");
         assert_eq!(buf[(16, 0)].symbol(), "Q");
+    }
+
+    #[test]
+    fn test_render_quit_path_colors() {
+        // Test simple "q Quit" - 'q' should be purple, 'Quit' should be white
+        let bar = HintBar::new(vec![], "q Quit");
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+
+        bar.render(area, &mut buf);
+
+        // "│ q Quit" starts at x = 12
+        // Position 14 = 'q' should be purple
+        assert_eq!(buf[(14, 0)].symbol(), "q");
+        assert_eq!(buf[(14, 0)].fg, colors::PURPLE);
+
+        // Position 16 = 'Q' of "Quit" should be white
+        assert_eq!(buf[(16, 0)].symbol(), "Q");
+        assert_eq!(buf[(16, 0)].fg, colors::WHITE);
+    }
+
+    #[test]
+    fn test_render_quit_path_complex_colors() {
+        // Test "ctrl + b → q Quit" coloring
+        let bar = HintBar::new(vec![], "ctrl + b → q Quit");
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+
+        bar.render(area, &mut buf);
+
+        // Find positions of key characters dynamically
+        let c_pos = (0..40u16).find(|&x| buf[(x, 0)].symbol() == "c").expect("'c' not found");
+        let q_pos = (0..40u16).find(|&x| buf[(x, 0)].symbol() == "q").expect("'q' not found");
+        let big_q_pos = (0..40u16).find(|&x| buf[(x, 0)].symbol() == "Q").expect("'Q' not found");
+
+        // 'c' from "ctrl + b" should be purple (first key segment)
+        assert_eq!(buf[(c_pos, 0)].fg, colors::PURPLE, "'c' should be purple");
+
+        // 'q' should be purple (second key segment)
+        assert_eq!(buf[(q_pos, 0)].fg, colors::PURPLE, "'q' should be purple");
+
+        // 'Q' from "Quit" should be white
+        assert_eq!(buf[(big_q_pos, 0)].fg, colors::WHITE, "'Q' from Quit should be white");
     }
 
     #[test]

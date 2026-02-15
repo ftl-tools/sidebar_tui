@@ -7,7 +7,6 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 After the last couple sprints a couple things got dropped, a couple existing features need clarified, and we've updated a couple new ones. Please implement these and add them to the spec below as you implement each one:
 
 - We've replaced (color 56) with (color 54)
-- The quit hotkey text in the hint bar should be purple and the "Quit" should be white like the other hotkey hints.
 - The `│` seperator in the hint bar should be more gray (color 242).
 - When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it.
 - When I focus on the sidebar pane and then press `enter` to focus on this terminal session, the TUI crashes with the following message. It does this whether I move the selection or just leave it. Just crashes when I press `enter` to select a session in the sidebar. This is a critical bug that prevents the core functionality of selecting and switching between sessions from working, so please prioritize this fix:
