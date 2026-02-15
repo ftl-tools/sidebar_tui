@@ -7,8 +7,7 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 The general requirements are as follows:
 
 - You MUST use rust. Research and use any other tools that are needed to accomplish the objectives.
-- There are several OpenSource, example projects that have been cloned into refrences that prove out similar functionality to what we want using similar tech. Use these as references to figure out how to build the TUI and terminal functionality we need.
-- Running `ctrl + q` or `ctrl + b` should quit the TUI and return me to my normal terminal.
+- There are several OpenSource, example projects that have been cloned into references that prove out similar functionality to what we want using similar tech. Use these as references to figure out how to build the TUI and terminal functionality we need.
 - You must create at the very least the following E2E tests. They must all work in the Apple terminal on my computer:
   - You have used the Sidebar TUI and it's layout matches the spec above exactly.
   - You can run `git status` in the TUI terminal and it has the same output as running `git status` in a normal terminal.
@@ -16,10 +15,10 @@ The general requirements are as follows:
   - In the TUI terminal, you can start typing `git status`, backspace before you send it, type `echo "hello world"`, send that, and see the expected output in the TUI terminal.
   - There must be at least one E2E test that works on the real Sidebar TUI in the Apple terminal for each individual bullet point in this spec.
 - NO E2E or unit tests are skipped, FOR ANY REASON. Install requirements if missing, or do WHATEVER IS REQUIRED to unblock them.
-- The cli had been built and linked globally.
 
 ### TUI
 
+- The minimum supported terminal size is 64 characters wide by 24 characters tall.
 - Running `sb` should open the TUI.
 - The TUI has three components: the sidebar pane, the terminal pane, and the hint bar. They should be laid out like so:
   ```
@@ -59,7 +58,7 @@ The general requirements are as follows:
 - The top row should say "Sidebar TUI" in purple text (color 165). It should be left aligned.
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).
-- If a session name is too long to fit in the sidebar it should be wrapped with │ and └ characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
+- If a session name is too long to fit in the sidebar it should be wrapped with `│`(s) and `└` characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
 - The background of the selected session should be dark purple (color 56). This highlight should start at the first letter of the session name and stop right before the right sidebar border.
 - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`) at the top and or bottom of the list if extra entries are beyond the visible area.
 - If it exists, the top truncation indicator should go directly below the title.
@@ -71,14 +70,14 @@ The general requirements are as follows:
   - `↓` - Down: Move the selection down one session in the list. If the next row below is the truncation indicator scroll down one and move the selection. If already at the bottom, do nothing.
   - `esc` - Jump Back: Select whatever session was selected before the sidebar was focused, and focus on the terminal pane.
   - `n` - New: Enter create mode.
-  - `d` - Delete: Show an important confirmation prompt to delete the currently selected session.
-    - `y` - Yes: Delete the session and all its data permanently. Focus on the next session in the list. If there is no next session, focus on the previous one.
+  - `d` - Delete: Show an important confirmation prompt in the hint bar to delete the currently selected session.
+    - `y` - Yes: Delete the session and all its data permanently. Focus on the next session in the list. If there is no next session, focus on the previous one. If this was the last session, return to the welcome state.
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
   - `r` - Rename: Start renaming the currently selected session.
     - This should work similarly to drafting a new session in create mode, but instead of an empty name there should be the current session name with the cursor at the end. The user can then backspace and type to change the name. The same character restrictions apply as when drafting a new session.
     - `enter` - Rename: Rename the session to the current name. Exit rename mode and focus on the terminal pane.
     - `esc` - Cancel: Exit rename mode without changing the session name, and return focus to wherever it was before renaming was started.
-  - `q` - Quit: Show an important confirmation prompt to quit the TUI.
+  - `q` - Quit: Show an important confirmation prompt in the hint bar to quit the TUI.
     - `y` - Yes: Quit the TUI and return to the normal terminal.
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
 
