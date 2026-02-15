@@ -4,10 +4,12 @@
 //! - Terminal emulation via vt100
 //! - PTY management via portable-pty
 //! - Session daemon for persistence across TUI restarts
+//! - State management for multi-pane focus and modal UI
 
 pub mod colors;
 pub mod daemon;
 pub mod env_capture;
 pub mod input;
 pub mod pty;
+pub mod state;
 pub mod terminal;
