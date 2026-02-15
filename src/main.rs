@@ -21,8 +21,8 @@ use sidebar_tui::daemon::{
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
 use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
-use sidebar_tui::sidebar::Sidebar;
-use sidebar_tui::state::{AppState, Focus};
+use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
+use sidebar_tui::state::{AppMode, AppState, Focus};
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::colors;
 
@@ -471,7 +471,8 @@ fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
     ])
     .split(main_area);
 
-    render_sidebar_with_state(frame, horizontal_chunks[0], &app.app_state);
+    let sidebar_area = horizontal_chunks[0];
+    render_sidebar_with_state(frame, sidebar_area, &app.app_state);
 
     // Add 2 char horizontal padding (left + right) for visual separation
     let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
@@ -479,6 +480,12 @@ fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
 
     // Render hint bar
     frame.render_widget(hint_bar, hint_bar_area);
+
+    // Set cursor position: if in drafting/renaming mode, show cursor in sidebar
+    // Otherwise, the terminal emulator handles its own cursor
+    if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(&app.app_state, sidebar_area) {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 /// Render the static UI layout (for tests without PTY).
@@ -511,7 +518,8 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
     ])
     .split(main_area);
 
-    render_sidebar_with_state(frame, horizontal_chunks[0], state);
+    let sidebar_area = horizontal_chunks[0];
+    render_sidebar_with_state(frame, sidebar_area, state);
 
     // Add 2 char horizontal padding (left + right) for visual separation
     let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
@@ -519,6 +527,11 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
 
     // Render hint bar
     frame.render_widget(hint_bar, hint_bar_area);
+
+    // Set cursor position for drafting/renaming modes
+    if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(state, sidebar_area) {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 /// Shrink a rect by horizontal padding only (left and right sides)
@@ -539,8 +552,11 @@ fn render_sidebar_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
 
 /// Render terminal view placeholder with focus-aware border colors.
 fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Terminal border color depends on focus
-    let border_color = if state.focus == Focus::Terminal {
+    // During drafting mode, terminal pane should be blank and non-interactive
+    let is_drafting = matches!(state.mode, AppMode::Drafting(_));
+
+    // Terminal border color depends on focus (but always unfocused during drafting)
+    let border_color = if !is_drafting && state.focus == Focus::Terminal {
         colors::WHITE
     } else {
         colors::DARK_GREY
@@ -553,16 +569,21 @@ fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppSta
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
 
-    // Placeholder text for static tests
-    let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
-        .style(Style::default().fg(colors::WHITE));
-    frame.render_widget(terminal_placeholder, inner_area);
+    // During drafting, show blank terminal. Otherwise show placeholder.
+    if !is_drafting {
+        let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
+            .style(Style::default().fg(colors::WHITE));
+        frame.render_widget(terminal_placeholder, inner_area);
+    }
 }
 
 /// Render the terminal emulator with focus-aware border colors.
 fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Terminal, state: &AppState) {
-    // Terminal border color depends on focus
-    let border_color = if state.focus == Focus::Terminal {
+    // During drafting mode, terminal pane should be blank and non-interactive
+    let is_drafting = matches!(state.mode, AppMode::Drafting(_));
+
+    // Terminal border color depends on focus (but always unfocused during drafting)
+    let border_color = if !is_drafting && state.focus == Focus::Terminal {
         colors::WHITE
     } else {
         colors::DARK_GREY
@@ -575,9 +596,16 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Ter
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
 
-    // Render the terminal emulator content with cursor inside the border
-    if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, inner_area) {
-        frame.set_cursor_position((cursor_x, cursor_y));
+    // During drafting, show blank terminal. Otherwise render terminal content.
+    if !is_drafting {
+        // Render the terminal emulator content with cursor inside the border
+        // Note: cursor position is handled by get_sidebar_cursor_position during drafting/renaming
+        if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, inner_area) {
+            // Only set terminal cursor if not in text input mode (drafting/renaming)
+            if !state.mode.is_text_input() {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
+        }
     }
 }
 
@@ -1157,6 +1185,162 @@ mod tests {
             colors::DARK_GREY,
             "Sidebar border should be dark grey when unfocused, got: {:?}",
             sidebar_corner.fg
+        );
+    }
+
+    #[test]
+    fn test_drafting_mode_shows_blank_terminal() {
+        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // During drafting, terminal placeholder text should NOT appear
+        assert!(
+            !content.contains("Terminal view"),
+            "Terminal should be blank during drafting mode, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_drafting_mode_terminal_border_is_dark_grey() {
+        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Terminal border should be DARK_GREY during drafting (non-interactive)
+        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        let corner = &buffer[(term_start_x, 0)];
+        assert_eq!(
+            corner.fg,
+            colors::DARK_GREY,
+            "Terminal border should be dark grey during drafting, got: {:?}",
+            corner.fg
+        );
+    }
+
+    #[test]
+    fn test_drafting_mode_sidebar_border_is_white() {
+        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Sidebar border should be WHITE during drafting (focused)
+        let sidebar_corner = &buffer[(0, 0)];
+        assert_eq!(
+            sidebar_corner.fg,
+            colors::WHITE,
+            "Sidebar border should be white during drafting, got: {:?}",
+            sidebar_corner.fg
+        );
+    }
+
+    #[test]
+    fn test_drafting_mode_hint_bar_shows_correct_bindings() {
+        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Hint bar should show "enter Create" and "esc Cancel" during drafting
+        assert!(
+            content.contains("Create"),
+            "Hint bar should show 'Create' during drafting, got: {}",
+            content
+        );
+        assert!(
+            content.contains("Cancel"),
+            "Hint bar should show 'Cancel' during drafting, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_create_mode_hint_bar_shows_session_type_options() {
+        use sidebar_tui::state::AppState;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::default();
+        state.mode = AppMode::CreateMode { previous_focus: Focus::Sidebar };
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Hint bar should show "t Terminal Session" and "a Agent Session" in create mode
+        assert!(
+            content.contains("Terminal Session"),
+            "Hint bar should show 'Terminal Session' in create mode, got: {}",
+            content
+        );
+        assert!(
+            content.contains("Agent Session"),
+            "Hint bar should show 'Agent Session' in create mode, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_renaming_mode_hint_bar_shows_correct_bindings() {
+        use sidebar_tui::state::{AppState, RenamingState, Session};
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        state.mode = AppMode::Renaming(RenamingState::new(0, "test", Focus::Sidebar));
+
+        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = buffer_to_string(buffer);
+
+        // Hint bar should show "enter Rename" and "esc Cancel" during renaming
+        assert!(
+            content.contains("Rename"),
+            "Hint bar should show 'Rename' during renaming, got: {}",
+            content
+        );
+        assert!(
+            content.contains("Cancel"),
+            "Hint bar should show 'Cancel' during renaming, got: {}",
+            content
         );
     }
 }
