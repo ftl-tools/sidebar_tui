@@ -21,6 +21,10 @@ pub const DARK_PURPLE: Color = Color::Indexed(54);
 /// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
 pub const DARK_RED: Color = Color::Indexed(88);
 
+/// Focused border (ANSI 250) - Used for focused pane outlines.
+/// Slightly dimmer than WHITE to reduce visual intensity.
+pub const FOCUSED_BORDER: Color = Color::Indexed(250);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,8 +70,16 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_border_is_indexed_250() {
+        match FOCUSED_BORDER {
+            Color::Indexed(n) => assert_eq!(n, 250),
+            _ => panic!("FOCUSED_BORDER should be Color::Indexed"),
+        }
+    }
+
+    #[test]
     fn test_all_colors_are_distinct() {
-        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED];
+        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, FOCUSED_BORDER];
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
                 assert_ne!(
@@ -89,6 +101,7 @@ mod tests {
         let hint_bar_style = Style::default().bg(DARK_GREY).fg(WHITE);
         let important_prompt = Style::default().bg(DARK_RED).fg(WHITE);
         let unfocused_border = Style::default().fg(DARK_GREY);
+        let focused_border = Style::default().fg(FOCUSED_BORDER);
 
         // Just verify they compile and don't panic
         assert_eq!(title_style.fg, Some(PURPLE));
@@ -96,5 +109,6 @@ mod tests {
         assert_eq!(hint_bar_style.bg, Some(DARK_GREY));
         assert_eq!(important_prompt.bg, Some(DARK_RED));
         assert_eq!(unfocused_border.fg, Some(DARK_GREY));
+        assert_eq!(focused_border.fg, Some(FOCUSED_BORDER));
     }
 }

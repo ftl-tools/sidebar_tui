@@ -13,7 +13,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Widget};
 
-use crate::colors::{DARK_GREY, DARK_PURPLE, PURPLE, WHITE};
+use crate::colors::{DARK_GREY, DARK_PURPLE, FOCUSED_BORDER, PURPLE, WHITE};
 use crate::state::{AppMode, AppState, Focus};
 
 /// Width of the sidebar pane including borders.
@@ -408,7 +408,7 @@ impl Widget for Sidebar<'_> {
         let border_color = if self.state.focus == Focus::Sidebar
             || matches!(self.state.mode, AppMode::Drafting(_) | AppMode::Renaming(_))
         {
-            WHITE
+            FOCUSED_BORDER
         } else {
             DARK_GREY
         };
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_focused_border_is_white() {
+    fn test_sidebar_focused_border_color() {
         let state = AppState {
             focus: Focus::Sidebar,
             ..Default::default()
@@ -529,7 +529,7 @@ mod tests {
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         // Top-left corner
         let cell = &buf[(0, 0)];
-        assert_eq!(cell.fg, WHITE, "Focused border should be white");
+        assert_eq!(cell.fg, FOCUSED_BORDER, "Focused border should be color 250");
     }
 
     #[test]

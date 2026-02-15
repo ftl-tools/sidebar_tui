@@ -773,7 +773,7 @@ fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppSta
 
     // Terminal border color depends on focus (but always unfocused during drafting)
     let border_color = if !is_drafting && state.focus == Focus::Terminal {
-        colors::WHITE
+        colors::FOCUSED_BORDER
     } else {
         colors::DARK_GREY
     };
@@ -803,7 +803,7 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Ter
 
     // Terminal border color depends on focus (but always unfocused during drafting)
     let border_color = if !is_drafting && state.focus == Focus::Terminal {
-        colors::WHITE
+        colors::FOCUSED_BORDER
     } else {
         colors::DARK_GREY
     };
@@ -874,11 +874,11 @@ mod tests {
             corner.symbol()
         );
 
-        // Check border color - sidebar is focused by default, so should be WHITE (255)
+        // Check border color - sidebar is focused by default, so should be FOCUSED_BORDER (250)
         assert_eq!(
             corner.fg,
-            colors::WHITE,
-            "Sidebar border should have white foreground when focused, got: {:?}",
+            colors::FOCUSED_BORDER,
+            "Sidebar border should have focused border color when focused, got: {:?}",
             corner.fg
         );
     }
@@ -1458,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_focused_border_is_white() {
+    fn test_terminal_focused_border_color() {
         use sidebar_tui::state::AppState;
 
         let backend = TestBackend::new(80, 24);
@@ -1473,13 +1473,13 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be WHITE when focused (starts right after sidebar)
+        // Terminal border should be FOCUSED_BORDER (250) when focused (starts right after sidebar)
         let term_start_x = SIDEBAR_WIDTH;
         let corner = &buffer[(term_start_x, 0)];
         assert_eq!(
             corner.fg,
-            colors::WHITE,
-            "Terminal border should be white when focused, got: {:?}",
+            colors::FOCUSED_BORDER,
+            "Terminal border should be color 250 when focused, got: {:?}",
             corner.fg
         );
 
@@ -1546,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn test_drafting_mode_sidebar_border_is_white() {
+    fn test_drafting_mode_sidebar_border_is_focused() {
         use sidebar_tui::state::{AppState, DraftingState, SessionType};
 
         let backend = TestBackend::new(80, 24);
@@ -1561,12 +1561,12 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Sidebar border should be WHITE during drafting (focused)
+        // Sidebar border should be FOCUSED_BORDER (250) during drafting (focused)
         let sidebar_corner = &buffer[(0, 0)];
         assert_eq!(
             sidebar_corner.fg,
-            colors::WHITE,
-            "Sidebar border should be white during drafting, got: {:?}",
+            colors::FOCUSED_BORDER,
+            "Sidebar border should be color 250 during drafting, got: {:?}",
             sidebar_corner.fg
         );
     }

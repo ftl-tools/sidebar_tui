@@ -25,7 +25,6 @@ After the last couple sprints a couple things got dropped, a couple existing fea
 
   There should be E2E tests that verify this functionality works and does not crash.
 
-- The outline of the focused pane is too bright, let's make it (color 250). This should apply to both the sidebar and terminal panes when they are focused.
 - When the sidebar pane is focused, `h` and `j` should also work as alternatives to the up and down arrows for moving the selection up and down.
 - There needs to be an E2E test that tests launching `claude`. Sometimes depending on how we mess with the session logic it shows the following error. We should have an E2E test that runs `claude` in a terminal session and verifies that it works without crashing or showing this error. This is a critical bug to fix if it happens, because one of the main use cases for this TUI is to run agents in terminal sessions, and `claude` is the main way we do that right now.
 
@@ -99,7 +98,7 @@ The general requirements are as follows:
 - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`) at the top and or bottom of the list if extra entries are beyond the visible area.
 - If it exists, the top truncation indicator should go directly below the title.
 - The truncation indicator should be colored slightly darker (color 238) than the session names.
-- When the sidebar is focused it's outline should be lighter(color 255) and when it's not focused it should be darker (color 238).
+- When the sidebar is focused it's outline should be lighter (color 250) and when it's not focused it should be darker (color 238).
 - The following keybindings should work when the sidebar pane is focused:
   - `enter`, `space`, or `→` - Select: Focus on the terminal pane.
   - `↑` - Up: Move the selection up one session in the list. If the next row above is the truncation indicator scroll up one and move the selection. If already at the top, do nothing.
@@ -123,7 +122,7 @@ The general requirements are as follows:
 - It should show the selected terminal session. This should be a fully functional terminal where I can run commands and see their output. Or even run command line applications like vi.
 - There should be one char of padding on the left and right of the terminal pane between the terminal content and the border.
 - The terminal text should be white (color 255).
-- When the terminal is focused it should have a lighter outline (color 255) and when it's not focused it should have a darker outline (color 238).
+- When the terminal is focused it should have a lighter outline (color 250) and when it's not focused it should have a darker outline (color 238).
 - Mouse scrolling when the Sidebar TUI is openned at all, regardless of focus should scroll the terminal pane's visible history.
 - When quitting the Sidebar TUI, restarting the computer, and reopening the Sidebar TUI, the terminal sessions should be restored to their previous state as best we can, with comand history, working directory, scrollable visible history, env vars, and anything else we can manage to save and restore.
 - The following keybindings should work when the terminal pane is focused:

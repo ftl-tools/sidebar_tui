@@ -998,7 +998,7 @@ fn test_focus_switching() {
     session.read_and_parse().expect("Failed to read output");
 
     // Initially terminal is focused (because we have a session)
-    // Sidebar border should be DARK_GREY (238), terminal border should be WHITE (255)
+    // Sidebar border should be DARK_GREY (238), terminal border should be FOCUSED_BORDER (250)
     // Check sidebar corner color
     if let Some(sidebar_corner) = session.cell_at(0, 0) {
         let sidebar_fg = sidebar_corner.fgcolor();
@@ -1016,13 +1016,13 @@ fn test_focus_switching() {
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
-    // Now sidebar should be WHITE (255), terminal should be DARK_GREY (238)
+    // Now sidebar should be FOCUSED_BORDER (250), terminal should be DARK_GREY (238)
     if let Some(sidebar_corner) = session.cell_at(0, 0) {
         let sidebar_fg = sidebar_corner.fgcolor();
         eprintln!("After Ctrl+B sidebar border color: {:?}", sidebar_fg);
         assert!(
-            matches!(sidebar_fg, vt100::Color::Idx(255)),
-            "Sidebar border should be white (255) when sidebar focused. Got: {:?}",
+            matches!(sidebar_fg, vt100::Color::Idx(250)),
+            "Sidebar border should be focused (250) when sidebar focused. Got: {:?}",
             sidebar_fg
         );
     }
