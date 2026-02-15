@@ -25,6 +25,8 @@ After the last couple sprints a couple things got dropped, a couple existing fea
   Run with RUST_BACKTRACE=full to include source snippets.
   ```
 
+  There should be E2E tests that verify this functionality works and does not crash.
+
 - The outline of the focused pane is too bright, let's make it (color 250). This should apply to both the sidebar and terminal panes when they are focused.
 - When the sidebar pane is focused, `h` and `j` should also work as alternatives to the up and down arrows for moving the selection up and down.
 
