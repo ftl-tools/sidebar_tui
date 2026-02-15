@@ -1,0 +1,100 @@
+//! Spec-compliant ANSI 256 colors for the Sidebar TUI.
+//!
+//! All colors defined here use `Color::Indexed(n)` to specify exact ANSI 256
+//! color indices as required by the objectives.md spec.
+
+use ratatui::style::Color;
+
+/// Purple (ANSI 165) - Used for title text, keybindings in hint bar.
+pub const PURPLE: Color = Color::Indexed(165);
+
+/// White (ANSI 255) - Used for session names, terminal text.
+pub const WHITE: Color = Color::Indexed(255);
+
+/// Dark grey (ANSI 238) - Used for unfocused borders, wrap indicators,
+/// truncation indicators, hint bar background.
+pub const DARK_GREY: Color = Color::Indexed(238);
+
+/// Dark purple (ANSI 56) - Used for selected session background.
+pub const DARK_PURPLE: Color = Color::Indexed(56);
+
+/// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
+pub const DARK_RED: Color = Color::Indexed(88);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_purple_is_indexed_165() {
+        match PURPLE {
+            Color::Indexed(n) => assert_eq!(n, 165),
+            _ => panic!("PURPLE should be Color::Indexed"),
+        }
+    }
+
+    #[test]
+    fn test_white_is_indexed_255() {
+        match WHITE {
+            Color::Indexed(n) => assert_eq!(n, 255),
+            _ => panic!("WHITE should be Color::Indexed"),
+        }
+    }
+
+    #[test]
+    fn test_dark_grey_is_indexed_238() {
+        match DARK_GREY {
+            Color::Indexed(n) => assert_eq!(n, 238),
+            _ => panic!("DARK_GREY should be Color::Indexed"),
+        }
+    }
+
+    #[test]
+    fn test_dark_purple_is_indexed_56() {
+        match DARK_PURPLE {
+            Color::Indexed(n) => assert_eq!(n, 56),
+            _ => panic!("DARK_PURPLE should be Color::Indexed"),
+        }
+    }
+
+    #[test]
+    fn test_dark_red_is_indexed_88() {
+        match DARK_RED {
+            Color::Indexed(n) => assert_eq!(n, 88),
+            _ => panic!("DARK_RED should be Color::Indexed"),
+        }
+    }
+
+    #[test]
+    fn test_all_colors_are_distinct() {
+        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED];
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(
+                    colors[i], colors[j],
+                    "Colors at index {} and {} should be distinct",
+                    i, j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_colors_can_be_used_in_style() {
+        use ratatui::style::Style;
+
+        // Verify colors work in Style contexts
+        let title_style = Style::default().fg(PURPLE);
+        let selected_style = Style::default().bg(DARK_PURPLE).fg(WHITE);
+        let hint_bar_style = Style::default().bg(DARK_GREY).fg(WHITE);
+        let important_prompt = Style::default().bg(DARK_RED).fg(WHITE);
+        let unfocused_border = Style::default().fg(DARK_GREY);
+
+        // Just verify they compile and don't panic
+        assert_eq!(title_style.fg, Some(PURPLE));
+        assert_eq!(selected_style.bg, Some(DARK_PURPLE));
+        assert_eq!(hint_bar_style.bg, Some(DARK_GREY));
+        assert_eq!(important_prompt.bg, Some(DARK_RED));
+        assert_eq!(unfocused_border.fg, Some(DARK_GREY));
+    }
+}

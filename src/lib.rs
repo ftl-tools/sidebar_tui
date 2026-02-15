@@ -5,6 +5,7 @@
 //! - PTY management via portable-pty
 //! - Session daemon for persistence across TUI restarts
 
+pub mod colors;
 pub mod daemon;
 pub mod env_capture;
 pub mod input;
