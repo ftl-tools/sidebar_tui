@@ -1054,7 +1054,8 @@ fn handle_client(
         let response = process_message(msg, &sessions, &shutdown, &mut current_session);
         send_response(&mut stream, &response)?;
 
-        if matches!(response, DaemonResponse::ShuttingDown | DaemonResponse::Detached) {
+        // Only break on shutdown - client may want to reattach after detach
+        if matches!(response, DaemonResponse::ShuttingDown) {
             break;
         }
     }

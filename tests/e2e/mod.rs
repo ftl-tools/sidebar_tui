@@ -1628,3 +1628,138 @@ fn test_welcome_state() {
     // test is covered in unit tests in main.rs.
     eprintln!("Note: Full welcome state is tested in unit tests; E2E verifies TUI handles no-session state");
 }
+
+/// Test that pressing Enter to select a session in the sidebar does not crash.
+/// This tests the critical bug fix for broken pipe error (os error 32).
+/// The bug was that the daemon closed the connection after Detach, but the client
+/// tried to reuse the connection for Attach.
+#[test]
+#[serial]
+fn test_session_selection_no_crash() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("sel-test-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let session2_name = format!("sel-test2-{}-{}", pid, unique_id);
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session_name.clone(), session2_name.clone()],
+    };
+
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar with Ctrl+B
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+B (sidebar focused):\n{}", screen_contents);
+
+    // Press Enter to select the current session - this should NOT crash
+    // Previously this would crash with "Broken pipe (os error 32)"
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Enter (session selected):\n{}", screen_contents);
+
+    // Verify TUI is still running - sidebar title should still be visible
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still be running after Enter. Got:\n{}",
+        screen_contents
+    );
+
+    // Now create a second session and try switching to it
+    // Focus sidebar first
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create second session via 'n' -> 't' -> type name -> Enter
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type session name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter to create");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After creating second session:\n{}", screen_contents);
+
+    // Focus sidebar to select the original session
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Arrow down to select the other session
+    session.write_all(&[0x1b, 0x5b, 0x42]).expect("Failed to send Down arrow"); // ESC [ B
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Down arrow:\n{}", screen_contents);
+
+    // Press Enter to switch to that session - this is the critical test
+    // This triggers SwitchSession which was causing the crash
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Enter to switch session:\n{}", screen_contents);
+
+    // Verify TUI is still running after the switch
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still be running after session switch. Got:\n{}",
+        screen_contents
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
