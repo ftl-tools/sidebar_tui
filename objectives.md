@@ -7,7 +7,6 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 After the last couple sprints a couple things got dropped, a couple existing features need clarified, and we've updated a couple new ones. Please implement these and add them to the spec below as you implement each one:
 
 - We've replaced (color 56) with (color 54)
-- The terminal padding is currently being applied outside of the border it should be inside the border between the border and the terminal content.
 - The quit hotkey text in the hint bar should be purple and the "Quit" should be white like the other hotkey hints.
 - The `│` seperator in the hint bar should be more gray (color 242).
 - When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it.

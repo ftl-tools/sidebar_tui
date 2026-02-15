@@ -624,14 +624,16 @@ fn run_attached(
                 Event::Mouse(mouse_event) => {
                     // Handle mouse scroll wheel events - forward to active terminal
                     // Works regardless of focus per spec, but only in Normal mode
+                    // Terminal content area starts after: sidebar + border (1) + padding
+                    let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
                     if matches!(app.app_state.mode, AppMode::Normal)
-                        && mouse_event.column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING
+                        && mouse_event.column >= term_content_start
                         && !app.session_name.is_empty()
                     {
                         let bytes = match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                                 // Translate screen position to terminal-relative position (1-indexed)
-                                let term_col = mouse_event.column - SIDEBAR_WIDTH - TERMINAL_H_PADDING + 1;
+                                let term_col = mouse_event.column - term_content_start + 1;
                                 let term_row = mouse_event.row + 1;
                                 let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp);
                                 encode_mouse_scroll(scroll_up, term_col, term_row)
@@ -688,8 +690,8 @@ fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
     let sidebar_area = horizontal_chunks[0];
     render_sidebar_with_state(frame, sidebar_area, &app.app_state);
 
-    // Add 2 char horizontal padding (left + right) for visual separation
-    let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
+    // Render terminal at full area - padding is applied inside the border by render function
+    let terminal_area = horizontal_chunks[1];
     render_terminal_emulator_with_state(frame, terminal_area, &app.term_emulator, &app.app_state);
 
     // Render hint bar
@@ -735,8 +737,8 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
     let sidebar_area = horizontal_chunks[0];
     render_sidebar_with_state(frame, sidebar_area, state);
 
-    // Add 2 char horizontal padding (left + right) for visual separation
-    let terminal_area = pad_rect_horizontal(horizontal_chunks[1], TERMINAL_H_PADDING);
+    // Render terminal at full area - padding is applied inside the border by render function
+    let terminal_area = horizontal_chunks[1];
     render_terminal_view_with_state(frame, terminal_area, state);
 
     // Render hint bar
@@ -783,11 +785,14 @@ fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppSta
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
 
+    // Apply horizontal padding inside the border
+    let padded_inner = pad_rect_horizontal(inner_area, TERMINAL_H_PADDING);
+
     // During drafting, show blank terminal. Otherwise show placeholder.
     if !is_drafting {
         let terminal_placeholder = Paragraph::new("Terminal view (see hint bar for keybindings)")
             .style(Style::default().fg(colors::WHITE));
-        frame.render_widget(terminal_placeholder, inner_area);
+        frame.render_widget(terminal_placeholder, padded_inner);
     }
 }
 
@@ -810,11 +815,14 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Ter
     let inner_area = terminal_block.inner(area);
     frame.render_widget(terminal_block, area);
 
+    // Apply horizontal padding inside the border
+    let padded_inner = pad_rect_horizontal(inner_area, TERMINAL_H_PADDING);
+
     // During drafting, show blank terminal. Otherwise render terminal content.
     if !is_drafting {
-        // Render the terminal emulator content with cursor inside the border
+        // Render the terminal emulator content with cursor inside the border + padding
         // Note: cursor position is handled by get_sidebar_cursor_position during drafting/renaming
-        if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, inner_area) {
+        if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, padded_inner) {
             // Only set terminal cursor if not in text input mode (drafting/renaming)
             if !state.mode.is_text_input() {
                 frame.set_cursor_position((cursor_x, cursor_y));
@@ -982,8 +990,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal view starts after sidebar + horizontal padding
-        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        // Terminal view starts right after sidebar (padding is inside the border)
+        let term_start_x = SIDEBAR_WIDTH;
         let corner = &buffer[(term_start_x, 0)];
 
         // Check top-left corner of terminal has border character
@@ -999,6 +1007,48 @@ mod tests {
             colors::DARK_GREY,
             "Terminal border should have dark grey foreground when unfocused, got: {:?}",
             corner.fg
+        );
+    }
+
+    #[test]
+    fn test_terminal_padding_is_inside_border() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(render).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        // Terminal border should start right after sidebar (no gap for padding)
+        let border_x = SIDEBAR_WIDTH;
+        let border_cell = &buffer[(border_x, 0)];
+        assert!(
+            border_cell.symbol() == "┌" || border_cell.symbol() == "╭",
+            "Terminal border should start at column {}, got: {}",
+            border_x,
+            border_cell.symbol()
+        );
+
+        // Content (placeholder text) should start after border + padding
+        // Border is at column 28, so content starts at 28 + 1 (border) + 2 (padding) = 31
+        let content_start_x = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+        let content_cell = &buffer[(content_start_x, 1)];
+        // The placeholder text "Terminal view..." should start here
+        assert_eq!(
+            content_cell.symbol(), "T",
+            "Terminal content should start at column {} (inside border + padding), got: '{}'",
+            content_start_x,
+            content_cell.symbol()
+        );
+
+        // Position between border and content should be empty (padding)
+        let padding_x = SIDEBAR_WIDTH + 1; // First padding column after border
+        let padding_cell = &buffer[(padding_x, 1)];
+        assert_eq!(
+            padding_cell.symbol().trim(), "",
+            "Padding area at column {} should be empty space, got: '{}'",
+            padding_x,
+            padding_cell.symbol()
         );
     }
 
@@ -1239,11 +1289,13 @@ mod tests {
     #[test]
     fn test_mouse_scroll_position_translation() {
         // Test that screen coordinates are correctly translated to terminal-relative coordinates
-        // Screen column 32 with sidebar width 28 and padding 2 should become terminal column 3
-        // (32 - 28 - 2 + 1 = 3)
+        // Terminal content starts after: sidebar (28) + border (1) + padding (2) = 31
+        // Screen column 32 should become terminal column 2
+        // (32 - 31 + 1 = 2)
+        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
         let screen_col: u16 = 32;
-        let term_col = screen_col - SIDEBAR_WIDTH - TERMINAL_H_PADDING + 1;
-        assert_eq!(term_col, 3);
+        let term_col = screen_col - term_content_start + 1;
+        assert_eq!(term_col, 2);
     }
 
     #[test]
@@ -1256,17 +1308,21 @@ mod tests {
 
     #[test]
     fn test_mouse_scroll_in_sidebar_area_is_ignored() {
-        // Events in sidebar area (column < SIDEBAR_WIDTH + TERMINAL_H_PADDING) should be ignored
-        let mouse_column: u16 = 25; // Inside sidebar
-        let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
-        assert!(!should_handle, "Scroll in sidebar area should be ignored");
+        // Events in sidebar/border/padding area should be ignored
+        // Terminal content starts after: sidebar + border (1) + padding
+        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+        let mouse_column: u16 = 30; // Inside terminal border/padding area
+        let should_handle = mouse_column >= term_content_start;
+        assert!(!should_handle, "Scroll in sidebar/border/padding area should be ignored");
     }
 
     #[test]
     fn test_mouse_scroll_in_terminal_area_is_handled() {
-        // Events in terminal area (column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING) should be handled
-        let mouse_column: u16 = 35; // Inside terminal area
-        let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        // Events in terminal content area should be handled
+        // Terminal content starts after: sidebar + border (1) + padding
+        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+        let mouse_column: u16 = 35; // Inside terminal content area
+        let should_handle = mouse_column >= term_content_start;
         assert!(should_handle, "Scroll in terminal area should be handled");
     }
 
@@ -1417,8 +1473,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be WHITE when focused
-        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        // Terminal border should be WHITE when focused (starts right after sidebar)
+        let term_start_x = SIDEBAR_WIDTH;
         let corner = &buffer[(term_start_x, 0)];
         assert_eq!(
             corner.fg,
@@ -1478,8 +1534,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be DARK_GREY during drafting (non-interactive)
-        let term_start_x = SIDEBAR_WIDTH + TERMINAL_H_PADDING;
+        // Terminal border should be DARK_GREY during drafting (starts right after sidebar)
+        let term_start_x = SIDEBAR_WIDTH;
         let corner = &buffer[(term_start_x, 0)];
         assert_eq!(
             corner.fg,
