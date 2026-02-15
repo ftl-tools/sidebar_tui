@@ -9,6 +9,7 @@
 pub mod colors;
 pub mod daemon;
 pub mod env_capture;
+pub mod hint_bar;
 pub mod input;
 pub mod input_handler;
 pub mod pty;
