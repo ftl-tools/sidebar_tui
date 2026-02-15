@@ -51,16 +51,16 @@ impl AppState {
         }
 
         match key.code {
-            // Navigation
+            // Navigation (arrows and vim-style j/k)
             // TODO: sidebar_tui-xjh - Live preview feature disabled due to message flow issues
             // The async Preview message interferes with the buffered message reader,
             // causing connection errors. Need to refactor the message handling to
             // either use fully synchronous or fully asynchronous operations.
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.select_previous();
                 EventResult::Consumed
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
                 EventResult::Consumed
             }
@@ -357,6 +357,42 @@ mod tests {
 
         // At top, should stay
         state.handle_key(key(KeyCode::Up));
+        assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn test_sidebar_vim_jk_navigation() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+            Session::new("c"),
+        ]);
+        state.focus = Focus::Sidebar;
+
+        assert_eq!(state.selected_index, 0);
+
+        // j moves down (vim-style)
+        let result = state.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.selected_index, 1);
+
+        state.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(state.selected_index, 2);
+
+        // At bottom, should stay
+        state.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(state.selected_index, 2);
+
+        // k moves up (vim-style)
+        let result = state.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.selected_index, 1);
+
+        state.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(state.selected_index, 0);
+
+        // At top, should stay
+        state.handle_key(key(KeyCode::Char('k')));
         assert_eq!(state.selected_index, 0);
     }
 

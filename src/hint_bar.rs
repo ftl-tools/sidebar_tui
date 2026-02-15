@@ -367,11 +367,11 @@ impl Widget for HintBar {
             if quit_start_x >= area.x {
                 buf[(quit_start_x, last_line_y)]
                     .set_char('│')
-                    .set_fg(colors::WHITE);
+                    .set_fg(colors::SEPARATOR);
                 if quit_start_x + 1 < area.x + area.width {
                     buf[(quit_start_x + 1, last_line_y)]
                         .set_char(' ')
-                        .set_fg(colors::WHITE);
+                        .set_fg(colors::SEPARATOR);
                 }
             }
 
@@ -445,7 +445,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                 } else {
                     vec![
                         KeybindingInfo::new("enter", "Select"),
-                        KeybindingInfo::new("↑/↓", "Navigate"),
+                        KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
                         KeybindingInfo::new("d", "Delete"),
@@ -940,6 +940,20 @@ mod tests {
     }
 
     #[test]
+    fn test_separator_color_is_242() {
+        // Test that the separator character "│" uses SEPARATOR color (242)
+        let bar = HintBar::new(vec![], "q Quit");
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+
+        bar.render(area, &mut buf);
+
+        // "│ q Quit" - separator is at x = 12
+        assert_eq!(buf[(12, 0)].symbol(), "│");
+        assert_eq!(buf[(12, 0)].fg, colors::SEPARATOR, "Separator should use SEPARATOR color (242)");
+    }
+
+    #[test]
     fn test_render_zero_area() {
         let bar = HintBar::default();
         let area = Rect::new(0, 0, 0, 0);
@@ -1008,6 +1022,7 @@ mod tests {
         let bindings = get_bindings_for_state(&state);
 
         assert!(bindings.iter().any(|b| b.key == "enter"), "Should have 'enter' binding");
+        assert!(bindings.iter().any(|b| b.key == "↑/↓/j/k"), "Should have vim navigation binding");
         assert!(bindings.iter().any(|b| b.key == "r"), "Should have 'r' (rename) binding");
         assert!(bindings.iter().any(|b| b.key == "d"), "Should have 'd' (delete) binding");
     }

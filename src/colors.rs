@@ -25,6 +25,10 @@ pub const DARK_RED: Color = Color::Indexed(88);
 /// Slightly dimmer than WHITE to reduce visual intensity.
 pub const FOCUSED_BORDER: Color = Color::Indexed(250);
 
+/// Separator (ANSI 242) - Used for the separator in the hint bar.
+/// More gray than white for visual distinction.
+pub const SEPARATOR: Color = Color::Indexed(242);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,8 +82,16 @@ mod tests {
     }
 
     #[test]
+    fn test_separator_is_indexed_242() {
+        match SEPARATOR {
+            Color::Indexed(n) => assert_eq!(n, 242),
+            _ => panic!("SEPARATOR should be Color::Indexed"),
+        }
+    }
+
+    #[test]
     fn test_all_colors_are_distinct() {
-        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, FOCUSED_BORDER];
+        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, FOCUSED_BORDER, SEPARATOR];
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
                 assert_ne!(

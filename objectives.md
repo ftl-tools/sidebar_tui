@@ -2,36 +2,11 @@
 
 I want a simple TUI for managing terminal sessions in a sidebar in a way that works with my workflow. I want to have sessions grouped into threads on the side bar, and to be able to easily create new ones and switch between them. The full spec is here @eventual_objectives.md but that is too much to start with, so we'll get the basic functionality working first and then iterate from there.
 
-## Indbox/Updates
+## Inbox/Updates
 
-After the last couple sprints a couple things got dropped, a couple existing features need clarified, and we've updated a couple new ones. Please implement these and add them to the spec below as you implement each one:
+Remaining items:
 
-- We've replaced (color 56) with (color 54)
-- The `│` seperator in the hint bar should be more gray (color 242).
-- When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it.
-- When I focus on the sidebar pane and then press `enter` to focus on this terminal session, the TUI crashes with the following message. It does this whether I move the selection or just leave it. Just crashes when I press `enter` to select a session in the sidebar. This is a critical bug that prevents the core functionality of selecting and switching between sessions from working, so please prioritize this fix:
-
-  ```
-  Error:
-    0: Broken pipe (os error 32)
-
-  Location:
-    src/main.rs:284
-
-  Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
-  Run with RUST_BACKTRACE=full to include source snippets.
-  ```
-
-  There should be E2E tests that verify this functionality works and does not crash.
-
-- When the sidebar pane is focused, `h` and `j` should also work as alternatives to the up and down arrows for moving the selection up and down.
-- There needs to be an E2E test that tests launching `claude`. Sometimes depending on how we mess with the session logic it shows the following error. We should have an E2E test that runs `claude` in a terminal session and verifies that it works without crashing or showing this error. This is a critical bug to fix if it happens, because one of the main use cases for this TUI is to run agents in terminal sessions, and `claude` is the main way we do that right now.
-
-  ```
-  Error: Claude Code cannot be launched inside another Claude Code session. Nested sessions share runtime resources and wil crash all active sessions. To bypass this check, unset the CLAUDECODE environment variable.
-  ```
-
-  I don't know why this is happening, but every few builds I see it again.
+- When I move the selected session up and down the terminal view should show the selected session's terminal content as I move through the list, not just after I hit enter to select it. (BLOCKED - sidebar_tui-xjh: requires architectural refactor of message handling)
 
 ## Spec
 
@@ -98,8 +73,8 @@ The general requirements are as follows:
 - When the sidebar is focused it's outline should be lighter (color 250) and when it's not focused it should be darker (color 238).
 - The following keybindings should work when the sidebar pane is focused:
   - `enter`, `space`, or `→` - Select: Focus on the terminal pane.
-  - `↑` - Up: Move the selection up one session in the list. If the next row above is the truncation indicator scroll up one and move the selection. If already at the top, do nothing.
-  - `↓` - Down: Move the selection down one session in the list. If the next row below is the truncation indicator scroll down one and move the selection. If already at the bottom, do nothing.
+  - `↑` or `k` - Up: Move the selection up one session in the list. If the next row above is the truncation indicator scroll up one and move the selection. If already at the top, do nothing.
+  - `↓` or `j` - Down: Move the selection down one session in the list. If the next row below is the truncation indicator scroll down one and move the selection. If already at the bottom, do nothing.
   - `esc` - Jump Back: Select whatever session was selected before the sidebar was focused, and focus on the terminal pane.
   - `n` - New: Enter create mode.
   - `d` - Delete: Show an important confirmation prompt in the hint bar to delete the currently selected session.
@@ -152,7 +127,7 @@ The general requirements are as follows:
 - The hint bar should almost always show the currently available keybindings and actions given the current context.
   - The text in the hint bar should be formatted like the example above, with the keybinding in purple (color 165), the description in white (color 255), and two spaces separating each keybinding from the next. The keybindings and descriptions should be left aligned.
   - If the available keybindings are too long to fit on one line they should wrap to multiple lines. The hint bar should grow vertically as needed to accomidate this. A keybinding and its description should never be split across lines.
-- The right side of the hint bar should always show the path to quitting the TUI. For example if the terminal pane is focused it should show `mod + b -> q Quit`, because the user must focus on the sidebar pane and then press `q` to quit. Or, if renaming a new session it should show `esc -> q Quit` because the user must stop renaming and then press `q` to quit. This should update dynamically based on the current state of the TUI to always show the correct path to quitting. There should be a separator of `│` just before the quit instructions to separate it from the rest of the hint bar content.
+- The right side of the hint bar should always show the path to quitting the TUI. For example if the terminal pane is focused it should show `mod + b -> q Quit`, because the user must focus on the sidebar pane and then press `q` to quit. Or, if renaming a new session it should show `esc -> q Quit` because the user must stop renaming and then press `q` to quit. This should update dynamically based on the current state of the TUI to always show the correct path to quitting. There should be a separator of `│` colored gray (color 242) just before the quit instructions to separate it from the rest of the hint bar content.
 - Sometimes the hint bar might need to show a prompt message along with the keybindings for that prompt. This prompt message should be on the left before any of the keybindings. It should wrap like the keybindings if it's too long to fit on one line, and its text should be colored white (color 255). Generally if we say we want to show a prompt of some sort that should get shown here.
   - Note that it is possible for prompts to have only one keybinding, makeybe something like `k` for "ok".
 - Sometimes the hint bar might need to show a temporary message. This should replace the keybindings (but not the quit instructions on the right) and should be colored white (color 255). It should be visible for a few seconds and then disappear and be replaced again by the keybindings.
