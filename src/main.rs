@@ -505,6 +505,9 @@ fn run_attached(
                             break;
                         }
                         EventResult::CreateSession { name, session_type } => {
+                            // Drain any pending async messages before sync operation
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+
                             // Create new session via daemon
                             let create_response = send_daemon_message(stream, ClientMessage::Attach {
                                 session_name: name.clone(),
@@ -546,6 +549,9 @@ fn run_attached(
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::DeleteSession { name } => {
+                            // Drain any pending async messages before sync operation
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+
                             // Kill session via daemon
                             let kill_response = send_daemon_message(stream, ClientMessage::Kill {
                                 session_name: name.clone(),
@@ -587,6 +593,9 @@ fn run_attached(
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::RenameSession { old_name, new_name } => {
+                            // Drain any pending async messages before sync operation
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+
                             // Rename session via daemon
                             let rename_response = send_daemon_message(stream, ClientMessage::Rename {
                                 old_name: old_name.clone(),
@@ -616,6 +625,9 @@ fn run_attached(
                         EventResult::SwitchSession { name } => {
                             // Only switch if it's a different session
                             if name != app.session_name {
+                                // Drain any pending async messages before sync operation
+                                drain_async_messages(&mut msg_reader, stream, &mut app)?;
+
                                 // Detach from current session
                                 let _ = send_daemon_message(stream, ClientMessage::Detach);
 
