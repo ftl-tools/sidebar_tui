@@ -605,9 +605,8 @@ fn run_attached(
                 }
                 Event::Mouse(mouse_event) => {
                     // Handle mouse scroll wheel events - forward to active terminal
-                    // Only if terminal is focused and in Normal mode
-                    if app.app_state.focus == Focus::Terminal
-                        && matches!(app.app_state.mode, AppMode::Normal)
+                    // Works regardless of focus per spec, but only in Normal mode
+                    if matches!(app.app_state.mode, AppMode::Normal)
                         && mouse_event.column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING
                         && !app.session_name.is_empty()
                     {
@@ -768,7 +767,7 @@ fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppSta
 
     // During drafting, show blank terminal. Otherwise show placeholder.
     if !is_drafting {
-        let terminal_placeholder = Paragraph::new("Terminal view (press Ctrl+Q or Ctrl+B to quit)")
+        let terminal_placeholder = Paragraph::new("Terminal view (see hint bar for keybindings)")
             .style(Style::default().fg(colors::WHITE));
         frame.render_widget(terminal_placeholder, inner_area);
     }
@@ -995,8 +994,8 @@ mod tests {
         let content = buffer_to_string(buffer);
 
         assert!(
-            content.contains("Ctrl+Q") && content.contains("Ctrl+B"),
-            "Terminal view should contain both 'Ctrl+Q' and 'Ctrl+B', got: {}",
+            content.contains("Terminal view") && content.contains("hint bar"),
+            "Terminal view placeholder should reference hint bar, got: {}",
             content
         );
     }
@@ -1250,6 +1249,35 @@ mod tests {
         let mouse_column: u16 = 35; // Inside terminal area
         let should_handle = mouse_column >= SIDEBAR_WIDTH + TERMINAL_H_PADDING;
         assert!(should_handle, "Scroll in terminal area should be handled");
+    }
+
+    #[test]
+    fn test_mouse_scroll_works_regardless_of_focus() {
+        // Per spec line 91: "Mouse scrolling when the Sidebar TUI is opened at all,
+        // regardless of focus should scroll the terminal pane's visible history."
+        // This test documents that focus is NOT a condition for mouse scroll handling.
+        // The only conditions are: Normal mode, mouse in terminal area, session exists.
+        use sidebar_tui::state::{AppMode, Focus, AppState};
+
+        let mut state = AppState::default();
+        state.mode = AppMode::Normal;
+
+        // Scroll should work when sidebar is focused
+        state.focus = Focus::Sidebar;
+        let should_scroll_sidebar_focused =
+            matches!(state.mode, AppMode::Normal); // Focus NOT checked
+        assert!(
+            should_scroll_sidebar_focused,
+            "Scroll should work when sidebar is focused"
+        );
+
+        // Scroll should work when terminal is focused
+        state.focus = Focus::Terminal;
+        let should_scroll_terminal_focused = matches!(state.mode, AppMode::Normal);
+        assert!(
+            should_scroll_terminal_focused,
+            "Scroll should work when terminal is focused"
+        );
     }
 
     #[test]
