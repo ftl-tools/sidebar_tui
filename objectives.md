@@ -29,6 +29,12 @@ After the last couple sprints a couple things got dropped, a couple existing fea
 
 - The outline of the focused pane is too bright, let's make it (color 250). This should apply to both the sidebar and terminal panes when they are focused.
 - When the sidebar pane is focused, `h` and `j` should also work as alternatives to the up and down arrows for moving the selection up and down.
+- There needs to be an E2E test that tests launching `claude`. Sometimes depending on how we mess with the session logic it shows the following error. We should have an E2E test that runs `claude` in a terminal session and verifies that it works without crashing or showing this error. This is a critical bug to fix if it happens, because one of the main use cases for this TUI is to run agents in terminal sessions, and `claude` is the main way we do that right now.
+
+  ```
+  Error: Claude Code cannot be launched inside another Claude Code session. Nested sessions share runtime resources and wil crash all active sessions. To bypass this check, unset the CLAUDECODE environment variable.
+  ```
+  I don't know why this is happening, btu 
 
 ## Spec
 
@@ -87,7 +93,7 @@ The general requirements are as follows:
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).
 - If a session name is too long to fit in the sidebar it should be wrapped with `│`(s) and `└` characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
-- The background of the selected session should be dark purple (color 56). This highlight should start at the first letter of the session name and stop right before the right sidebar border.
+- The background of the selected session should be dark purple (color 54). This highlight should start at the first letter of the session name and stop right before the right sidebar border.
 - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`) at the top and or bottom of the list if extra entries are beyond the visible area.
 - If it exists, the top truncation indicator should go directly below the title.
 - The truncation indicator should be colored slightly darker (color 238) than the session names.

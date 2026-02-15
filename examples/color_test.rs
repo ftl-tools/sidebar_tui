@@ -17,7 +17,7 @@ use ratatui::style::Color as RatatuiColor;
 const PURPLE: u8 = 165;       // Title text, keybindings
 const WHITE: u8 = 255;        // Session names, terminal text
 const DARK_GREY: u8 = 238;    // Unfocused borders, hints bg
-const DARK_PURPLE: u8 = 56;   // Selected session background
+const DARK_PURPLE: u8 = 54;   // Selected session background
 const DARK_RED: u8 = 88;      // Important prompts background
 
 fn main() -> io::Result<()> {
@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
         (PURPLE, "Purple (165)", "Title text, keybindings"),
         (WHITE, "White (255)", "Session names, terminal text"),
         (DARK_GREY, "Dark Grey (238)", "Unfocused borders, hint bar bg"),
-        (DARK_PURPLE, "Dark Purple (56)", "Selected session background"),
+        (DARK_PURPLE, "Dark Purple (54)", "Selected session background"),
         (DARK_RED, "Dark Red (88)", "Important prompt background"),
     ];
 
@@ -159,7 +159,7 @@ fn main() -> io::Result<()> {
         (RatatuiColor::Indexed(PURPLE), "Indexed(165) - Purple"),
         (RatatuiColor::Indexed(WHITE), "Indexed(255) - White"),
         (RatatuiColor::Indexed(DARK_GREY), "Indexed(238) - Dark Grey"),
-        (RatatuiColor::Indexed(DARK_PURPLE), "Indexed(56) - Dark Purple"),
+        (RatatuiColor::Indexed(DARK_PURPLE), "Indexed(54) - Dark Purple"),
         (RatatuiColor::Indexed(DARK_RED), "Indexed(88) - Dark Red"),
     ];
 

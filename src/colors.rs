@@ -15,8 +15,8 @@ pub const WHITE: Color = Color::Indexed(255);
 /// truncation indicators, hint bar background.
 pub const DARK_GREY: Color = Color::Indexed(238);
 
-/// Dark purple (ANSI 56) - Used for selected session background.
-pub const DARK_PURPLE: Color = Color::Indexed(56);
+/// Dark purple (ANSI 54) - Used for selected session background.
+pub const DARK_PURPLE: Color = Color::Indexed(54);
 
 /// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
 pub const DARK_RED: Color = Color::Indexed(88);
@@ -50,9 +50,9 @@ mod tests {
     }
 
     #[test]
-    fn test_dark_purple_is_indexed_56() {
+    fn test_dark_purple_is_indexed_54() {
         match DARK_PURPLE {
-            Color::Indexed(n) => assert_eq!(n, 56),
+            Color::Indexed(n) => assert_eq!(n, 54),
             _ => panic!("DARK_PURPLE should be Color::Indexed"),
         }
     }
