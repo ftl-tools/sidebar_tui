@@ -28,6 +28,29 @@ fn get_binary_path() -> String {
     format!("{}/target/debug/sb", manifest_dir)
 }
 
+/// Ensure the daemon is ready to accept connections.
+/// This helps with test isolation when previous tests leave daemon in transitional state.
+fn ensure_daemon_ready() {
+    let binary_path = get_binary_path();
+    for attempt in 0..5 {
+        let list_output = std::process::Command::new(&binary_path)
+            .arg("list")
+            .output();
+
+        if let Ok(output) = list_output {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("Error") && !stderr.contains("failed") {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        if attempt >= 2 {
+            eprintln!("Waiting for daemon to be ready (attempt {})", attempt + 1);
+        }
+    }
+    // Continue anyway - daemon should auto-start when test spawns sb
+}
+
 /// Helper to spawn sb and get its output parsed through vt100
 struct SbSession {
     session: expectrl::session::OsSession,
@@ -844,41 +867,65 @@ fn test_stale_session_persistence() {
         .output();
 }
 
-/// Test that the sidebar is exactly 28 characters wide
+/// Test that the sidebar is exactly 28 characters wide.
+/// This test verifies the sidebar border ends at column 27 (0-indexed).
 #[test]
 #[serial]
 fn test_sidebar_is_28_chars_wide() {
+    // Verify daemon is ready (this test runs after shutdown tests).
+    ensure_daemon_ready();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
-    std::thread::sleep(Duration::from_millis(1000));
+    // Wait for TUI to fully initialize.
+    std::thread::sleep(Duration::from_millis(2000));
     session.read_and_parse().expect("Failed to read output");
 
-    // Check the border at the edge of the sidebar
-    // Column 27 (last sidebar column) should have sidebar border styling (DarkGray)
-    // Column 28+ (padding area) should not have sidebar border styling
+    // Check screen content for errors - if we see error text, the daemon startup failed
+    let screen_contents = session.parser.screen().contents();
 
-    if let (Some(sidebar_last), Some(padding_first)) =
-        (session.cell_at(0, 27), session.cell_at(0, 28))
-    {
-        let sidebar_fg = sidebar_last.fgcolor();
-        let padding_fg = padding_first.fgcolor();
-
-        // The sidebar border has DarkGray foreground, padding area has different/default styling
-        // They should be different (sidebar border is DarkGray = index 8)
-        assert!(
-            sidebar_fg != padding_fg || matches!(sidebar_fg, vt100::Color::Idx(8)),
-            "Column 27 (sidebar border) and column 28 (padding) should have different foreground colors. Col 27: {:?}, Col 28: {:?}",
-            sidebar_fg, padding_fg
+    // Check for error conditions - if we see error text, the daemon startup may have failed
+    if screen_contents.contains("Error") || screen_contents.contains("failed") {
+        panic!(
+            "TUI appears to have an error. Screen content:\n{}",
+            screen_contents
         );
     }
 
-    // Also verify the sidebar border character is present
+    // Verify the sidebar border corner character is present at (0,0).
+    // This confirms the TUI is rendering properly.
     if let Some(corner_cell) = session.cell_at(0, 0) {
         let corner_char = corner_cell.contents();
         assert!(
             corner_char == "┌" || corner_char == "╭",
-            "Sidebar should have border corner at (0,0), got: '{}'",
-            corner_char
+            "Sidebar should have border corner at (0,0), got: '{}'\nFull screen:\n{}",
+            corner_char,
+            screen_contents
+        );
+    } else {
+        panic!("Could not read cell at (0,0)");
+    }
+
+    // Verify column 27 has a sidebar border character (right edge of sidebar).
+    // Column 27 is the last column of the 28-character-wide sidebar (columns 0-27).
+    if let Some(sidebar_edge) = session.cell_at(0, 27) {
+        let edge_char = sidebar_edge.contents();
+        // Top-right corner of sidebar should be ┐ or ╮
+        assert!(
+            edge_char == "┐" || edge_char == "╮",
+            "Column 27 row 0 should be sidebar top-right corner, got: '{}'",
+            edge_char
+        );
+    }
+
+    // Verify column 28 is the start of the terminal pane border (top-left corner).
+    if let Some(terminal_start) = session.cell_at(0, 28) {
+        let start_char = terminal_start.contents();
+        // Should be the top-left corner of the terminal pane
+        assert!(
+            start_char == "┌" || start_char == "╭",
+            "Column 28 row 0 should be terminal top-left corner, got: '{}'",
+            start_char
         );
     }
 
@@ -998,6 +1045,10 @@ fn test_hint_bar_context() {
 #[test]
 #[serial]
 fn test_focus_switching() {
+    // Verify daemon is ready before starting test.
+    // Previous tests may have left daemon in a transitional state.
+    ensure_daemon_ready();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
