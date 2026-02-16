@@ -3497,3 +3497,190 @@ fn test_terminal_default_fg_color_conversion() {
 
     session.quit().expect("Failed to quit");
 }
+
+// =========================================================================
+// Shutdown Command E2E Tests
+// =========================================================================
+
+/// Test that `sb shutdown` kills all running sessions and stops the daemon.
+/// After shutdown:
+/// 1. All active sessions should be terminated
+/// 2. The daemon should no longer be accepting connections
+/// 3. Running `sb list` should start a new daemon (showing no sessions)
+#[test]
+#[serial]
+fn test_shutdown_kills_all_sessions() {
+    let binary_path = get_binary_path();
+
+    // Create a session first to ensure daemon is running
+    let session_name1 = get_unique_session_name();
+    let session_name2 = get_unique_session_name();
+
+    // Spawn first session and wait for it to initialize
+    let cmd1 = format!("{} -s {}", binary_path, session_name1);
+    let mut session1 = spawn(&cmd1).expect("Failed to spawn sb session 1");
+    session1.set_expect_timeout(Some(Duration::from_secs(5)));
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Spawn second session
+    let cmd2 = format!("{} -s {}", binary_path, session_name2);
+    let mut session2 = spawn(&cmd2).expect("Failed to spawn sb session 2");
+    session2.set_expect_timeout(Some(Duration::from_secs(5)));
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Verify sessions are listed
+    let list_output = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    eprintln!("Sessions before shutdown:\n{}", list_stdout);
+
+    assert!(
+        list_stdout.contains(&session_name1),
+        "Session 1 should be listed before shutdown. Got:\n{}",
+        list_stdout
+    );
+    assert!(
+        list_stdout.contains(&session_name2),
+        "Session 2 should be listed before shutdown. Got:\n{}",
+        list_stdout
+    );
+
+    // Run shutdown
+    let shutdown_output = std::process::Command::new(&binary_path)
+        .arg("shutdown")
+        .output()
+        .expect("Failed to run sb shutdown");
+    let shutdown_stdout = String::from_utf8_lossy(&shutdown_output.stdout);
+    eprintln!("Shutdown output:\n{}", shutdown_stdout);
+
+    assert!(
+        shutdown_stdout.contains("shutdown") || shutdown_stdout.contains("Daemon"),
+        "Shutdown should report success. Got:\n{}",
+        shutdown_stdout
+    );
+
+    // Wait for daemon to fully shut down
+    std::thread::sleep(Duration::from_millis(1000));
+
+    // Try to quit the TUI sessions (they should already be dead)
+    let _ = session1.write_all(&[17]); // Ctrl+Q
+    let _ = session2.write_all(&[17]);
+    let _ = session1.get_process_mut().exit(true);
+    let _ = session2.get_process_mut().exit(true);
+
+    // After shutdown, running list should show no sessions (new daemon starts)
+    let list_output2 = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list after shutdown");
+    let list_stdout2 = String::from_utf8_lossy(&list_output2.stdout);
+    eprintln!("Sessions after shutdown:\n{}", list_stdout2);
+
+    // Sessions should not be in the active list anymore
+    assert!(
+        !list_stdout2.contains(&session_name1),
+        "Session 1 should NOT be listed after shutdown. Got:\n{}",
+        list_stdout2
+    );
+    assert!(
+        !list_stdout2.contains(&session_name2),
+        "Session 2 should NOT be listed after shutdown. Got:\n{}",
+        list_stdout2
+    );
+}
+
+/// Test that `sb shutdown` reports "No daemon running" when no daemon exists.
+#[test]
+#[serial]
+fn test_shutdown_no_daemon_running() {
+    let binary_path = get_binary_path();
+
+    // First, ensure no daemon is running by calling shutdown
+    let _ = std::process::Command::new(&binary_path)
+        .arg("shutdown")
+        .output();
+
+    // Wait for daemon to fully shut down
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Now call shutdown again - should report no daemon
+    let shutdown_output = std::process::Command::new(&binary_path)
+        .arg("shutdown")
+        .output()
+        .expect("Failed to run sb shutdown");
+    let shutdown_stdout = String::from_utf8_lossy(&shutdown_output.stdout);
+    eprintln!("Second shutdown output:\n{}", shutdown_stdout);
+
+    assert!(
+        shutdown_stdout.contains("No daemon running") || shutdown_stdout.contains("shutdown"),
+        "Shutdown should handle no-daemon case gracefully. Got:\n{}",
+        shutdown_stdout
+    );
+}
+
+/// Test that sessions can be recreated after shutdown.
+/// This verifies the daemon properly restarts and accepts new connections.
+#[test]
+#[serial]
+fn test_sessions_work_after_shutdown() {
+    let binary_path = get_binary_path();
+
+    // Ensure clean state by shutting down any existing daemon
+    let _ = std::process::Command::new(&binary_path)
+        .arg("shutdown")
+        .output();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Create a new session - this should start a new daemon
+    let session_name = get_unique_session_name();
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb after shutdown");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+
+    // Wait for initialization
+    std::thread::sleep(Duration::from_millis(2000));
+
+    // Read and parse to verify TUI is working
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    let mut buf = [0u8; 8192];
+    loop {
+        match session.try_read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => parser.process(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Screen after post-shutdown session creation:\n{}", screen_contents);
+
+    // Verify TUI is rendered properly
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should render after shutdown + restart. Got:\n{}",
+        screen_contents
+    );
+
+    // Verify session is listed
+    let list_output = std::process::Command::new(&binary_path)
+        .arg("list")
+        .output()
+        .expect("Failed to run sb list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+
+    assert!(
+        list_stdout.contains(&session_name),
+        "New session should be listed after shutdown + restart. Got:\n{}",
+        list_stdout
+    );
+
+    // Clean up
+    let _ = session.write_all(&[17]); // Ctrl+Q
+    let _ = session.get_process_mut().exit(true);
+    let _ = std::process::Command::new(&binary_path)
+        .args(["kill", &session_name])
+        .output();
+}

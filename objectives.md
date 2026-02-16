@@ -2,14 +2,9 @@
 
 I want a simple TUI for managing terminal sessions in a sidebar in a way that works with my workflow. I want to have sessions grouped into threads on the side bar, and to be able to easily create new ones and switch between them. The full spec is here @eventual_objectives.md but that is too much to start with, so we'll get the basic functionality working first and then iterate from there.
 
-## Updates To Make
+## IMPORTANT
 
-- Have AI make a linux build and install it on the Elate docker container.
-- Make sure sessions persist when starting and stopping.
-- Terminal session order in the sidebar pane should always be in order of last used. Interacting with a terminal pane should move it to the top. (Would be nice to know the difference between drafting a prompt to claude (don't re-prioritize), and sending a prompt to claude (re-prioritize now).)
-- Terminal session order should be preserved across runs.
-- Don't always create a `main` terminal. In fact our welcome mode is not being respected at all right now, we should fix that.
-- In the vscode terminal Claude has the right colors, but in the apple terminal all colors in the terminal pane seem to be getting turned to black and white. This is not the case for the sidebar pane though. That has the right colors in both the vscode terminal and the apple terminal.
+If you make a fix or an update that is not reflected or flat out differenet in the spec below, then update the spec to match.
 
 ## Spec
 
@@ -85,7 +80,7 @@ The general requirements are as follows:
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
   - `r` - Rename: Start renaming the currently selected session.
     - This should work similarly to drafting a new session in create mode, but instead of an empty name there should be the current session name with the cursor at the end. The user can then backspace and type to change the name. The same character restrictions apply as when drafting a new session.
-    - `enter` - Rename: Rename the session to the current name. Exit rename mode and return focus to wherever it was before renaming was started.
+    - `enter` - Rename: Rename the session to the current name. Exit rename mode and focus on the terminal pane.
     - `esc` - Cancel: Exit rename mode without changing the session name, and return focus to wherever it was before renaming was started.
   - `q` - Quit: Show a confirmation prompt in the hint bar to quit the TUI.
     - `y` or `q` - Yes: Quit the TUI and return to the normal terminal.

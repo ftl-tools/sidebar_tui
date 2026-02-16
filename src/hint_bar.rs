@@ -415,7 +415,7 @@ fn color_quit_path(quit_path: &str) -> Vec<(&str, ratatui::style::Color)> {
             if i < parts.len() - 1 {
                 // Find where " → " appears after this part
                 let start = quit_path.find(part).unwrap() + part.len();
-                let arrow_slice = &quit_path[start..start + 4]; // " → " is 4 chars (3 bytes for →)
+                let arrow_slice = &quit_path[start..start + 5]; // " → " is 5 bytes (space + 3-byte arrow + space)
                 result.push((arrow_slice, colors::WHITE));
             }
         }

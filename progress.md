@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - VecDeque for Terminal History
+
+Completed sidebar_tui-r77: Changed terminal scrollback history from `Vec<HistoryLine>` to `VecDeque<HistoryLine>` for O(1) history trimming. Previously `history.remove(0)` shifted all ~10,000 elements every time history exceeded max size. Now uses `VecDeque::pop_front()` which is O(1). Changes: (1) Added `use std::collections::VecDeque` import, (2) Changed `history` field type to VecDeque, (3) Changed `push` to `push_back` and `remove(0)` to `pop_front`, (4) Added `test_history_uses_vecdeque_for_efficient_trimming` unit test. All 342 lib tests pass. Binary reinstalled. Closed sidebar_tui-r77.
+
 ## 2026-02-16 - Fixed Broken Mouse Scroll Tests
 
 Completed sidebar_tui-0uk: Fixed 3 broken unit tests in the working tree related to mouse scroll implementation. The tests had incorrect assumptions about `TERMINAL_H_PADDING` - comments said padding was 2 but the constant is actually 1. Fixed tests: (1) `test_terminal_width_excludes_sidebar_padding_and_border` - changed expected value from 66 to 68 to reflect actual calculation, (2) `test_mouse_scroll_position_translation` - changed expected term_col from 2 to 3 to match actual term_content_start of 30, (3) `test_mouse_scroll_in_sidebar_area_is_ignored` - changed mouse_column from 30 to 29 so it's actually in the sidebar/border/padding area. All 341 lib + 65 bin tests pass. Note: E2E tests have pre-existing test isolation issues when run together (they pass individually). Binary reinstalled. Closed sidebar_tui-0uk.

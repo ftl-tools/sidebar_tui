@@ -181,6 +181,11 @@ pub fn spawn_shell_with_env(
     // which would cause any `claude` command run in terminal sessions to fail.
     cmd.env_remove("CLAUDECODE");
 
+    // Set TERM to xterm-256color so applications know they can output colors.
+    // Without this, the PTY inherits TERM from the parent which may not be
+    // appropriate when running inside a TUI.
+    cmd.env("TERM", "xterm-256color");
+
     // Inject environment variables if provided
     // These are restored from a previous session
     if let Some(env) = environment {
