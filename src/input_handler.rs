@@ -39,14 +39,17 @@ impl AppState {
 
     /// Handle key events when sidebar is focused (Normal mode).
     fn handle_sidebar_key(&mut self, key: KeyEvent) -> EventResult {
-        // Handle modifier keys
+        // Handle modifier keys - all terminal mod+* commands should work from sidebar
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
+                // Focus sidebar - no-op when already on sidebar, but consume the key
+                KeyCode::Char('b') | KeyCode::Char('t') => EventResult::Consumed,
+                // New session (create mode)
                 KeyCode::Char('n') => {
                     self.enter_create_mode();
                     EventResult::Consumed
                 }
-                // Quit (show confirmation) - works with ctrl+q from sidebar too
+                // Quit (show confirmation)
                 KeyCode::Char('q') => {
                     self.request_confirmation(ConfirmAction::Quit);
                     EventResult::Consumed
@@ -516,6 +519,32 @@ mod tests {
         let result = state.handle_key(ctrl_key('n'));
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::CreateMode { .. }));
+    }
+
+    #[test]
+    fn test_sidebar_ctrl_b_is_noop() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        // Ctrl+B from sidebar should be consumed (no-op, already on sidebar)
+        let result = state.handle_key(ctrl_key('b'));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.focus, Focus::Sidebar); // Still on sidebar
+    }
+
+    #[test]
+    fn test_sidebar_ctrl_t_is_noop() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        // Ctrl+T from sidebar should be consumed (no-op, already on sidebar)
+        let result = state.handle_key(ctrl_key('t'));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.focus, Focus::Sidebar); // Still on sidebar
     }
 
     #[test]

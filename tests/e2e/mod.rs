@@ -2570,3 +2570,137 @@ fn test_ctrl_q_quit_from_terminal() {
     // Process should exit - cleanup will handle final termination
     let _ = session.get_process_mut().exit(true);
 }
+
+/// Test that all terminal mod+* commands work when sidebar pane has focus.
+/// Per spec: "Make sure all terminal mod + * commands also work when the sidebar pane has focus."
+/// Terminal mod+* commands: ctrl+b (focus sidebar), ctrl+t (focus sidebar), ctrl+n (new), ctrl+q (quit)
+#[test]
+#[serial]
+fn test_mod_keys_work_from_sidebar() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("modkeys-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_name: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["kill", &self.session_name])
+                .output();
+        }
+    }
+
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_name: session_name.clone(),
+    };
+
+    // Spawn sb
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for initial render
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Terminal is initially focused
+    let screen_contents = parser.screen().contents();
+    eprintln!("Initial state:\n{}", screen_contents);
+
+    // Focus sidebar with Ctrl+B (ASCII 2)
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Verify sidebar is focused (hint bar shows "n New" without ctrl prefix when sidebar focused)
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+B (sidebar focused):\n{}", screen_contents);
+    assert!(
+        screen_contents.contains("n New") || screen_contents.contains("enter"),
+        "Sidebar should be focused. Got:\n{}",
+        screen_contents
+    );
+
+    // Test 1: Ctrl+B from sidebar should be a no-op (already on sidebar)
+    // Focus should remain on sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+B from sidebar (should still be on sidebar):\n{}", screen_contents);
+    assert!(
+        screen_contents.contains("n New") || screen_contents.contains("enter"),
+        "Focus should remain on sidebar after Ctrl+B from sidebar. Got:\n{}",
+        screen_contents
+    );
+
+    // Test 2: Ctrl+T from sidebar should be a no-op (already on sidebar)
+    session.write_all(&[20]).expect("Failed to send Ctrl+T"); // Ctrl+T is ASCII 20
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+T from sidebar (should still be on sidebar):\n{}", screen_contents);
+    assert!(
+        screen_contents.contains("n New") || screen_contents.contains("enter"),
+        "Focus should remain on sidebar after Ctrl+T from sidebar. Got:\n{}",
+        screen_contents
+    );
+
+    // Test 3: Ctrl+N from sidebar should enter create mode
+    session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N is ASCII 14
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+N from sidebar (should be in create mode):\n{}", screen_contents);
+    assert!(
+        screen_contents.contains("t Terminal") && screen_contents.contains("a Agent"),
+        "Ctrl+N from sidebar should enter create mode showing session types. Got:\n{}",
+        screen_contents
+    );
+
+    // Cancel create mode with Esc
+    session.write_all(&[27]).expect("Failed to send Esc"); // Esc is ASCII 27
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Test 4: Ctrl+Q from sidebar should show quit confirmation
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q"); // Ctrl+Q is ASCII 17
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+Q from sidebar (should show quit confirmation):\n{}", screen_contents);
+    assert!(
+        screen_contents.contains("Quit") && (screen_contents.contains("y/q") || screen_contents.contains("Yes")),
+        "Ctrl+Q from sidebar should show quit confirmation. Got:\n{}",
+        screen_contents
+    );
+
+    // Clean up with 'n' to cancel and then quit properly
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    session.write_all(b"y").expect("Failed to send 'y'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let _ = session.get_process_mut().exit(true);
+}
