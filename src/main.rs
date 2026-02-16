@@ -203,14 +203,14 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
-    // Initialize TUI and enable mouse capture for scroll wheel support
+    // Initialize TUI.
+    // Mouse capture starts DISABLED by default to allow native text selection.
+    // Users can enable mouse scroll mode with Ctrl+M which enables mouse capture.
     let mut ratatui_term = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)
-        .context("Failed to enable mouse capture")?;
 
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
 
-    // Disable mouse capture before restoring terminal
+    // Ensure mouse capture is disabled before restoring terminal
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
@@ -856,6 +856,14 @@ fn run_attached(
                             let encoded = encode_message(&preview_msg)?;
                             stream.write_all(&encoded)?;
                             stream.flush()?;
+                        }
+                        EventResult::ToggleMouseMode => {
+                            // Toggle mouse capture based on new state
+                            if app.app_state.mouse_mode {
+                                execute!(std::io::stdout(), EnableMouseCapture)?;
+                            } else {
+                                execute!(std::io::stdout(), DisableMouseCapture)?;
+                            }
                         }
                         EventResult::Consumed => {
                             // Event was consumed by UI state machine, nothing to forward

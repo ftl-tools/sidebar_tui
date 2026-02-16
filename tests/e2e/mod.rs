@@ -3719,3 +3719,89 @@ fn test_sessions_work_after_shutdown() {
         .args(["kill", &session_name])
         .output();
 }
+
+/// Test that Ctrl+S toggles mouse mode (text selection vs mouse scroll).
+/// By default mouse_mode is false, showing "Text select" in the hint bar.
+/// After pressing Ctrl+S, it should show "Mouse scroll".
+#[test]
+#[serial]
+fn test_ctrl_s_toggles_mouse_mode() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("mousemode-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_name: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["kill", &self.session_name])
+                .output();
+        }
+    }
+
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_name: session_name.clone(),
+    };
+
+    // Spawn sb
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for initial render
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Check initial state - should show "Text select" since mouse_mode defaults to false
+    let screen_contents = parser.screen().contents();
+    eprintln!("Initial state:\n{}", screen_contents);
+
+    assert!(
+        screen_contents.contains("Text select"),
+        "Initial state should show 'Text select'. Got:\n{}",
+        screen_contents
+    );
+
+    // Send Ctrl+S (ASCII 19) to toggle mouse mode
+    session.write_all(&[19]).expect("Failed to send Ctrl+S");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After first Ctrl+S:\n{}", screen_contents);
+
+    // Should now show "Mouse scroll"
+    assert!(
+        screen_contents.contains("Mouse scroll"),
+        "After toggle, should show 'Mouse scroll'. Got:\n{}",
+        screen_contents
+    );
+
+    // Send Ctrl+S again to toggle back
+    session.write_all(&[19]).expect("Failed to send Ctrl+S");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After second Ctrl+S:\n{}", screen_contents);
+
+    // Should be back to "Text select"
+    assert!(
+        screen_contents.contains("Text select"),
+        "After second toggle, should show 'Text select'. Got:\n{}",
+        screen_contents
+    );
+
+    // Clean up
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}

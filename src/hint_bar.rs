@@ -434,12 +434,20 @@ fn color_quit_path(quit_path: &str) -> Vec<(&str, ratatui::style::Color)> {
 
 /// Get the keybindings for the current app state.
 pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
+    // Mouse mode indicator - shows current state and how to toggle
+    let mouse_desc = if state.mouse_mode {
+        "Mouse scroll"
+    } else {
+        "Text select"
+    };
+
     match &state.mode {
         AppMode::Normal => match state.focus {
             Focus::Sidebar => {
                 if state.is_welcome_state() {
                     vec![
                         KeybindingInfo::new("n", "New"),
+                        KeybindingInfo::new("ctrl + s", mouse_desc),
                         KeybindingInfo::new("q", "Quit"),
                     ]
                 } else {
@@ -449,6 +457,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
                         KeybindingInfo::new("d", "Delete"),
+                        KeybindingInfo::new("ctrl + s", mouse_desc),
                         KeybindingInfo::new("q", "Quit"),
                     ]
                 }
@@ -456,6 +465,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             Focus::Terminal => vec![
                 KeybindingInfo::new("ctrl + n", "New"),
                 KeybindingInfo::new("ctrl + b", "Focus on sidebar"),
+                KeybindingInfo::new("ctrl + s", mouse_desc),
                 KeybindingInfo::new("ctrl + q", "Quit"),
             ],
         },
@@ -1196,5 +1206,63 @@ mod tests {
             }
             _ => panic!("Should be in Confirm mode"),
         }
+    }
+
+    // === Mouse Mode Tests ===
+
+    #[test]
+    fn test_get_bindings_shows_text_select_when_mouse_mode_off() {
+        let state = AppState {
+            focus: Focus::Terminal,
+            mouse_mode: false,
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+        // Should show "Text select" when mouse mode is off
+        let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
+        assert!(mouse_binding.is_some(), "Should have ctrl + s binding");
+        assert_eq!(mouse_binding.unwrap().description, "Text select");
+    }
+
+    #[test]
+    fn test_get_bindings_shows_mouse_scroll_when_mouse_mode_on() {
+        let state = AppState {
+            focus: Focus::Terminal,
+            mouse_mode: true,
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+        // Should show "Mouse scroll" when mouse mode is on
+        let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
+        assert!(mouse_binding.is_some(), "Should have ctrl + s binding");
+        assert_eq!(mouse_binding.unwrap().description, "Mouse scroll");
+    }
+
+    #[test]
+    fn test_get_bindings_sidebar_shows_mouse_mode() {
+        let state = AppState {
+            focus: Focus::Sidebar,
+            mouse_mode: false,
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+        // Sidebar should also show mouse mode binding
+        let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
+        assert!(mouse_binding.is_some(), "Sidebar should have ctrl + s binding");
+    }
+
+    #[test]
+    fn test_get_bindings_sidebar_with_sessions_shows_mouse_mode() {
+        use crate::state::Session;
+
+        let mut state = AppState::default();
+        state.sessions.push(Session::new("test"));
+
+        let bindings = get_bindings_for_state(&state);
+        let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
+        assert!(mouse_binding.is_some(), "Sidebar with sessions should have ctrl + s binding");
     }
 }

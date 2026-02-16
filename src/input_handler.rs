@@ -45,6 +45,11 @@ impl AppState {
             return match key.code {
                 // Focus sidebar - no-op when already on sidebar, but consume the key
                 KeyCode::Char('b') | KeyCode::Char('t') => EventResult::Consumed,
+                // Toggle mouse mode (for text selection vs scroll wheel)
+                KeyCode::Char('s') => {
+                    self.mouse_mode = !self.mouse_mode;
+                    EventResult::ToggleMouseMode
+                }
                 // New session (create mode)
                 KeyCode::Char('n') => {
                     self.enter_create_mode();
@@ -141,6 +146,11 @@ impl AppState {
                 KeyCode::Char('b') | KeyCode::Char('t') => {
                     self.focus_sidebar();
                     EventResult::Consumed
+                }
+                // Toggle mouse mode (for text selection vs scroll wheel)
+                KeyCode::Char('s') => {
+                    self.mouse_mode = !self.mouse_mode;
+                    EventResult::ToggleMouseMode
                 }
                 // New session
                 KeyCode::Char('n') => {
@@ -1106,5 +1116,51 @@ mod tests {
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_))); // Still confirming
         assert_eq!(state.sessions.len(), 1); // Session not deleted
+    }
+
+    // === Mouse Mode Toggle Tests ===
+
+    #[test]
+    fn test_terminal_ctrl_m_toggles_mouse_mode() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            mouse_mode: false,
+            ..Default::default()
+        };
+
+        // Toggle on
+        let result = state.handle_key(ctrl_key('s'));
+        assert_eq!(result, EventResult::ToggleMouseMode);
+        assert!(state.mouse_mode, "Mouse mode should be enabled");
+
+        // Toggle off
+        let result = state.handle_key(ctrl_key('s'));
+        assert_eq!(result, EventResult::ToggleMouseMode);
+        assert!(!state.mouse_mode, "Mouse mode should be disabled");
+    }
+
+    #[test]
+    fn test_sidebar_ctrl_m_toggles_mouse_mode() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            mouse_mode: false,
+            ..Default::default()
+        };
+
+        // Toggle on
+        let result = state.handle_key(ctrl_key('s'));
+        assert_eq!(result, EventResult::ToggleMouseMode);
+        assert!(state.mouse_mode, "Mouse mode should be enabled");
+
+        // Toggle off
+        let result = state.handle_key(ctrl_key('s'));
+        assert_eq!(result, EventResult::ToggleMouseMode);
+        assert!(!state.mouse_mode, "Mouse mode should be disabled");
+    }
+
+    #[test]
+    fn test_mouse_mode_default_is_false() {
+        let state = AppState::default();
+        assert!(!state.mouse_mode, "Default mouse mode should be false (text selection enabled)");
     }
 }

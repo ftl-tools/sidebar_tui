@@ -298,6 +298,10 @@ pub enum EventResult {
         /// Name of the session to preview.
         name: String,
     },
+    /// Toggle mouse capture mode.
+    /// When enabled: scroll wheel works but text selection is blocked.
+    /// When disabled: native terminal text selection works.
+    ToggleMouseMode,
 }
 
 /// Main application state.
@@ -315,6 +319,9 @@ pub struct AppState {
     pub scroll_offset: usize,
     /// Previous session index for "Jump Back" on Esc.
     pub previous_session: Option<usize>,
+    /// Whether mouse capture is enabled (for scroll wheel support).
+    /// When disabled, native terminal text selection works.
+    pub mouse_mode: bool,
 }
 
 

@@ -93,11 +93,13 @@ The general requirements are as follows:
 - There should be one char of padding on the left and right of the terminal pane between the terminal content and the border.
 - The terminal text should be white (color 255).
 - When the terminal is focused it should have a lighter outline (color 250) and when it's not focused it should have a darker outline (color 238).
-- Mouse scrolling when the Sidebar TUI is openned at all, regardless of focus should scroll the terminal pane's visible history.
+- Mouse scrolling when the Sidebar TUI is openned at all, regardless of focus should scroll the terminal pane's visible history. NOTE: This only works when mouse mode is enabled (see `mod + s` below).
+- By default, mouse mode is disabled to allow native terminal text selection (for copying text). Use `mod + s` to toggle between text selection mode and mouse scroll mode.
 - When quitting the Sidebar TUI, restarting the computer, and reopening the Sidebar TUI, the terminal sessions should be restored to their previous state as best we can, with comand history, working directory, scrollable visible history, env vars, and anything else we can manage to save and restore.
 - The following keybindings should work when the terminal pane is focused:
   - `mod + b` or `mod + t` - Focus on sidebar: Focus on the sidebar pane.
   - `mod + n` - New: Enter create mode.
+  - `mod + s` - Toggle mouse mode: Toggle between text selection mode (native terminal selection works) and mouse scroll mode (scroll wheel works but text selection is blocked). The hint bar shows the current mode ("Text select" or "Mouse scroll").
 
 #### Create Mode
 
