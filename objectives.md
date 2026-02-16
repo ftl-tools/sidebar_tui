@@ -4,11 +4,6 @@ I want a simple TUI for managing terminal sessions in a sidebar in a way that wo
 
 ## Updates To Make
 
-- `tab` should focus on the selected session's terminal pane just like `enter` does.
-- `mod + q` should open quit confirmation, and should work even when the terminal pane has focus.
-- Make sure all terminal `mod + *` commands also work when the sidebar pane ahs focus.
-- After rename, keep focus where it was before the rename was started, don't always jump to focus on the renamed terminal session's terminal pane.
-- Try highlighting the currently selected terminal session grey instead of purple.
 - Have AI make a linux build and install it on the Elate docker container.
 - Make sure sessions persist when starting and stopping.
 - Terminal session order in the sidebar pane should always be in order of last used. Interacting with a terminal pane should move it to the top. (Would be nice to know the difference between drafting a prompt to claude (don't re-prioritize), and sending a prompt to claude (re-prioritize now).)
@@ -90,7 +85,7 @@ The general requirements are as follows:
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
   - `r` - Rename: Start renaming the currently selected session.
     - This should work similarly to drafting a new session in create mode, but instead of an empty name there should be the current session name with the cursor at the end. The user can then backspace and type to change the name. The same character restrictions apply as when drafting a new session.
-    - `enter` - Rename: Rename the session to the current name. Exit rename mode and focus on the terminal pane.
+    - `enter` - Rename: Rename the session to the current name. Exit rename mode and return focus to wherever it was before renaming was started.
     - `esc` - Cancel: Exit rename mode without changing the session name, and return focus to wherever it was before renaming was started.
   - `q` - Quit: Show a confirmation prompt in the hint bar to quit the TUI.
     - `y` or `q` - Yes: Quit the TUI and return to the normal terminal.

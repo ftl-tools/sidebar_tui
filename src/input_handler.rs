@@ -235,6 +235,7 @@ impl AppState {
                 KeyCode::Enter => {
                     let index = rename.session_index;
                     let new_name = rename.new_name.clone();
+                    let previous_focus = rename.previous_focus;
                     // Get old name before updating local state
                     let old_name = self.sessions.get(index)
                         .map(|s| s.name.clone())
@@ -243,12 +244,14 @@ impl AppState {
                         // Update local state
                         self.rename_session(index, new_name.clone());
                         self.mode = AppMode::Normal;
-                        self.focus_terminal();
+                        // Restore focus to where it was before renaming started
+                        self.focus = previous_focus;
                         // Return RenameSession event for daemon to handle
                         return EventResult::RenameSession { old_name, new_name };
                     }
                     self.mode = AppMode::Normal;
-                    self.focus_terminal();
+                    // Restore focus to where it was before renaming started
+                    self.focus = previous_focus;
                     EventResult::Consumed
                 }
                 // Cancel renaming
@@ -892,7 +895,7 @@ mod tests {
             if old_name == "old" && new_name == "new"));
         assert!(matches!(state.mode, AppMode::Normal));
         assert_eq!(state.sessions[0].name, "new");
-        assert_eq!(state.focus, Focus::Terminal); // Spec says focus terminal after rename
+        assert_eq!(state.focus, Focus::Sidebar); // Focus restored to where it was before rename
     }
 
     #[test]
@@ -912,6 +915,33 @@ mod tests {
         assert!(matches!(state.mode, AppMode::Normal));
         assert_eq!(state.sessions[0].name, "original"); // Unchanged
         assert_eq!(state.focus, Focus::Sidebar); // Restored
+    }
+
+    #[test]
+    fn test_renaming_from_terminal_restores_to_terminal() {
+        // Test that rename restores focus to Terminal if that's where it started
+        let mut state = AppState {
+            sessions: vec![Session::new("session")],
+            focus: Focus::Terminal,
+            mode: AppMode::Renaming(RenamingState::new(0, "session", Focus::Terminal)),
+            ..Default::default()
+        };
+
+        // Type a new name
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Char('n')));
+        state.handle_key(key(KeyCode::Char('e')));
+        state.handle_key(key(KeyCode::Char('w')));
+
+        let result = state.handle_key(key(KeyCode::Enter));
+        assert!(matches!(result, EventResult::RenameSession { .. }));
+        assert_eq!(state.focus, Focus::Terminal); // Restored to Terminal
     }
 
     // === Confirmation Mode Tests ===

@@ -1303,6 +1303,100 @@ fn test_rename_flow() {
     let _ = session.get_process_mut().exit(true);
 }
 
+/// Test that rename keeps focus where it was before rename started.
+/// If rename started from sidebar, focus should stay on sidebar after Enter.
+#[test]
+#[serial]
+fn test_rename_keeps_focus() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("rf-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    // Cleanup helper
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let new_name = format!("newrf-{}", unique_id);
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session_name.clone(), new_name.clone()],
+    };
+
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar with Ctrl+B
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Enter rename mode with 'r'
+    session.write_all(b"r").expect("Failed to send 'r'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Clear the name and type a new one
+    for _ in 0..session_name.len() {
+        session.write_all(&[0x7f]).expect("Failed to send Backspace");
+    }
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Type new name
+    session.write_all(new_name.as_bytes()).expect("Failed to type new name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Press Enter to confirm rename
+    session.write_all(b"\r").expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_rename = parser.screen().contents();
+    eprintln!("After rename complete:\n{}", screen_after_rename);
+
+    // After rename, focus should stay on sidebar (where we started rename)
+    // We can verify this by checking that sidebar keybindings are shown
+    assert!(
+        screen_after_rename.contains("New") || screen_after_rename.contains("Delete") || screen_after_rename.contains("Rename"),
+        "After rename, focus should stay on sidebar with sidebar bindings. Got:\n{}",
+        screen_after_rename
+    );
+
+    // Also verify the hint bar does NOT show "ctrl + b" which would indicate terminal focus
+    assert!(
+        !screen_after_rename.contains("ctrl + b Focus"),
+        "After rename from sidebar, should NOT show terminal focus bindings (ctrl + b). Got:\n{}",
+        screen_after_rename
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
+
 /// Test delete confirmation: d shows prompt, y deletes, n cancels.
 #[test]
 #[serial]
