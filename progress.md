@@ -51,3 +51,7 @@ Completed sidebar_tui-l82.4: Added 4 comprehensive E2E tests for the live previe
 ## 2026-02-15 - Live Preview Feature Complete
 
 Completed sidebar_tui-l82.5 (review): Verified all 400 tests pass (316 lib + 60 bin + 22 E2E + 2 scaffold), fixed one minor clippy warning (field_reassign_with_default in test_mouse_scroll_works_regardless_of_focus), no remaining warnings. Reviewed the drain_async_messages() implementation and PreviewSession event handling - code quality is good. Live preview feature is now fully functional: navigating up/down in the sidebar with arrow keys or j/k immediately shows the selected session's terminal content without pressing Enter. Binary reinstalled. Closed sidebar_tui-l82.5. No open issues remain.
+
+## 2026-02-15 - Tab Key Focuses Terminal
+
+Completed sidebar_tui-0fo: Added Tab key as an alternative way to focus the terminal pane from the sidebar, just like Enter, Space, and Right arrow. Changes: (1) Updated input_handler.rs to handle Tab in the sidebar select pattern (line 75), (2) Added test_sidebar_tab_focuses_terminal unit test, (3) Updated hint bar to show "enter/tab" instead of just "enter" for the Select binding, (4) Updated test_get_bindings_sidebar_focused_with_sessions test, (5) Added send_tab() helper and test_tab_focuses_terminal E2E test. All 402 tests pass (317 lib + 60 bin + 23 E2E + 2 scaffold). No clippy warnings. Binary reinstalled. Closed sidebar_tui-0fo.

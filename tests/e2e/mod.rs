@@ -118,6 +118,13 @@ impl SbSession {
         Ok(())
     }
 
+    /// Send Tab key
+    fn send_tab(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.session.write_all(&[0x09])?; // HT (horizontal tab)
+        self.session.flush()?;
+        Ok(())
+    }
+
     /// Get cell at position
     fn cell_at(&self, row: u16, col: u16) -> Option<vt100::Cell> {
         self.parser.screen().cell(row, col).cloned()
@@ -1039,6 +1046,52 @@ fn test_focus_switching() {
         assert!(
             matches!(sidebar_fg, vt100::Color::Idx(238)),
             "Sidebar border should be dark grey (238) after returning to terminal. Got: {:?}",
+            sidebar_fg
+        );
+    }
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that Tab focuses the terminal from sidebar just like Enter does.
+#[test]
+#[serial]
+fn test_tab_focuses_terminal() {
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar with Ctrl+B
+    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify sidebar is focused (border should be 250)
+    if let Some(sidebar_corner) = session.cell_at(0, 0) {
+        let sidebar_fg = sidebar_corner.fgcolor();
+        eprintln!("After Ctrl+B sidebar border color: {:?}", sidebar_fg);
+        assert!(
+            matches!(sidebar_fg, vt100::Color::Idx(250)),
+            "Sidebar border should be focused (250) when sidebar focused. Got: {:?}",
+            sidebar_fg
+        );
+    }
+
+    // Now send Tab to focus terminal - this should work just like Enter
+    session.send_tab().expect("Failed to send tab");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Sidebar border should be DARK_GREY (238) since terminal is now focused
+    if let Some(sidebar_corner) = session.cell_at(0, 0) {
+        let sidebar_fg = sidebar_corner.fgcolor();
+        eprintln!("After Tab sidebar border color: {:?}", sidebar_fg);
+        assert!(
+            matches!(sidebar_fg, vt100::Color::Idx(238)),
+            "Sidebar border should be dark grey (238) after Tab focuses terminal. Got: {:?}",
             sidebar_fg
         );
     }

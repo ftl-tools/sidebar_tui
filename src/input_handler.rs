@@ -72,7 +72,7 @@ impl AppState {
             }
 
             // Select (focus terminal)
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right | KeyCode::Tab => {
                 if !self.sessions.is_empty() {
                     let name = self.sessions.get(self.selected_index)
                         .map(|s| s.name.clone())
@@ -440,6 +440,17 @@ mod tests {
 
         let result = state.handle_key(key(KeyCode::Right));
         // Now returns SwitchSession instead of Consumed
+        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
+        assert_eq!(state.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn test_sidebar_tab_focuses_terminal() {
+        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        state.focus = Focus::Sidebar;
+
+        let result = state.handle_key(key(KeyCode::Tab));
+        // Tab should focus terminal just like Enter, Space, and Right
         assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
