@@ -20,7 +20,7 @@ use sidebar_tui::daemon::{
     ensure_runtime_dir, decode_message, encode_message,
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
-use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
+use sidebar_tui::input::key_to_bytes;
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
 use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType};
 use sidebar_tui::terminal::Terminal;
@@ -77,6 +77,8 @@ enum Commands {
         /// Name of the session to forget
         session: String,
     },
+    /// Shutdown the daemon and kill all sessions
+    Shutdown,
 }
 
 fn main() -> Result<()> {
@@ -91,6 +93,7 @@ fn main() -> Result<()> {
         Some(Commands::Stale) => cmd_stale(),
         Some(Commands::Restore { session }) => cmd_restore(&session),
         Some(Commands::Forget { session }) => cmd_forget(&session),
+        Some(Commands::Shutdown) => cmd_shutdown(),
         None => cmd_attach(cli.session.as_deref()),
     }
 }
@@ -160,6 +163,21 @@ fn cmd_forget(session_name: &str) -> Result<()> {
     client.delete_stale_session(session_name)?;
     println!("Deleted metadata for session '{}'", session_name);
     Ok(())
+}
+
+/// Shutdown the daemon and kill all sessions.
+fn cmd_shutdown() -> Result<()> {
+    match connect_to_daemon() {
+        Ok(mut client) => {
+            client.shutdown()?;
+            println!("Daemon shutdown complete. All sessions terminated.");
+            Ok(())
+        }
+        Err(_) => {
+            println!("No daemon running.");
+            Ok(())
+        }
+    }
 }
 
 /// Start the daemon process (runs in foreground).
@@ -245,6 +263,12 @@ fn start_daemon_background() -> Result<()> {
     Ok(())
 }
 
+/// Minimum time between scroll actions (throttle for trackpad smoothness)
+const SCROLL_THROTTLE_MS: u128 = 30;
+
+/// Time threshold for "fast" scrolling (events arriving faster than this = fast scroll)
+const SCROLL_FAST_THRESHOLD_MS: u128 = 15;
+
 /// Application state for daemon-connected mode.
 struct DaemonApp {
     /// Terminal emulator for parsing PTY output
@@ -253,6 +277,12 @@ struct DaemonApp {
     session_name: String,
     /// Application UI state (focus, mode, sessions list)
     app_state: AppState,
+    /// Last time a scroll action was performed (for throttling)
+    last_scroll_time: std::time::Instant,
+    /// Last time any scroll event was received (for velocity calculation)
+    last_scroll_event_time: std::time::Instant,
+    /// Accumulated scroll events for velocity calculation
+    scroll_event_count: u32,
 }
 
 impl DaemonApp {
@@ -266,6 +296,9 @@ impl DaemonApp {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
             app_state,
+            last_scroll_time: std::time::Instant::now(),
+            last_scroll_event_time: std::time::Instant::now(),
+            scroll_event_count: 0,
         }
     }
 
@@ -276,6 +309,9 @@ impl DaemonApp {
             term_emulator: Terminal::new(rows, cols),
             session_name: String::new(),
             app_state: AppState::default(),
+            last_scroll_time: std::time::Instant::now(),
+            last_scroll_event_time: std::time::Instant::now(),
+            scroll_event_count: 0,
         }
     }
 
@@ -372,6 +408,102 @@ fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
         // Ignore Previewed with None terminal_state and other responses during drain -
         // they shouldn't happen but if they do, sync op will get the response it needs
         _ => {}
+    }
+}
+
+/// Result from draining messages in the main loop.
+enum MainLoopDrainResult {
+    /// Continue normal processing
+    Continue,
+    /// Daemon is shutting down, break main loop
+    ShuttingDown,
+    /// Daemon sent an error message
+    Error(String),
+    /// Connection error (EOF, etc)
+    ConnectionError(std::io::Error),
+}
+
+/// Drain all available messages from the socket in the main loop.
+///
+/// This batches multiple messages into a single render pass by:
+/// 1. Reading once from the socket to populate the buffer
+/// 2. Processing ALL complete messages from the buffer
+///
+/// This significantly improves performance during high-throughput scenarios
+/// like pasting, where many Output messages arrive in quick succession.
+fn drain_main_loop_messages(
+    msg_reader: &mut MessageReader,
+    stream: &mut UnixStream,
+    app: &mut DaemonApp,
+    term_rows: u16,
+    term_cols: u16,
+) -> MainLoopDrainResult {
+    use std::io;
+
+    // Read once from socket to get available data into buffer
+    // We use a temporary read to avoid consuming a message, then process all buffered
+    let read_result = msg_reader.try_read::<DaemonResponse>(stream);
+
+    // Handle the initial read result
+    let first_response = match read_result {
+        Ok(Some(response)) => Some(response),
+        Ok(None) => None,
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => None,
+        Err(e) => return MainLoopDrainResult::ConnectionError(e),
+    };
+
+    // Process first response if we got one
+    if let Some(response) = first_response {
+        match handle_main_loop_response(response, app, term_rows, term_cols) {
+            MainLoopDrainResult::Continue => {}
+            other => return other,
+        }
+    }
+
+    // Now drain any additional complete messages from the buffer without reading more
+    // This is the key optimization: we may have received multiple messages in one read
+    loop {
+        match msg_reader.try_parse_buffered::<DaemonResponse>() {
+            Ok(Some(response)) => {
+                match handle_main_loop_response(response, app, term_rows, term_cols) {
+                    MainLoopDrainResult::Continue => {}
+                    other => return other,
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return MainLoopDrainResult::ConnectionError(e),
+        }
+    }
+
+    MainLoopDrainResult::Continue
+}
+
+/// Handle a single response in the main loop, returning the appropriate action.
+fn handle_main_loop_response(
+    response: DaemonResponse,
+    app: &mut DaemonApp,
+    term_rows: u16,
+    term_cols: u16,
+) -> MainLoopDrainResult {
+    match response {
+        DaemonResponse::Output { data } => {
+            if !data.is_empty() {
+                app.process_output(&data);
+            }
+            MainLoopDrainResult::Continue
+        }
+        DaemonResponse::ShuttingDown => MainLoopDrainResult::ShuttingDown,
+        DaemonResponse::Error { message } => MainLoopDrainResult::Error(message),
+        DaemonResponse::Previewed { terminal_state, .. } => {
+            // Update terminal emulator with preview content
+            app.term_emulator = Terminal::new(term_rows, term_cols);
+            if let Some(state_bytes) = terminal_state {
+                app.process_output(&state_bytes);
+            }
+            MainLoopDrainResult::Continue
+        }
+        _ => MainLoopDrainResult::Continue,
     }
 }
 
@@ -530,40 +662,18 @@ fn run_attached(
     let mut msg_reader = MessageReader::new();
 
     loop {
-        // Try to read output from daemon using buffered reader
-        // This handles partial reads gracefully without desynchronizing the stream
-        match msg_reader.try_read::<DaemonResponse>(stream) {
-            Ok(Some(DaemonResponse::Output { data })) => {
-                if !data.is_empty() {
-                    app.process_output(&data);
-                }
-            }
-            Ok(Some(DaemonResponse::ShuttingDown)) => {
-                break;
-            }
-            Ok(Some(DaemonResponse::Error { message })) => {
-                bail!("Daemon error: {}", message);
-            }
-            Ok(Some(DaemonResponse::Previewed { terminal_state, .. })) => {
-                // Update terminal emulator with preview content
-                app.term_emulator = Terminal::new(term_rows, term_cols);
-                if let Some(state_bytes) = terminal_state {
-                    app.process_output(&state_bytes);
-                }
-            }
-            Ok(Some(_)) => {
-                // Other responses, ignore
-            }
-            Ok(None) => {
-                // No complete message available yet, continue
-            }
-            Err(e) => {
-                // Real error - connection closed or invalid data
-                bail!("Connection error: {}", e);
-            }
+        // Drain all available messages from the socket before rendering.
+        // This batches multiple output messages (e.g., during paste) into a single render,
+        // significantly improving performance compared to render-per-message.
+        let drain_result = drain_main_loop_messages(&mut msg_reader, stream, &mut app, term_rows, term_cols);
+        match drain_result {
+            MainLoopDrainResult::Continue => {}
+            MainLoopDrainResult::ShuttingDown => break,
+            MainLoopDrainResult::Error(msg) => bail!("Daemon error: {}", msg),
+            MainLoopDrainResult::ConnectionError(e) => bail!("Connection error: {}", e),
         }
 
-        // Render the UI
+        // Render the UI once after processing all available messages
         ratatui_term.draw(|frame| render_daemon_app(frame, &app))?;
 
         // Handle input events
@@ -789,29 +899,81 @@ fn run_attached(
                     }
                 }
                 Event::Mouse(mouse_event) => {
-                    // Handle mouse scroll wheel events - forward to active terminal
+                    // Handle mouse scroll wheel events - scroll through terminal history
                     // Works regardless of focus per spec, but only in Normal mode
-                    // Terminal content area starts after: sidebar + border (1) + padding
-                    let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+                    // Per spec: "Mouse scrolling when the Sidebar TUI is opened at all,
+                    // regardless of focus should scroll the terminal pane's visible history."
+                    //
+                    // Velocity-based scrolling for trackpads:
+                    // - Fast gestures (events <15ms apart) = more lines per action
+                    // - Slow gestures (events >15ms apart) = fewer lines per action
+                    // This lets users control scroll speed with gesture speed.
                     if matches!(app.app_state.mode, AppMode::Normal)
-                        && mouse_event.column >= term_content_start
                         && !app.session_name.is_empty()
                     {
-                        let bytes = match mouse_event.kind {
+                        let now = std::time::Instant::now();
+                        let since_last_action = now.duration_since(app.last_scroll_time).as_millis();
+                        let since_last_event = now.duration_since(app.last_scroll_event_time).as_millis();
+
+                        match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                // Translate screen position to terminal-relative position (1-indexed)
-                                let term_col = mouse_event.column - term_content_start + 1;
-                                let term_row = mouse_event.row + 1;
-                                let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp);
-                                encode_mouse_scroll(scroll_up, term_col, term_row)
+                                // Track event timing for velocity
+                                let is_fast = since_last_event < SCROLL_FAST_THRESHOLD_MS;
+                                app.last_scroll_event_time = now;
+
+                                if is_fast {
+                                    app.scroll_event_count += 1;
+                                } else {
+                                    app.scroll_event_count = 1; // Reset for slow/new gesture
+                                }
+
+                                // Only act every SCROLL_THROTTLE_MS
+                                if since_last_action >= SCROLL_THROTTLE_MS {
+                                    // Calculate scroll amount based on accumulated velocity
+                                    // More events accumulated = faster gesture = more lines
+                                    // Scales in blocks of 5 events, caps at 6 lines
+                                    let scroll_lines = match app.scroll_event_count {
+                                        0..=5 => 1,    // Slow: 1 line
+                                        6..=10 => 2,   // Medium: 2 lines
+                                        11..=15 => 3,  // Fast: 3 lines
+                                        16..=20 => 4,  // Faster: 4 lines
+                                        21..=25 => 5,  // Very fast: 5 lines
+                                        _ => 6,        // Maximum: 6 lines
+                                    };
+
+                                    // Drain queued events and determine direction
+                                    let mut up_count: i32 = 0;
+                                    let mut down_count: i32 = 0;
+
+                                    if matches!(mouse_event.kind, MouseEventKind::ScrollUp) {
+                                        up_count += 1;
+                                    } else {
+                                        down_count += 1;
+                                    }
+
+                                    while event::poll(Duration::from_millis(0))? {
+                                        match event::read()? {
+                                            Event::Mouse(m) => match m.kind {
+                                                MouseEventKind::ScrollUp => up_count += 1,
+                                                MouseEventKind::ScrollDown => down_count += 1,
+                                                _ => break,
+                                            },
+                                            _ => break,
+                                        }
+                                    }
+
+                                    // Apply scroll in dominant direction
+                                    if up_count > down_count {
+                                        app.term_emulator.scroll_up(scroll_lines);
+                                    } else if down_count > up_count {
+                                        app.term_emulator.scroll_down(scroll_lines);
+                                    }
+
+                                    app.last_scroll_time = now;
+                                    app.scroll_event_count = 0; // Reset after action
+                                }
                             }
-                            _ => Vec::new(),
-                        };
-                        if !bytes.is_empty() {
-                            let input_msg = ClientMessage::Input { data: bytes };
-                            let encoded = encode_message(&input_msg)?;
-                            stream.write_all(&encoded)?;
-                            stream.flush()?;
+                            _ => {}
                         }
                     }
                 }
@@ -828,8 +990,8 @@ fn run_attached(
 /// Sidebar width in characters
 pub const SIDEBAR_WIDTH: u16 = 28;
 
-/// Horizontal padding on left and right of terminal view (2 characters each side)
-pub const TERMINAL_H_PADDING: u16 = 2;
+/// Horizontal padding on left and right of terminal view (1 character each side per spec)
+pub const TERMINAL_H_PADDING: u16 = 1;
 
 /// Render the application UI with daemon-connected terminal emulator.
 fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
@@ -2069,5 +2231,66 @@ mod tests {
             "Terminal should be empty after ignored responses, got: {}",
             contents
         );
+    }
+
+    #[test]
+    fn test_handle_main_loop_response_output() {
+        // Test that Output messages are processed correctly
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Output { data: b"hello".to_vec() };
+
+        let result = handle_main_loop_response(response, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::Continue));
+        assert!(app.term_emulator.contents().contains("hello"));
+    }
+
+    #[test]
+    fn test_handle_main_loop_response_shutting_down() {
+        // Test that ShuttingDown triggers loop break
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::ShuttingDown;
+
+        let result = handle_main_loop_response(response, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::ShuttingDown));
+    }
+
+    #[test]
+    fn test_handle_main_loop_response_error() {
+        // Test that Error responses return error result
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Error { message: "test error".to_string() };
+
+        let result = handle_main_loop_response(response, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::Error(msg) if msg == "test error"));
+    }
+
+    #[test]
+    fn test_handle_main_loop_response_previewed() {
+        // Test that Previewed messages update the terminal
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let response = DaemonResponse::Previewed {
+            session_name: "preview".to_string(),
+            terminal_state: Some(b"preview content".to_vec()),
+        };
+
+        let result = handle_main_loop_response(response, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::Continue));
+        assert!(app.term_emulator.contents().contains("preview content"));
+    }
+
+    #[test]
+    fn test_handle_main_loop_response_other() {
+        // Test that other responses are safely ignored with Continue
+        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+
+        let result = handle_main_loop_response(DaemonResponse::Attached {
+            session_name: "test".to_string(),
+            is_new: true,
+            terminal_state: None,
+        }, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::Continue));
+
+        let result = handle_main_loop_response(DaemonResponse::Detached, &mut app, 24, 80);
+        assert!(matches!(result, MainLoopDrainResult::Continue));
     }
 }
