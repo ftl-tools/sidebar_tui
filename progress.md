@@ -8,6 +8,10 @@ Completed sidebar_tui-6i8: Fixed terminal pane colors appearing black/white in A
 
 Completed sidebar_tui-4ce: Fixed issue where session name text sometimes turned grey in Apple Terminal when switching sessions. The issue was traced to terminal.rs where empty cells (no vt100 data) used `Span::raw(" ")` which has `Style::default()` with no explicit foreground color. This could cause Apple Terminal to use residual color state. Fix: Changed empty cell rendering to use explicit white foreground (`Color::Indexed(255)`) instead of relying on terminal defaults. This ensures consistent color state across all rendered cells. All 425 tests pass. Binary reinstalled. Closed sidebar_tui-4ce.
 
+## 2026-02-16 - Linux Build for Docker Container
+
+Completed sidebar_tui-hwc: Built and installed Sidebar TUI on the elate_container Docker container (Ubuntu 22.04, aarch64). Process: (1) Installed Rust in the container using rustup, (2) Copied source code to container, (3) Built release binary with `cargo build --release`, (4) Installed binary to `/usr/local/bin/sb` which is in the default bash PATH. Verified with `sb --version` (v0.1.0) and `sb list`. This build includes all the latest color fixes for Apple Terminal. Closed sidebar_tui-hwc.
+
 ## 2026-02-16 - Session Order Preserved Across Restarts
 
 Completed sidebar_tui-ak3: Implemented session order preservation across TUI restarts. Changes: (1) Added auto-restore of stale sessions when TUI starts and no active sessions exist in main.rs, (2) Added `Session::from_metadata()` method in daemon.rs to restore sessions while preserving original timestamps, (3) Updated RestoreStale handler to use `from_metadata()` instead of `Session::new()`, (4) Added `touch_metadata()` call when attaching to existing sessions in the Attach handler, (5) Added E2E test `test_session_order_preserved_across_restart` that creates sessions, establishes order, quits TUI, restarts, and verifies order is preserved. All 418 tests pass (329 lib + 60 bin + 29 E2E). Binary reinstalled. Closed sidebar_tui-ak3.
