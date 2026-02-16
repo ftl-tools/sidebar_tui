@@ -2891,8 +2891,43 @@ fn test_welcome_state_on_fresh_start() {
     let list_str = String::from_utf8_lossy(&list_output.stdout);
     eprintln!("Final sessions after killing: {}", list_str);
 
-    // Track if we achieved clean state
-    let clean_state = list_str.contains("No active sessions");
+    // Track if we achieved clean state by killing active sessions
+    let mut clean_state = list_str.contains("No active sessions");
+
+    // Also need to clear the metadata directory to prevent auto-restoration of stale sessions.
+    // Sessions are persisted in ~/.local/share/sidebar-tui/sessions/ (or XDG_DATA_HOME/sidebar-tui/sessions/).
+    // When the TUI starts with no active sessions, it auto-restores from metadata files.
+    if clean_state {
+        let sessions_dir = if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+            std::path::PathBuf::from(data_home).join("sidebar-tui").join("sessions")
+        } else if let Some(home) = dirs::home_dir() {
+            home.join(".local").join("share").join("sidebar-tui").join("sessions")
+        } else {
+            std::path::PathBuf::from("/tmp/sidebar-tui-data/sessions")
+        };
+
+        if sessions_dir.exists() {
+            eprintln!("Clearing metadata directory: {:?}", sessions_dir);
+            if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext == "json" || ext == "state") {
+                        eprintln!("  Deleting: {:?}", path);
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+            // Verify metadata is cleared
+            let remaining = std::fs::read_dir(&sessions_dir)
+                .map(|entries| entries.flatten().count())
+                .unwrap_or(0);
+            if remaining > 0 {
+                eprintln!("WARNING: {} files remain in metadata directory", remaining);
+                clean_state = false;
+            }
+        }
+    }
+
     if !clean_state {
         eprintln!("WARNING: Could not clear all sessions, test will verify existing session attach behavior instead");
     }

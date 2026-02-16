@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Reduced Unnecessary Screen Captures (Performance Optimization)
+
+Completed sidebar_tui-v1z: Stopped capturing screen to history on every process() call. Previously, `capture_screen_to_history()` was called before processing each data chunk, causing dozens of full screen scans (~1,920+ cells) during paste operations. Now history is captured on-demand: (1) In `scroll_up()` when starting to scroll from live terminal (scroll_offset==0), (2) In `resize()` before terminal dimensions change. Changes to src/terminal.rs: (1) Removed capture call from process(), (2) Added capture to scroll_up() with guard to only capture once per scroll session, (3) Added capture to resize() to preserve content, (4) Added 5 new unit tests: test_process_does_not_capture_history, test_scroll_up_captures_history, test_resize_captures_history, test_scroll_up_only_captures_once, test_history_trimming_still_works. All 347 lib + 65 bin tests pass. E2E tests have pre-existing flaky test_focus_switching issue (passes when run individually). Binary reinstalled. Closed sidebar_tui-v1z.
+
 ## 2026-02-16 - VecDeque for Terminal History
 
 Completed sidebar_tui-r77: Changed terminal scrollback history from `Vec<HistoryLine>` to `VecDeque<HistoryLine>` for O(1) history trimming. Previously `history.remove(0)` shifted all ~10,000 elements every time history exceeded max size. Now uses `VecDeque::pop_front()` which is O(1). Changes: (1) Added `use std::collections::VecDeque` import, (2) Changed `history` field type to VecDeque, (3) Changed `push` to `push_back` and `remove(0)` to `pop_front`, (4) Added `test_history_uses_vecdeque_for_efficient_trimming` unit test. All 342 lib tests pass. Binary reinstalled. Closed sidebar_tui-r77.

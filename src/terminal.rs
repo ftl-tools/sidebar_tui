@@ -47,6 +47,10 @@ impl Terminal {
     }
 
     /// Capture the current screen content and save to history.
+    ///
+    /// This is called on-demand (before scrolling or on resize) rather than
+    /// on every process() call, significantly improving performance during
+    /// high-throughput operations like paste.
     fn capture_screen_to_history(&mut self) {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
@@ -86,22 +90,32 @@ impl Terminal {
 
     /// Process raw terminal output (escape sequences, text, etc).
     /// Resets scroll offset to show live output when new data arrives.
+    ///
+    /// Performance optimization: This does NOT capture the screen to history
+    /// on every call. History is captured on-demand before scrolling and on
+    /// resize. This significantly improves performance during paste operations
+    /// where many data chunks arrive rapidly.
     pub fn process(&mut self, data: &[u8]) {
-        // Capture current screen to history before processing new data
-        // This ensures we have a record of what was on screen
-        if !data.is_empty() {
-            self.capture_screen_to_history();
-        }
-
         self.parser.process(data);
 
         // Reset scroll to bottom when new output arrives (show live terminal)
-        self.scroll_offset = 0;
+        if !data.is_empty() {
+            self.scroll_offset = 0;
+        }
     }
 
     /// Scroll up (back in history) by the given number of lines.
     /// Returns true if scroll position changed.
+    ///
+    /// Captures current screen to history before scrolling to ensure
+    /// the user can see what was on screen in the scrollback.
     pub fn scroll_up(&mut self, lines: usize) -> bool {
+        // Capture current screen before scrolling so it appears in history.
+        // Only capture if we're not already scrolled (showing live terminal).
+        if self.scroll_offset == 0 {
+            self.capture_screen_to_history();
+        }
+
         let max_scroll = self.history.len();
         let new_offset = (self.scroll_offset + lines).min(max_scroll);
         if new_offset != self.scroll_offset {
@@ -137,7 +151,11 @@ impl Terminal {
     }
 
     /// Resize the terminal to new dimensions.
+    ///
+    /// Captures current screen to history before resizing to preserve
+    /// content that might be lost during the resize.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.capture_screen_to_history();
         self.parser.set_size(rows, cols);
     }
 
@@ -530,21 +548,105 @@ mod tests {
     }
 
     #[test]
-    fn test_history_uses_vecdeque_for_efficient_trimming() {
-        // Verify that history uses VecDeque for O(1) pop_front instead of Vec's O(n) remove(0).
-        // This test ensures we have scrollback history and it trims efficiently.
+    fn test_process_does_not_capture_history() {
+        // Verify that process() does NOT capture to history (for performance).
+        // History is only captured on-demand (scroll_up, resize).
+        let mut term = Terminal::new(24, 80);
+
+        // Process some data
+        term.process(b"Hello, World!");
+
+        // History should still be empty
+        assert!(term.history.is_empty(), "process() should not capture to history");
+    }
+
+    #[test]
+    fn test_scroll_up_captures_history() {
+        // Verify that scroll_up() captures the current screen to history.
+        let mut term = Terminal::new(24, 80);
+
+        // Process some data
+        term.process(b"Hello, World!");
+
+        // History starts empty
+        assert!(term.history.is_empty());
+
+        // Scroll up should capture current screen
+        term.scroll_up(1);
+
+        // Now history should have content
+        assert!(!term.history.is_empty(), "scroll_up should capture to history");
+    }
+
+    #[test]
+    fn test_resize_captures_history() {
+        // Verify that resize() captures the current screen to history.
+        let mut term = Terminal::new(24, 80);
+
+        // Process some data
+        term.process(b"Hello, World!");
+
+        // History starts empty
+        assert!(term.history.is_empty());
+
+        // Resize should capture current screen
+        term.resize(30, 100);
+
+        // Now history should have content
+        assert!(!term.history.is_empty(), "resize should capture to history");
+    }
+
+    #[test]
+    fn test_scroll_up_only_captures_once() {
+        // Verify that multiple scroll_up calls don't keep re-capturing.
+        let mut term = Terminal::new(5, 20);
+
+        // Process some data to have content
+        term.process(b"Line 1\r\nLine 2\r\nLine 3");
+
+        // First scroll captures
+        term.scroll_up(1);
+        let history_len_after_first = term.history.len();
+
+        // Second scroll should NOT re-capture (we're already scrolled)
+        term.scroll_up(1);
+        let history_len_after_second = term.history.len();
+
+        assert_eq!(
+            history_len_after_first, history_len_after_second,
+            "scroll_up should only capture when scroll_offset was 0"
+        );
+    }
+
+    #[test]
+    fn test_process_resets_scroll_offset() {
+        let mut term = Terminal::new(5, 20);
+
+        // Process some data
+        term.process(b"Line 1\r\nLine 2\r\nLine 3");
+
+        // Scroll up
+        term.scroll_up(1);
+        assert_eq!(term.scroll_offset, 1);
+
+        // New output should reset scroll to bottom
+        term.process(b"new data");
+        assert_eq!(term.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_history_trimming_still_works() {
+        // Verify that history still gets trimmed when it exceeds max size.
         let mut term = Terminal::new(5, 20);
         term.max_history = 10; // Small limit for testing
 
-        // Add enough content to fill history beyond the limit
+        // Trigger multiple history captures via resize
         for i in 0..15 {
             term.process(format!("line {}\r\n", i).as_bytes());
+            term.resize(5, 20); // Each resize captures
         }
 
         // History should be capped at max_history
         assert!(term.history.len() <= term.max_history);
-
-        // Older lines should have been trimmed from the front
-        // (This is the behavior we're testing with VecDeque::pop_front)
     }
 }
