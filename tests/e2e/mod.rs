@@ -60,6 +60,13 @@ struct SbSession {
 
 impl SbSession {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // Ensure daemon is ready before spawning TUI.
+        // This helps with test isolation when previous tests leave daemon in transitional state.
+        ensure_daemon_ready();
+
+        // Small delay after daemon check to ensure it's fully stable.
+        std::thread::sleep(Duration::from_millis(100));
+
         let binary_path = get_binary_path();
         let session_name = get_unique_session_name();
 
@@ -872,9 +879,6 @@ fn test_stale_session_persistence() {
 #[test]
 #[serial]
 fn test_sidebar_is_28_chars_wide() {
-    // Verify daemon is ready (this test runs after shutdown tests).
-    ensure_daemon_ready();
-
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize.
@@ -1045,10 +1049,6 @@ fn test_hint_bar_context() {
 #[test]
 #[serial]
 fn test_focus_switching() {
-    // Verify daemon is ready before starting test.
-    // Previous tests may have left daemon in a transitional state.
-    ensure_daemon_ready();
-
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
