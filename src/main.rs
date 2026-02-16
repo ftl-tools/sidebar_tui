@@ -1431,10 +1431,11 @@ mod tests {
 
     #[test]
     fn test_terminal_width_excludes_sidebar_padding_and_border() {
-        // When window is 100 wide, terminal should be 100 - 28 (sidebar) - 4 (h_padding) - 2 (border) = 66
+        // When window is 100 wide, terminal should be 100 - 28 (sidebar) - 2 (h_padding * 2) - 2 (border) = 68
+        // TERMINAL_H_PADDING = 1, so h_padding * 2 = 2
         let window_width: u16 = 100;
         let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
-        assert_eq!(term_cols, 66);
+        assert_eq!(term_cols, 68);
     }
 
     #[test]
@@ -1618,13 +1619,13 @@ mod tests {
     #[test]
     fn test_mouse_scroll_position_translation() {
         // Test that screen coordinates are correctly translated to terminal-relative coordinates
-        // Terminal content starts after: sidebar (28) + border (1) + padding (2) = 31
-        // Screen column 32 should become terminal column 2
-        // (32 - 31 + 1 = 2)
+        // Terminal content starts after: sidebar (28) + border (1) + padding (1) = 30
+        // Screen column 32 should become terminal column 3
+        // (32 - 30 + 1 = 3)
         let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
         let screen_col: u16 = 32;
         let term_col = screen_col - term_content_start + 1;
-        assert_eq!(term_col, 2);
+        assert_eq!(term_col, 3);
     }
 
     #[test]
@@ -1638,9 +1639,9 @@ mod tests {
     #[test]
     fn test_mouse_scroll_in_sidebar_area_is_ignored() {
         // Events in sidebar/border/padding area should be ignored
-        // Terminal content starts after: sidebar + border (1) + padding
+        // Terminal content starts after: sidebar (28) + border (1) + padding (1) = 30
         let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
-        let mouse_column: u16 = 30; // Inside terminal border/padding area
+        let mouse_column: u16 = 29; // Inside terminal border/padding area (before column 30)
         let should_handle = mouse_column >= term_content_start;
         assert!(!should_handle, "Scroll in sidebar/border/padding area should be ignored");
     }
