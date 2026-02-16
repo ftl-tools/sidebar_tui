@@ -43,9 +43,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Session name to attach to (default: "main")
-    #[arg(short, long, default_value = "main")]
-    session: String,
+    /// Session name to attach to (if not specified, attaches to most recent or shows welcome state)
+    #[arg(short, long)]
+    session: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -86,12 +86,12 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::List) => cmd_list(),
         Some(Commands::Kill { session }) => cmd_kill(&session),
-        Some(Commands::Attach { session }) => cmd_attach(&session),
+        Some(Commands::Attach { session }) => cmd_attach(Some(&session)),
         Some(Commands::Daemon) => cmd_daemon(),
         Some(Commands::Stale) => cmd_stale(),
         Some(Commands::Restore { session }) => cmd_restore(&session),
         Some(Commands::Forget { session }) => cmd_forget(&session),
-        None => cmd_attach(&cli.session),
+        None => cmd_attach(cli.session.as_deref()),
     }
 }
 
@@ -169,8 +169,10 @@ fn cmd_daemon() -> Result<()> {
     daemon.run()
 }
 
-/// Attach to a session (or create if it doesn't exist).
-fn cmd_attach(session_name: &str) -> Result<()> {
+/// Attach to a session (or show welcome state if no sessions exist).
+/// If session_name is None, will attach to the first existing session or show welcome state.
+/// If session_name is Some, will attach to that session (creating if needed).
+fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     // Ensure daemon is running
     ensure_daemon_running()?;
 
@@ -264,6 +266,16 @@ impl DaemonApp {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
             app_state,
+        }
+    }
+
+    /// Create app in welcome state (no sessions, sidebar focused).
+    fn new_welcome_state(rows: u16, cols: u16) -> Self {
+        // Focus stays on Sidebar (default) when no sessions
+        Self {
+            term_emulator: Terminal::new(rows, cols),
+            session_name: String::new(),
+            app_state: AppState::default(),
         }
     }
 
@@ -363,11 +375,13 @@ fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
     }
 }
 
-/// Run the TUI attached to a daemon session.
+/// Run the TUI, optionally attaching to a session.
+/// If requested_session is None, will attach to first existing session or show welcome state.
+/// If requested_session is Some, will attach to that session (creating if needed).
 fn run_attached(
     ratatui_term: &mut DefaultTerminal,
     stream: &mut UnixStream,
-    session_name: &str,
+    requested_session: Option<&str>,
 ) -> Result<()> {
     // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
     let size = ratatui_term.size()?;
@@ -401,47 +415,70 @@ fn run_attached(
         })
         .collect();
 
-    // Send attach message
-    let attach_response = send_daemon_message(stream, ClientMessage::Attach {
-        session_name: session_name.to_string(),
-        rows: term_rows,
-        cols: term_cols,
-        cwd: cwd.clone(),
-    })?;
-
-    let terminal_state = match attach_response {
-        DaemonResponse::Attached { session_name: _, is_new, terminal_state } => {
-            (is_new, terminal_state)
-        }
-        DaemonResponse::Error { message } => {
-            bail!("Failed to attach: {}", message);
-        }
-        other => {
-            bail!("Unexpected response: {:?}", other);
+    // Determine which session to attach to (if any)
+    // - If explicit session requested, attach to it (creating if needed)
+    // - If no session requested but sessions exist, attach to first one
+    // - If no session requested and no sessions exist, start in welcome state
+    let session_to_attach: Option<String> = match requested_session {
+        Some(name) => Some(name.to_string()),
+        None => {
+            if sessions.is_empty() {
+                None // Welcome state
+            } else {
+                Some(sessions[0].name.clone()) // Attach to first existing session
+            }
         }
     };
 
-    // Build initial session list for AppState
-    let mut initial_sessions = sessions;
-    // If this was a new session, add it to the front of the list
-    if terminal_state.0 {
-        initial_sessions.insert(0, Session::attached(session_name));
-    } else {
-        // Mark the current session as attached
-        for s in &mut initial_sessions {
-            if s.name == session_name {
-                s.is_attached = true;
+    // Only attach if we have a session to attach to
+    let mut app = if let Some(session_name) = session_to_attach {
+        // Send attach message
+        let attach_response = send_daemon_message(stream, ClientMessage::Attach {
+            session_name: session_name.clone(),
+            rows: term_rows,
+            cols: term_cols,
+            cwd: cwd.clone(),
+        })?;
+
+        let terminal_state = match attach_response {
+            DaemonResponse::Attached { session_name: _, is_new, terminal_state } => {
+                (is_new, terminal_state)
+            }
+            DaemonResponse::Error { message } => {
+                bail!("Failed to attach: {}", message);
+            }
+            other => {
+                bail!("Unexpected response: {:?}", other);
+            }
+        };
+
+        // Build initial session list for AppState
+        let mut initial_sessions = sessions;
+        // If this was a new session, add it to the front of the list
+        if terminal_state.0 {
+            initial_sessions.insert(0, Session::attached(&session_name));
+        } else {
+            // Mark the current session as attached
+            for s in &mut initial_sessions {
+                if s.name == session_name {
+                    s.is_attached = true;
+                }
             }
         }
-    }
 
-    // Create app with session list
-    let mut app = DaemonApp::new(term_rows, term_cols, session_name, initial_sessions);
+        // Create app with session list
+        let mut app = DaemonApp::new(term_rows, term_cols, &session_name, initial_sessions);
 
-    // Restore terminal state if reattaching
-    if let Some(state_bytes) = terminal_state.1 {
-        app.process_output(&state_bytes);
-    }
+        // Restore terminal state if reattaching
+        if let Some(state_bytes) = terminal_state.1 {
+            app.process_output(&state_bytes);
+        }
+
+        app
+    } else {
+        // Welcome state - no sessions to attach to
+        DaemonApp::new_welcome_state(term_rows, term_cols)
+    };
 
     let mut last_size = (size.width, size.height);
 
@@ -1337,14 +1374,14 @@ mod tests {
     fn test_cli_parsing_no_command() {
         let cli = Cli::try_parse_from(["sb"]).unwrap();
         assert!(cli.command.is_none());
-        assert_eq!(cli.session, "main");
+        assert!(cli.session.is_none()); // No default session - will show welcome state or first existing
     }
 
     #[test]
     fn test_cli_parsing_session_flag() {
         let cli = Cli::try_parse_from(["sb", "-s", "mysession"]).unwrap();
         assert!(cli.command.is_none());
-        assert_eq!(cli.session, "mysession");
+        assert_eq!(cli.session, Some("mysession".to_string()));
     }
 
     #[test]
