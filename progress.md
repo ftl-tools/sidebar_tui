@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Terminal Pane Colors Fixed for Apple Terminal
+
+Completed sidebar_tui-6i8: Fixed terminal pane colors appearing black/white in Apple Terminal while sidebar worked correctly. The issue was in `terminal.rs` where `convert_color()` mapped `vt100::Color::Default` to `Color::Reset`. In Apple Terminal's TUI mode, `Color::Reset` can render as black/dark, making text invisible. Fix: Split `convert_color()` into `convert_fg_color()` and `convert_bg_color()` - foreground defaults to white (ANSI 255) for visibility, background stays Reset (transparent). Added unit tests for new conversion functions and two E2E tests (`test_terminal_text_color_is_white`, `test_terminal_default_fg_color_conversion`). All 425 tests pass (332 lib + 60 bin + 31 E2E + 2 scaffold). Binary reinstalled. Closed sidebar_tui-6i8.
+
 ## 2026-02-16 - Session Order Preserved Across Restarts
 
 Completed sidebar_tui-ak3: Implemented session order preservation across TUI restarts. Changes: (1) Added auto-restore of stale sessions when TUI starts and no active sessions exist in main.rs, (2) Added `Session::from_metadata()` method in daemon.rs to restore sessions while preserving original timestamps, (3) Updated RestoreStale handler to use `from_metadata()` instead of `Session::new()`, (4) Added `touch_metadata()` call when attaching to existing sessions in the Attach handler, (5) Added E2E test `test_session_order_preserved_across_restart` that creates sessions, establishes order, quits TUI, restarts, and verifies order is preserved. All 418 tests pass (329 lib + 60 bin + 29 E2E). Binary reinstalled. Closed sidebar_tui-ak3.

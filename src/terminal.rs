@@ -117,11 +117,12 @@ impl Terminal {
 fn cell_to_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default();
 
-    // Foreground color
-    style = style.fg(convert_color(cell.fgcolor()));
+    // Foreground color - use white (255) for default to ensure visibility
+    // in all terminal emulators (Apple Terminal, VSCode, etc.)
+    style = style.fg(convert_fg_color(cell.fgcolor()));
 
-    // Background color
-    style = style.bg(convert_color(cell.bgcolor()));
+    // Background color - use Reset for default to be transparent
+    style = style.bg(convert_bg_color(cell.bgcolor()));
 
     // Text modifiers
     let mut modifiers = Modifier::empty();
@@ -146,8 +147,25 @@ fn cell_to_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-/// Convert a vt100 color to a ratatui color.
-fn convert_color(color: vt100::Color) -> Color {
+/// Convert a vt100 foreground color to a ratatui color.
+///
+/// For Default foreground, we use white (ANSI 255) instead of Color::Reset.
+/// This ensures text is always visible in terminal emulators that may render
+/// Reset as black/dark (like Apple Terminal in TUI mode).
+fn convert_fg_color(color: vt100::Color) -> Color {
+    match color {
+        // Use explicit white for default foreground to ensure visibility
+        vt100::Color::Default => Color::Indexed(255),
+        vt100::Color::Idx(n) => Color::Indexed(n),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Convert a vt100 background color to a ratatui color.
+///
+/// For Default background, we use Color::Reset so the background is transparent
+/// and inherits from the terminal pane's background.
+fn convert_bg_color(color: vt100::Color) -> Color {
     match color {
         vt100::Color::Default => Color::Reset,
         vt100::Color::Idx(n) => Color::Indexed(n),
@@ -222,19 +240,39 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_color_default() {
-        assert_eq!(convert_color(vt100::Color::Default), Color::Reset);
+    fn test_convert_fg_color_default_is_white() {
+        // Default foreground should be white (255) for visibility
+        assert_eq!(convert_fg_color(vt100::Color::Default), Color::Indexed(255));
     }
 
     #[test]
-    fn test_convert_color_indexed() {
-        assert_eq!(convert_color(vt100::Color::Idx(5)), Color::Indexed(5));
+    fn test_convert_bg_color_default_is_reset() {
+        // Default background should be Reset (transparent)
+        assert_eq!(convert_bg_color(vt100::Color::Default), Color::Reset);
     }
 
     #[test]
-    fn test_convert_color_rgb() {
+    fn test_convert_fg_color_indexed() {
+        assert_eq!(convert_fg_color(vt100::Color::Idx(5)), Color::Indexed(5));
+    }
+
+    #[test]
+    fn test_convert_bg_color_indexed() {
+        assert_eq!(convert_bg_color(vt100::Color::Idx(5)), Color::Indexed(5));
+    }
+
+    #[test]
+    fn test_convert_fg_color_rgb() {
         assert_eq!(
-            convert_color(vt100::Color::Rgb(255, 128, 64)),
+            convert_fg_color(vt100::Color::Rgb(255, 128, 64)),
+            Color::Rgb(255, 128, 64)
+        );
+    }
+
+    #[test]
+    fn test_convert_bg_color_rgb() {
+        assert_eq!(
+            convert_bg_color(vt100::Color::Rgb(255, 128, 64)),
             Color::Rgb(255, 128, 64)
         );
     }
