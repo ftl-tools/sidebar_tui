@@ -558,6 +558,34 @@ impl Session {
         })
     }
 
+    /// Create a new session from existing metadata (for restoration without terminal state).
+    /// This preserves the original timestamps from the metadata.
+    pub fn from_metadata(metadata: SessionMetadata) -> Result<Self> {
+        let rows = if metadata.rows == 0 { 24 } else { metadata.rows };
+        let cols = if metadata.cols == 0 { 80 } else { metadata.cols };
+
+        // Spawn shell with the original working directory
+        let pty = spawn_shell(rows, cols, metadata.cwd.clone())?;
+        let shell_running = Arc::new(AtomicBool::new(true));
+        let terminal_parser = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK);
+
+        // Keep the existing metadata (preserves created_at and last_active timestamps)
+        // We don't call touch() here to preserve the order from before daemon restart
+
+        Ok(Self {
+            name: metadata.name.clone(),
+            rows,
+            cols,
+            is_attached: false,
+            pty,
+            client_output_tx: Vec::new(),
+            shell_running,
+            _pty_reader_handle: None,
+            terminal_parser,
+            metadata,
+        })
+    }
+
     /// Save the session state for persistence across daemon restarts.
     /// Captures terminal state and environment variables.
     pub fn save_state(&self) -> Result<()> {
@@ -1118,6 +1146,8 @@ fn process_message(
                     if let Err(e) = session.resize(rows, cols) {
                         eprintln!("Warning: failed to resize session: {:?}", e);
                     }
+                    // Update last_active timestamp when attaching to the session
+                    session.touch_metadata();
                 }
             }
 
@@ -1231,22 +1261,14 @@ fn process_message(
                         }
                         Ok(None) => {
                             // Fallback to metadata-only restoration (no terminal state)
-                            Session::new(
-                                metadata.name.clone(),
-                                metadata.rows,
-                                metadata.cols,
-                                metadata.cwd,
-                            )
+                            // Use from_metadata to preserve original timestamps
+                            Session::from_metadata(metadata)
                         }
                         Err(e) => {
                             eprintln!("Warning: Failed to load persisted state: {:?}", e);
                             // Fallback to metadata-only restoration
-                            Session::new(
-                                metadata.name.clone(),
-                                metadata.rows,
-                                metadata.cols,
-                                metadata.cwd,
-                            )
+                            // Use from_metadata to preserve original timestamps
+                            Session::from_metadata(metadata)
                         }
                     };
 

@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Session Order Preserved Across Restarts
+
+Completed sidebar_tui-ak3: Implemented session order preservation across TUI restarts. Changes: (1) Added auto-restore of stale sessions when TUI starts and no active sessions exist in main.rs, (2) Added `Session::from_metadata()` method in daemon.rs to restore sessions while preserving original timestamps, (3) Updated RestoreStale handler to use `from_metadata()` instead of `Session::new()`, (4) Added `touch_metadata()` call when attaching to existing sessions in the Attach handler, (5) Added E2E test `test_session_order_preserved_across_restart` that creates sessions, establishes order, quits TUI, restarts, and verifies order is preserved. All 418 tests pass (329 lib + 60 bin + 29 E2E). Binary reinstalled. Closed sidebar_tui-ak3.
+
 ## 2026-02-16 - Session Ordering by Last Used
 
 Completed sidebar_tui-si5: Implemented session ordering by most recently used. Sessions in the sidebar are now sorted by `last_active` timestamp (most recent first). Changes: (1) Added `last_active` field to `SessionInfo` struct in daemon.rs, (2) Updated `Daemon::list_sessions()` and `ClientMessage::List` handler to sort sessions by `last_active` descending, (3) Added `touch_metadata()` call when input is sent to update `last_active`, (4) Added `move_session_to_top()` and `move_selected_to_top()` methods to `AppState` in state.rs, (5) Updated main.rs to reorder sessions when switching sessions or sending input, (6) Added unit tests for the new methods and daemon sorting, (7) Added comprehensive E2E test `test_session_ordering_by_last_used` that creates two sessions, switches between them, and verifies the sidebar order changes. All 337 tests pass (329 lib + 60 bin + 28 E2E). No clippy warnings. Binary reinstalled. Closed sidebar_tui-si5.

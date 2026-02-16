@@ -395,7 +395,7 @@ fn run_attached(
 
     // Load session list from daemon
     let session_list_response = send_daemon_message(stream, ClientMessage::List)?;
-    let daemon_sessions = match session_list_response {
+    let mut daemon_sessions = match session_list_response {
         DaemonResponse::Sessions { names } => names,
         DaemonResponse::Error { message } => {
             bail!("Failed to list sessions: {}", message);
@@ -404,6 +404,47 @@ fn run_attached(
             bail!("Unexpected response: {:?}", other);
         }
     };
+
+    // If no active sessions exist, check for stale sessions and auto-restore them
+    if daemon_sessions.is_empty() {
+        let stale_response = send_daemon_message(stream, ClientMessage::ListStale)?;
+        let stale_sessions = match stale_response {
+            DaemonResponse::StaleSessions { sessions } => sessions,
+            DaemonResponse::Error { message } => {
+                eprintln!("Warning: Failed to list stale sessions: {}", message);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        };
+
+        // Auto-restore all stale sessions, sorted by last_active (most recent first)
+        let mut sorted_stale: Vec<_> = stale_sessions.into_iter().collect();
+        sorted_stale.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+        for stale in &sorted_stale {
+            let restore_response = send_daemon_message(stream, ClientMessage::RestoreStale {
+                session_name: stale.name.clone(),
+            })?;
+            match restore_response {
+                DaemonResponse::Restored { .. } => {
+                    // Successfully restored
+                }
+                DaemonResponse::Error { message } => {
+                    eprintln!("Warning: Failed to restore session '{}': {}", stale.name, message);
+                }
+                _ => {}
+            }
+        }
+
+        // Re-fetch the session list after restoring
+        if !sorted_stale.is_empty() {
+            let refreshed_response = send_daemon_message(stream, ClientMessage::List)?;
+            daemon_sessions = match refreshed_response {
+                DaemonResponse::Sessions { names } => names,
+                _ => Vec::new(),
+            };
+        }
+    }
 
     // Convert daemon sessions to AppState sessions
     let sessions: Vec<Session> = daemon_sessions
