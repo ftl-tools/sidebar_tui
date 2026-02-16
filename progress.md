@@ -55,3 +55,7 @@ Completed sidebar_tui-l82.5 (review): Verified all 400 tests pass (316 lib + 60 
 ## 2026-02-15 - Tab Key Focuses Terminal
 
 Completed sidebar_tui-0fo: Added Tab key as an alternative way to focus the terminal pane from the sidebar, just like Enter, Space, and Right arrow. Changes: (1) Updated input_handler.rs to handle Tab in the sidebar select pattern (line 75), (2) Added test_sidebar_tab_focuses_terminal unit test, (3) Updated hint bar to show "enter/tab" instead of just "enter" for the Select binding, (4) Updated test_get_bindings_sidebar_focused_with_sessions test, (5) Added send_tab() helper and test_tab_focuses_terminal E2E test. All 402 tests pass (317 lib + 60 bin + 23 E2E + 2 scaffold). No clippy warnings. Binary reinstalled. Closed sidebar_tui-0fo.
+
+## 2026-02-15 - Selection Highlight Off-by-One Fix
+
+Completed sidebar_tui-0gp: Fixed the selected session highlight extending one char too far to the right. Per spec, the highlight should stop right before the right sidebar border (leaving padding), but it was filling all the way to the border. Updated sidebar.rs render_session_list() to subtract PADDING from the fill range. Also updated test_selection_highlight_fills_row to verify both left and right padding areas are excluded from the highlight. All 402 tests pass. No clippy warnings. Binary reinstalled. Closed sidebar_tui-0gp.

@@ -347,9 +347,10 @@ impl<'a> Sidebar<'a> {
             };
 
             // Fill the line with background color if selected
-            // Per spec: highlight starts at first letter (content_x) and goes to right border
+            // Per spec: highlight starts at first letter (content_x) and stops right before the right sidebar border
             if is_selected {
-                for x in content_x..area.x + area.width {
+                // area.width includes both left and right padding, so subtract PADDING to stop before right padding
+                for x in content_x..area.x + area.width - PADDING {
                     buf[(x, y)].set_style(bg_style);
                 }
             }
@@ -721,18 +722,23 @@ mod tests {
         state.focus = Focus::Sidebar;
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
-        // Check that the row from first letter to right border has dark purple background
-        // Per spec: highlight starts at first letter (after padding at x=2) and goes to right border (x=26)
+        // Check that the row from first letter to right before the right border has dark purple background
+        // Per spec: highlight starts at first letter and stops right before the right sidebar border
+        // Layout: x=0 border, x=1 padding, x=2-25 content, x=26 padding, x=27 border
         // Row 2 is where the session is (after border and title)
         let y = 2;
-        // Content starts at x=2 (after border + padding) and extends to SIDEBAR_WIDTH - 1 (before right border)
-        for x in 2..SIDEBAR_WIDTH - 1 {
+        // Content starts at x=2 (after border + padding) and goes through x=25 (CONTENT_WIDTH chars)
+        // That's 2..26 exclusive, which covers x=2 through x=25
+        for x in 2..2 + CONTENT_WIDTH as u16 {
             let cell = &buf[(x, y)];
             assert_eq!(cell.bg, DARK_PURPLE, "Selection highlight should fill the row at x={}", x);
         }
-        // Padding area (x=1) should NOT have background highlight
-        let padding_cell = &buf[(1, y)];
-        assert_ne!(padding_cell.bg, DARK_PURPLE, "Padding area should not have selection highlight");
+        // Left padding area (x=1) should NOT have background highlight
+        let left_padding_cell = &buf[(1, y)];
+        assert_ne!(left_padding_cell.bg, DARK_PURPLE, "Left padding area should not have selection highlight");
+        // Right padding area (x=26) should NOT have background highlight
+        let right_padding_cell = &buf[(SIDEBAR_WIDTH - 2, y)];
+        assert_ne!(right_padding_cell.bg, DARK_PURPLE, "Right padding area should not have selection highlight");
     }
 
     #[test]
