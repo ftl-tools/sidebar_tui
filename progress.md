@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Auto-Generated Session Names
+
+Completed sidebar_tui-mpq: Implemented auto-generated session names when creating new sessions. Instead of requiring users to type a session name, pressing 't' or 'a' in create mode now directly creates a session with a random three-word name (format: "Word word word", e.g., "Fox blue moon"). Changes: (1) Created new `name_generator.rs` module with a curated list of 180+ short (3-4 letter) words and functions to generate unique session names, (2) Added `rand` dependency for random selection, (3) Modified `handle_create_mode_key()` in input_handler.rs to skip the Drafting mode and directly return `EventResult::CreateSession` with an auto-generated name, (4) Added `generate_unique_name()` helper method to AppState that avoids name collisions with existing sessions, (5) Updated 4 E2E tests (`test_create_mode_flow`, `test_session_ordering_by_last_used`, `test_session_order_preserved_across_restart`, `test_welcome_state_on_fresh_start`) to handle the new flow. All tests pass (341 lib + 60 bin + 31 E2E). Binary reinstalled. Closed sidebar_tui-mpq.
+
 ## 2026-02-16 - Terminal Pane Colors Fixed for Apple Terminal
 
 Completed sidebar_tui-6i8: Fixed terminal pane colors appearing black/white in Apple Terminal while sidebar worked correctly. The issue was in `terminal.rs` where `convert_color()` mapped `vt100::Color::Default` to `Color::Reset`. In Apple Terminal's TUI mode, `Color::Reset` can render as black/dark, making text invisible. Fix: Split `convert_color()` into `convert_fg_color()` and `convert_bg_color()` - foreground defaults to white (ANSI 255) for visibility, background stays Reset (transparent). Added unit tests for new conversion functions and two E2E tests (`test_terminal_text_color_is_white`, `test_terminal_default_fg_color_conversion`). All 425 tests pass (332 lib + 60 bin + 31 E2E + 2 scaffold). Binary reinstalled. Closed sidebar_tui-6i8.
