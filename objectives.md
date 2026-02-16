@@ -2,6 +2,20 @@
 
 I want a simple TUI for managing terminal sessions in a sidebar in a way that works with my workflow. I want to have sessions grouped into threads on the side bar, and to be able to easily create new ones and switch between them. The full spec is here @eventual_objectives.md but that is too much to start with, so we'll get the basic functionality working first and then iterate from there.
 
+## Updates To Make
+
+- `tab` should focus on the selected session's terminal pane just like `enter` does.
+- `mod + q` should open quit confirmation, and should work even when the terminal pane has focus.
+- Make sure all terminal `mod + *` commands also work when the sidebar pane ahs focus.
+- After rename, keep focus where it was before the rename was started, don't always jump to focus on the renamed terminal session's terminal pane.
+- Try highlighting the currently selected terminal session grey instead of purple.
+- Have AI make a linux build and install it on the Elate docker container.
+- Make sure sessions persist when starting and stopping.
+- Terminal session order in the sidebar pane should always be in order of last used. Interacting with a terminal pane should move it to the top. (Would be nice to know the difference between drafting a prompt to claude (don't re-prioritize), and sending a prompt to claude (re-prioritize now).)
+- Terminal session order should be preserved across runs.
+- Don't always create a `main` terminal. In fact our welcome mode is not being respected at all right now, we should fix that.
+- In the vscode terminal Claude has the right colors, but in the apple terminal all colors in the terminal pane seem to be getting turned to black and white. This is not the case for the sidebar pane though. That has the right colors in both the vscode terminal and the apple terminal.
+
 ## Spec
 
 The general requirements are as follows:
