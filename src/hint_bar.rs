@@ -456,6 +456,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             Focus::Terminal => vec![
                 KeybindingInfo::new("ctrl + n", "New"),
                 KeybindingInfo::new("ctrl + b", "Focus on sidebar"),
+                KeybindingInfo::new("ctrl + q", "Quit"),
             ],
         },
         AppMode::CreateMode { .. } => vec![

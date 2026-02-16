@@ -46,6 +46,11 @@ impl AppState {
                     self.enter_create_mode();
                     EventResult::Consumed
                 }
+                // Quit (show confirmation) - works with ctrl+q from sidebar too
+                KeyCode::Char('q') => {
+                    self.request_confirmation(ConfirmAction::Quit);
+                    EventResult::Consumed
+                }
                 _ => EventResult::NotConsumed,
             };
         }
@@ -136,6 +141,11 @@ impl AppState {
                 // New session
                 KeyCode::Char('n') => {
                     self.enter_create_mode();
+                    EventResult::Consumed
+                }
+                // Quit (show confirmation) - works from terminal focus per spec
+                KeyCode::Char('q') => {
+                    self.request_confirmation(ConfirmAction::Quit);
                     EventResult::Consumed
                 }
                 _ => EventResult::NotConsumed,
@@ -624,6 +634,36 @@ mod tests {
 
         let result = state.handle_key(key(KeyCode::Enter));
         assert_eq!(result, EventResult::NotConsumed);
+    }
+
+    #[test]
+    fn test_terminal_ctrl_q_requests_quit_confirmation() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
+
+        let result = state.handle_key(ctrl_key('q'));
+        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(state.mode, AppMode::Confirming(_)));
+        if let AppMode::Confirming(ref confirm) = state.mode {
+            assert_eq!(confirm.action, ConfirmAction::Quit);
+        }
+    }
+
+    #[test]
+    fn test_sidebar_ctrl_q_requests_quit_confirmation() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        let result = state.handle_key(ctrl_key('q'));
+        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(state.mode, AppMode::Confirming(_)));
+        if let AppMode::Confirming(ref confirm) = state.mode {
+            assert_eq!(confirm.action, ConfirmAction::Quit);
+        }
     }
 
     // === Create Mode Tests ===

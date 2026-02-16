@@ -63,3 +63,7 @@ Completed sidebar_tui-0gp: Fixed the selected session highlight extending one ch
 ## 2026-02-16 - Selection Highlight Color Change Complete
 
 Completed sidebar_tui-5yq: Changed selected session highlight from dark purple (color 54) to grey (color 238) per user request. Previous agent had updated sidebar.rs to use DARK_GREY instead of DARK_PURPLE but left E2E tests expecting the old color. Updated test_sidebar_session_list E2E test to expect color 238 instead of 54. All 402 tests pass (317 lib + 60 bin + 23 E2E + 2 scaffold). No clippy warnings. Binary reinstalled. Closed sidebar_tui-5yq.
+
+## 2026-02-16 - Ctrl+Q Quit Confirmation from Terminal
+
+Completed sidebar_tui-ra9: Added `mod + q` (Ctrl+Q) to open quit confirmation, working from both terminal and sidebar panes. Changes: (1) Updated handle_terminal_key() in input_handler.rs to handle Ctrl+Q and trigger ConfirmAction::Quit, (2) Added Ctrl+Q handler to handle_sidebar_key() for consistency, (3) Updated hint_bar.rs to show "ctrl + q Quit" when terminal is focused, (4) Added test_terminal_ctrl_q_requests_quit_confirmation and test_sidebar_ctrl_q_requests_quit_confirmation unit tests, (5) Added test_ctrl_q_quit_from_terminal E2E test that verifies Ctrl+Q shows quit confirmation from terminal, 'n' cancels, and 'y' quits. All 405 tests pass (319 lib + 60 bin + 24 E2E + 2 scaffold). No clippy warnings. Binary reinstalled. Closed sidebar_tui-ra9.

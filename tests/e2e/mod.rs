@@ -2477,3 +2477,96 @@ fn test_live_preview_then_create() {
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
 }
+
+/// Test that Ctrl+Q opens quit confirmation from terminal pane.
+/// Per spec: "mod + q should open quit confirmation, and should work even when the terminal pane has focus."
+#[test]
+#[serial]
+fn test_ctrl_q_quit_from_terminal() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session_name = format!("ctrlq-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_name: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["kill", &self.session_name])
+                .output();
+        }
+    }
+
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_name: session_name.clone(),
+    };
+
+    // Spawn sb
+    let cmd = format!("{} -s {}", binary_path, session_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for initial render
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Terminal is initially focused after session creation
+    // The hint bar should show "ctrl + q Quit" when terminal is focused
+    let screen_contents = parser.screen().contents();
+    eprintln!("Initial state (terminal focused):\n{}", screen_contents);
+
+    // Verify terminal is focused by checking hint bar shows ctrl+b binding
+    assert!(
+        screen_contents.contains("ctrl + b"),
+        "Terminal should be focused, showing ctrl + b binding. Got:\n{}",
+        screen_contents
+    );
+
+    // Send Ctrl+Q (ASCII 17) from terminal pane
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After Ctrl+Q from terminal:\n{}", screen_contents);
+
+    // Should show quit confirmation prompt
+    assert!(
+        screen_contents.contains("Quit") && (screen_contents.contains("Yes") || screen_contents.contains("No")),
+        "Ctrl+Q from terminal should show quit confirmation. Got:\n{}",
+        screen_contents
+    );
+
+    // Press 'n' to cancel quit
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After cancelling quit:\n{}", screen_contents);
+
+    // TUI should still be running
+    assert!(
+        screen_contents.contains("Sidebar TUI"),
+        "TUI should still be running after cancel. Got:\n{}",
+        screen_contents
+    );
+
+    // Now test actual quit with Ctrl+Q then 'y'
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    session.write_all(b"y").expect("Failed to send 'y'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Process should exit - cleanup will handle final termination
+    let _ = session.get_process_mut().exit(true);
+}
