@@ -85,8 +85,9 @@ impl Terminal {
                     let style = cell_to_style(cell);
                     spans.push(Span::styled(text, style));
                 } else {
-                    // Cell doesn't exist, fill with space
-                    spans.push(Span::raw(" "));
+                    // Cell doesn't exist, fill with space using explicit white-on-reset style
+                    // to ensure consistent colors and avoid terminal state corruption
+                    spans.push(Span::styled(" ", Style::default().fg(Color::Indexed(255))));
                 }
             }
 
