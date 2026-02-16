@@ -59,3 +59,7 @@ Completed sidebar_tui-0fo: Added Tab key as an alternative way to focus the term
 ## 2026-02-15 - Selection Highlight Off-by-One Fix
 
 Completed sidebar_tui-0gp: Fixed the selected session highlight extending one char too far to the right. Per spec, the highlight should stop right before the right sidebar border (leaving padding), but it was filling all the way to the border. Updated sidebar.rs render_session_list() to subtract PADDING from the fill range. Also updated test_selection_highlight_fills_row to verify both left and right padding areas are excluded from the highlight. All 402 tests pass. No clippy warnings. Binary reinstalled. Closed sidebar_tui-0gp.
+
+## 2026-02-16 - Selection Highlight Color Change Complete
+
+Completed sidebar_tui-5yq: Changed selected session highlight from dark purple (color 54) to grey (color 238) per user request. Previous agent had updated sidebar.rs to use DARK_GREY instead of DARK_PURPLE but left E2E tests expecting the old color. Updated test_sidebar_session_list E2E test to expect color 238 instead of 54. All 402 tests pass (317 lib + 60 bin + 23 E2E + 2 scaffold). No clippy warnings. Binary reinstalled. Closed sidebar_tui-5yq.

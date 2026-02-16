@@ -13,7 +13,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Widget};
 
-use crate::colors::{DARK_GREY, DARK_PURPLE, FOCUSED_BORDER, PURPLE, WHITE};
+use crate::colors::{DARK_GREY, FOCUSED_BORDER, PURPLE, WHITE};
 use crate::state::{AppMode, AppState, Focus};
 
 /// Width of the sidebar pane including borders.
@@ -340,8 +340,9 @@ impl<'a> Sidebar<'a> {
             };
 
             // Background style for selection
+            // Per user request: use grey (238) instead of purple for selection highlight
             let bg_style = if is_selected {
-                Style::default().bg(DARK_PURPLE)
+                Style::default().bg(DARK_GREY)
             } else {
                 Style::default()
             };
@@ -373,19 +374,19 @@ impl<'a> Sidebar<'a> {
             if show_renaming {
                 // Show the renaming text with cursor
                 if let AppMode::Renaming(rename) = &self.state.mode {
-                    let rename_style = Style::default().fg(WHITE).bg(DARK_PURPLE);
+                    let rename_style = Style::default().fg(WHITE).bg(DARK_GREY);
                     buf.set_string(x, y, &rename.new_name, rename_style);
                 }
             } else if *session_index == usize::MAX {
                 // Draft line - show the text being typed
                 if let AppMode::Drafting(draft) = &self.state.mode {
-                    let draft_style = Style::default().fg(WHITE).bg(DARK_PURPLE);
+                    let draft_style = Style::default().fg(WHITE).bg(DARK_GREY);
                     buf.set_string(x, y, &draft.name, draft_style);
                 }
             } else {
                 // Normal session line
                 let text_style = if is_selected {
-                    Style::default().fg(WHITE).bg(DARK_PURPLE)
+                    Style::default().fg(WHITE).bg(DARK_GREY)
                 } else {
                     Style::default().fg(WHITE)
                 };
@@ -578,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_selected_session_has_dark_purple_bg() {
+    fn test_sidebar_selected_session_has_grey_bg() {
         let mut state = AppState::with_sessions(vec![
             Session::new("selected"),
         ]);
@@ -589,7 +590,7 @@ mod tests {
         // Find the 's' of 'selected' and check its background
         // Session list starts at y=2 (after border and title), x=2 (after border + padding)
         let cell = &buf[(2, 2)];
-        assert_eq!(cell.bg, DARK_PURPLE, "Selected session should have dark purple background");
+        assert_eq!(cell.bg, DARK_GREY, "Selected session should have grey background");
     }
 
     #[test]
@@ -731,14 +732,14 @@ mod tests {
         // That's 2..26 exclusive, which covers x=2 through x=25
         for x in 2..2 + CONTENT_WIDTH as u16 {
             let cell = &buf[(x, y)];
-            assert_eq!(cell.bg, DARK_PURPLE, "Selection highlight should fill the row at x={}", x);
+            assert_eq!(cell.bg, DARK_GREY, "Selection highlight should fill the row at x={}", x);
         }
         // Left padding area (x=1) should NOT have background highlight
         let left_padding_cell = &buf[(1, y)];
-        assert_ne!(left_padding_cell.bg, DARK_PURPLE, "Left padding area should not have selection highlight");
+        assert_ne!(left_padding_cell.bg, DARK_GREY, "Left padding area should not have selection highlight");
         // Right padding area (x=26) should NOT have background highlight
         let right_padding_cell = &buf[(SIDEBAR_WIDTH - 2, y)];
-        assert_ne!(right_padding_cell.bg, DARK_PURPLE, "Right padding area should not have selection highlight");
+        assert_ne!(right_padding_cell.bg, DARK_GREY, "Right padding area should not have selection highlight");
     }
 
     #[test]

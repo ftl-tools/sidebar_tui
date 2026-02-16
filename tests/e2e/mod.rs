@@ -921,21 +921,21 @@ fn test_sidebar_session_list() {
         screen_contents
     );
 
-    // Verify the selected session has dark purple background (color 54)
+    // Verify the selected session has grey background (color 238)
     // The session should be on row 2 (after title on row 1, inside border)
     // Check a cell in the session name area for background color
     // Session names start at column 2 (after border + padding)
-    let found_purple_bg = (2..20).any(|row| {
+    let found_grey_bg = (2..20).any(|row| {
         if let Some(cell) = session.cell_at(row, 2) {
-            matches!(cell.bgcolor(), vt100::Color::Idx(54))
+            matches!(cell.bgcolor(), vt100::Color::Idx(238))
         } else {
             false
         }
     });
 
     assert!(
-        found_purple_bg,
-        "Selected session should have dark purple (54) background highlight"
+        found_grey_bg,
+        "Selected session should have grey (238) background highlight"
     );
 
     session.quit().expect("Failed to quit");
