@@ -2997,3 +2997,138 @@ fn test_welcome_state_on_fresh_start() {
     // Restore any sessions we killed (if any were important)
     // For now, we'll leave them - tests should clean up after themselves
 }
+
+/// Test that terminal sessions are ordered by most recently used.
+/// When input is sent to a session, it should move to the top of the sidebar.
+#[test]
+#[serial]
+fn test_session_ordering_by_last_used() {
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("order1-{}-{}", pid, unique_id);
+    let session2_name = format!("order2-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone(), session2_name.clone()],
+    };
+
+    // Create first session
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After first session created:\n{}", screen_contents);
+
+    assert!(
+        screen_contents.contains(&session1_name),
+        "First session should be visible. Got:\n{}",
+        screen_contents
+    );
+
+    // Create a second session with Ctrl+N
+    session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Select terminal type
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Type session name
+    session.write_all(session2_name.as_bytes()).expect("Failed to type session name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create the session
+    session.write_all(&[0x0d]).expect("Failed to send Enter to create");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After second session created:\n{}", screen_contents);
+
+    // Session 2 should be at the top now (most recently created/used)
+    // The sidebar shows sessions with most recent at top
+    // Row 0 is top border, Row 1 is title, Row 2 is first session
+    let row2 = parser.screen().contents_between(2, 0, 2, 27);
+    eprintln!("Row 2 (should be session2): '{}'", row2);
+    assert!(
+        row2.contains(&session2_name),
+        "Session2 should be at top after creation. Row 2 contents: '{}'",
+        row2
+    );
+
+    // Now switch to session1 by navigating down and pressing Enter
+    // First, go to sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Arrow down to select session1
+    session.write_all(&[0x1b, 0x5b, 0x42]).expect("Failed to send Down arrow"); // ESC [ B
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Press Enter to switch to session1
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After switching to session1:\n{}", screen_contents);
+
+    // Session 1 should now be at the top (most recently used after switch)
+    let row2 = parser.screen().contents_between(2, 0, 2, 27);
+    eprintln!("Row 2 after switch (should be session1): '{}'", row2);
+    assert!(
+        row2.contains(&session1_name),
+        "Session1 should be at top after switching to it. Row 2 contents: '{}'",
+        row2
+    );
+
+    // Session 2 should now be second
+    let row3 = parser.screen().contents_between(3, 0, 3, 27);
+    eprintln!("Row 3 after switch (should be session2): '{}'", row3);
+    assert!(
+        row3.contains(&session2_name),
+        "Session2 should be second after switching. Row 3 contents: '{}'",
+        row3
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(200));
+    session.write_all(b"y").expect("Failed to send 'y'");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}

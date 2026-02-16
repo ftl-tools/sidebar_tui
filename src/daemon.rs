@@ -210,6 +210,8 @@ pub struct SessionInfo {
     pub is_attached: bool,
     pub rows: u16,
     pub cols: u16,
+    /// Timestamp when the session was last active (Unix epoch seconds).
+    pub last_active: u64,
 }
 
 /// Persistent session metadata saved to disk for reboot survival.
@@ -692,6 +694,7 @@ impl Session {
             is_attached: self.is_attached,
             rows: self.rows,
             cols: self.cols,
+            last_active: self.metadata.last_active,
         }
     }
 }
@@ -839,10 +842,13 @@ impl Daemon {
         saved
     }
 
-    /// Get a list of all sessions.
+    /// Get a list of all sessions (sorted by most recently used first).
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
         let sessions = self.sessions.lock().unwrap();
-        sessions.values().map(|s| s.info()).collect()
+        let mut list: Vec<SessionInfo> = sessions.values().map(|s| s.info()).collect();
+        // Sort by last_active descending (most recently used first)
+        list.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        list
     }
 
     /// Create or get a session.
@@ -1141,6 +1147,8 @@ fn process_message(
                             message: format!("Failed to write input: {}", e),
                         };
                     }
+                    // Update last_active timestamp when user sends input
+                    session.touch_metadata();
                 }
             }
             DaemonResponse::Output { data: vec![] }
@@ -1160,7 +1168,9 @@ fn process_message(
         }
         ClientMessage::List => {
             let sessions_guard = sessions.lock().unwrap();
-            let names: Vec<SessionInfo> = sessions_guard.values().map(|s| s.info()).collect();
+            let mut names: Vec<SessionInfo> = sessions_guard.values().map(|s| s.info()).collect();
+            // Sort by last_active descending (most recently used first)
+            names.sort_by(|a, b| b.last_active.cmp(&a.last_active));
             DaemonResponse::Sessions { names }
         }
         ClientMessage::Kill { session_name } => {
@@ -1898,6 +1908,40 @@ mod tests {
     }
 
     #[test]
+    fn test_daemon_list_sessions_sorted_by_last_active() {
+        let path = temp_socket_path();
+        let daemon = Daemon::with_socket_path(path.clone());
+
+        // Create sessions with a delay to get different timestamps (need > 1 second for Unix timestamps)
+        daemon.get_or_create_session("older_session", 24, 80, None).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        daemon.get_or_create_session("newer_session", 24, 80, None).unwrap();
+
+        let sessions = daemon.list_sessions();
+        assert_eq!(sessions.len(), 2);
+        // Most recently created session should be first (highest last_active)
+        assert_eq!(sessions[0].name, "newer_session");
+        assert_eq!(sessions[1].name, "older_session");
+
+        cleanup_socket(&path);
+    }
+
+    #[test]
+    fn test_session_info_has_last_active() {
+        let path = temp_socket_path();
+        let daemon = Daemon::with_socket_path(path.clone());
+
+        daemon.get_or_create_session("test", 24, 80, None).unwrap();
+
+        let sessions = daemon.list_sessions();
+        assert_eq!(sessions.len(), 1);
+        // last_active should be set to a non-zero value
+        assert!(sessions[0].last_active > 0);
+
+        cleanup_socket(&path);
+    }
+
+    #[test]
     fn test_encode_decode_client_message() {
         let msg = ClientMessage::Attach {
             session_name: "test".to_string(),
@@ -2039,12 +2083,14 @@ mod tests {
                 is_attached: true,
                 rows: 24,
                 cols: 80,
+                last_active: 1000,
             },
             SessionInfo {
                 name: "s2".to_string(),
                 is_attached: false,
                 rows: 30,
                 cols: 100,
+                last_active: 2000,
             },
         ];
         let msg = DaemonResponse::Sessions { names: sessions };

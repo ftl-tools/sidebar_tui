@@ -690,6 +690,8 @@ fn run_attached(
                                     _ => {}
                                 }
                             }
+                            // Move switched session to top (most recently used)
+                            app.app_state.move_selected_to_top();
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
@@ -719,6 +721,8 @@ fn run_attached(
                                     let encoded = encode_message(&input_msg)?;
                                     stream.write_all(&encoded)?;
                                     stream.flush()?;
+                                    // Move active session to top (most recently used)
+                                    app.app_state.move_selected_to_top();
                                 }
                             }
                         }

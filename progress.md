@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Session Ordering by Last Used
+
+Completed sidebar_tui-si5: Implemented session ordering by most recently used. Sessions in the sidebar are now sorted by `last_active` timestamp (most recent first). Changes: (1) Added `last_active` field to `SessionInfo` struct in daemon.rs, (2) Updated `Daemon::list_sessions()` and `ClientMessage::List` handler to sort sessions by `last_active` descending, (3) Added `touch_metadata()` call when input is sent to update `last_active`, (4) Added `move_session_to_top()` and `move_selected_to_top()` methods to `AppState` in state.rs, (5) Updated main.rs to reorder sessions when switching sessions or sending input, (6) Added unit tests for the new methods and daemon sorting, (7) Added comprehensive E2E test `test_session_ordering_by_last_used` that creates two sessions, switches between them, and verifies the sidebar order changes. All 337 tests pass (329 lib + 60 bin + 28 E2E). No clippy warnings. Binary reinstalled. Closed sidebar_tui-si5.
+
 ## 2026-02-16 - Compressed History (Phase 4: Live Preview & UI Polish)
 
 Phase 4 focused on implementing the live preview feature and UI polish items. Quit confirmation was enhanced with 'q' alternative key and proper hotkey coloring (purple keys, white text). Separator color changed to ANSI 242, j/k vim navigation added. The live preview feature required architectural research comparing hybrid drain-before-sync, separate socket channels, and fully async approaches; the hybrid approach was selected and implemented across 5 sub-issues (drain helper, sync call sites, preview event handling, E2E tests, review). Live preview enables instant terminal content updates when navigating sidebar without pressing Enter. All 400+ tests passing.

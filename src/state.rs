@@ -488,6 +488,53 @@ impl AppState {
             false
         }
     }
+
+    /// Move a session to the top of the list (most recently used).
+    /// Used when a session becomes active (e.g., user sends input).
+    pub fn move_session_to_top(&mut self, index: usize) {
+        if index > 0 && index < self.sessions.len() {
+            let session = self.sessions.remove(index);
+            self.sessions.insert(0, session);
+            // Adjust selected_index to keep selection on the same session
+            if self.selected_index == index {
+                self.selected_index = 0;
+            } else if self.selected_index < index {
+                // Session was below selection, no adjustment needed
+            } else {
+                // This shouldn't happen since we only move sessions above the selection
+            }
+            // Adjust previous_session
+            if let Some(prev) = self.previous_session {
+                if prev == index {
+                    self.previous_session = Some(0);
+                } else if prev < index {
+                    self.previous_session = Some(prev + 1);
+                }
+            }
+            // Adjust scroll_offset if needed
+            if self.scroll_offset > 0 {
+                self.scroll_offset = self.scroll_offset.min(self.selected_index);
+            }
+        }
+    }
+
+    /// Move the currently selected session to the top of the list.
+    pub fn move_selected_to_top(&mut self) {
+        if self.selected_index > 0 && !self.sessions.is_empty() {
+            let session = self.sessions.remove(self.selected_index);
+            self.sessions.insert(0, session);
+            // Adjust previous_session
+            if let Some(prev) = self.previous_session {
+                if prev == self.selected_index {
+                    self.previous_session = Some(0);
+                } else if prev < self.selected_index {
+                    self.previous_session = Some(prev + 1);
+                }
+            }
+            self.selected_index = 0;
+            self.scroll_offset = 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1028,5 +1075,91 @@ mod tests {
         state.cancel_create_mode();
         assert_eq!(state.mode, AppMode::Normal);
         assert_eq!(state.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn test_move_session_to_top() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+            Session::new("c"),
+        ]);
+        state.selected_index = 2;
+
+        // Move session "c" (index 2) to top
+        state.move_session_to_top(2);
+
+        assert_eq!(state.sessions[0].name, "c");
+        assert_eq!(state.sessions[1].name, "a");
+        assert_eq!(state.sessions[2].name, "b");
+        // Selection should follow the moved session
+        assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn test_move_session_to_top_updates_previous() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+            Session::new("c"),
+        ]);
+        state.previous_session = Some(2);
+        state.selected_index = 1;
+
+        // Move session "c" (index 2, same as previous) to top
+        state.move_session_to_top(2);
+
+        // Previous should now point to 0 (where the session moved)
+        assert_eq!(state.previous_session, Some(0));
+    }
+
+    #[test]
+    fn test_move_session_to_top_index_0_is_noop() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+        ]);
+        state.selected_index = 0;
+
+        // Moving index 0 to top should be a no-op
+        state.move_session_to_top(0);
+
+        assert_eq!(state.sessions[0].name, "a");
+        assert_eq!(state.sessions[1].name, "b");
+        assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn test_move_selected_to_top() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+            Session::new("c"),
+        ]);
+        state.selected_index = 2;
+
+        state.move_selected_to_top();
+
+        assert_eq!(state.sessions[0].name, "c");
+        assert_eq!(state.sessions[1].name, "a");
+        assert_eq!(state.sessions[2].name, "b");
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_move_selected_to_top_already_at_top() {
+        let mut state = AppState::with_sessions(vec![
+            Session::new("a"),
+            Session::new("b"),
+        ]);
+        state.selected_index = 0;
+
+        state.move_selected_to_top();
+
+        // Should be unchanged
+        assert_eq!(state.sessions[0].name, "a");
+        assert_eq!(state.sessions[1].name, "b");
+        assert_eq!(state.selected_index, 0);
     }
 }
