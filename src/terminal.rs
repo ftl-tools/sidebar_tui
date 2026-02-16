@@ -3,6 +3,7 @@
 //! This module wraps vt100::Parser to provide terminal emulation
 //! and rendering to ratatui widgets.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use ratatui::layout::Rect;
@@ -14,10 +15,21 @@ use ratatui::Frame;
 /// Default number of lines to keep in scrollback history.
 const DEFAULT_HISTORY_SIZE: usize = 10000;
 
+/// Static space string to avoid per-cell allocation when rendering empty cells.
+/// Using &'static str with Span::styled avoids String allocation entirely.
+const SPACE: &str = " ";
+
+/// Default style for empty cells: white foreground for visibility.
+/// Pre-computed to avoid recreating on every cell render.
+fn default_empty_style() -> Style {
+    Style::default().fg(Color::Indexed(255))
+}
+
 /// A line in the scrollback history with cell data and styles.
+/// Uses Cow<'static, str> to avoid allocations for static space strings.
 #[derive(Clone)]
 struct HistoryLine {
-    cells: Vec<(String, Style)>,
+    cells: Vec<(Cow<'static, str>, Style)>,
 }
 
 /// Terminal emulator that parses escape sequences and maintains screen state.
@@ -63,15 +75,16 @@ impl Terminal {
                         continue;
                     }
                     let contents = cell.contents();
-                    let text = if contents.is_empty() {
-                        " ".to_string()
-                    } else {
-                        contents.to_string()
-                    };
                     let style = cell_to_style(cell);
+                    // Use Cow::Borrowed for static space string, Cow::Owned for actual content
+                    let text: Cow<'static, str> = if contents.is_empty() {
+                        Cow::Borrowed(SPACE)
+                    } else {
+                        Cow::Owned(contents.to_string())
+                    };
                     cells.push((text, style));
                 } else {
-                    cells.push((" ".to_string(), Style::default().fg(Color::Indexed(255))));
+                    cells.push((Cow::Borrowed(SPACE), default_empty_style()));
                 }
             }
 
@@ -213,14 +226,14 @@ impl Terminal {
                         for (text, style) in &history_line.cells {
                             spans.push(Span::styled(text.clone(), *style));
                         }
-                        // Pad to full width
+                        // Pad to full width using static space
                         while spans.len() < area.width as usize {
-                            spans.push(Span::styled(" ", Style::default().fg(Color::Indexed(255))));
+                            spans.push(Span::styled(SPACE, default_empty_style()));
                         }
                     } else {
                         // No history for this position, show empty line
                         for _ in 0..area.width {
-                            spans.push(Span::styled(" ", Style::default().fg(Color::Indexed(255))));
+                            spans.push(Span::styled(SPACE, default_empty_style()));
                         }
                     }
                 } else {
@@ -232,15 +245,14 @@ impl Terminal {
                                 continue;
                             }
                             let contents = cell.contents();
-                            let text = if contents.is_empty() {
-                                " ".to_string()
-                            } else {
-                                contents.to_string()
-                            };
                             let style = cell_to_style(cell);
-                            spans.push(Span::styled(text, style));
+                            if contents.is_empty() {
+                                spans.push(Span::styled(SPACE, style));
+                            } else {
+                                spans.push(Span::styled(contents.to_string(), style));
+                            }
                         } else {
-                            spans.push(Span::styled(" ", Style::default().fg(Color::Indexed(255))));
+                            spans.push(Span::styled(SPACE, default_empty_style()));
                         }
                     }
                 }
@@ -254,18 +266,18 @@ impl Terminal {
                         }
 
                         let contents = cell.contents();
-                        let text = if contents.is_empty() {
-                            " ".to_string()
-                        } else {
-                            contents.to_string()
-                        };
-
                         let style = cell_to_style(cell);
-                        spans.push(Span::styled(text, style));
+                        if contents.is_empty() {
+                            // Use static space string to avoid allocation
+                            spans.push(Span::styled(SPACE, style));
+                        } else {
+                            // Only allocate for non-empty cells
+                            spans.push(Span::styled(contents.to_string(), style));
+                        }
                     } else {
                         // Cell doesn't exist, fill with space using explicit white-on-reset style
                         // to ensure consistent colors and avoid terminal state corruption
-                        spans.push(Span::styled(" ", Style::default().fg(Color::Indexed(255))));
+                        spans.push(Span::styled(SPACE, default_empty_style()));
                     }
                 }
             }
@@ -648,5 +660,39 @@ mod tests {
 
         // History should be capped at max_history
         assert!(term.history.len() <= term.max_history);
+    }
+
+    #[test]
+    fn test_history_uses_cow_borrowed_for_empty_cells() {
+        // Verify that empty cells use Cow::Borrowed to avoid allocation.
+        let mut term = Terminal::new(5, 20);
+
+        // Process minimal content - most cells will be empty
+        term.process(b"A");
+
+        // Capture to history via resize
+        term.resize(5, 20);
+
+        // Check that history contains Cow::Borrowed for empty cells
+        assert!(!term.history.is_empty());
+
+        let line = &term.history[0];
+        // First cell should be "A" (Owned), rest should be spaces (Borrowed)
+        let (first_text, _) = &line.cells[0];
+        let (second_text, _) = &line.cells[1];
+
+        // First cell is actual content - can be either owned or borrowed
+        assert_eq!(first_text.as_ref(), "A");
+
+        // Second cell should be a borrowed space
+        assert_eq!(second_text.as_ref(), " ");
+        assert!(matches!(second_text, Cow::Borrowed(_)), "Empty cells should use Cow::Borrowed");
+    }
+
+    #[test]
+    fn test_default_empty_style_returns_white_foreground() {
+        // Verify that default_empty_style returns white foreground
+        let style = super::default_empty_style();
+        assert_eq!(style.fg, Some(Color::Indexed(255)));
     }
 }
