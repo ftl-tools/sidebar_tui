@@ -1,5 +1,20 @@
 # Progress Logs
 
+## 2026-02-16 - Fixed Spec/Implementation Mismatch for Selection Color
+
+Fixed sidebar_tui-zoz: Updated objectives.md line 67 to reflect that the selected session background uses dark grey (color 238) instead of dark purple (color 54). The implementation was changed per user request but the spec was never updated. All 365 lib tests pass. Remaining 5 issues are for missing E2E tests.
+
+## 2026-02-16 - Verification Check Found Incomplete Work
+
+Verification check found incomplete work:
+1. **Spec/Implementation mismatch**: objectives.md line 67 specifies "dark purple (color 54)" for selected session background, but implementation uses DARK_GREY (238) per user request. The spec was NOT updated to reflect this change (sidebar_tui-zoz).
+2. **Missing E2E tests per spec requirement** (line 20: "at least one E2E test for each individual bullet point"):
+   - Session name wrapping with `│` and `└` characters (sidebar_tui-yv7)
+   - Truncation indicators when session list overflows (sidebar_tui-mpt)
+   - Space key and right arrow for focusing terminal from sidebar (sidebar_tui-aur)
+   - Vim j/k navigation keys in sidebar (sidebar_tui-s9e)
+   - Esc "Jump Back" feature from sidebar (sidebar_tui-c20)
+
 ## 2026-02-16 - Fixed Flaky test_hint_bar_context and test_quit_confirmation E2E Tests
 
 Fixed two E2E tests that failed when running the full test suite due to leftover sessions and timing issues. Root cause: (1) `test_quit_confirmation` wasn't calling `cleanup_test_sessions()` at start, (2) `test_hint_bar_context` was using fixed 1500ms sleep which wasn't sufficient under test suite load - the hint bar wasn't visible yet when assertion ran. Fixes: (1) Added `cleanup_test_sessions()` call at the start of `test_quit_confirmation`, (2) Changed `test_hint_bar_context` to use a polling loop (10 x 200ms = 2 seconds max) waiting for hint bar content to appear before asserting. All 365 lib + 65 bin + 35 E2E tests pass. Binary reinstalled.

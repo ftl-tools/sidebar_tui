@@ -64,7 +64,7 @@ The general requirements are as follows:
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).
 - If a session name is too long to fit in the sidebar it should be wrapped with `│`(s) and `└` characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
-- The background of the selected session should be dark purple (color 54). This highlight should start at the first letter of the session name and stop right before the right sidebar border.
+- The background of the selected session should be dark grey (color 238). This highlight should start at the first letter of the session name and stop right before the right sidebar border.
 - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`) at the top and or bottom of the list if extra entries are beyond the visible area.
 - If it exists, the top truncation indicator should go directly below the title.
 - The truncation indicator should be colored slightly darker (color 238) than the session names.
