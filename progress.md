@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Fixed Flaky test_hint_bar_context and test_quit_confirmation E2E Tests
+
+Fixed two E2E tests that failed when running the full test suite due to leftover sessions and timing issues. Root cause: (1) `test_quit_confirmation` wasn't calling `cleanup_test_sessions()` at start, (2) `test_hint_bar_context` was using fixed 1500ms sleep which wasn't sufficient under test suite load - the hint bar wasn't visible yet when assertion ran. Fixes: (1) Added `cleanup_test_sessions()` call at the start of `test_quit_confirmation`, (2) Changed `test_hint_bar_context` to use a polling loop (10 x 200ms = 2 seconds max) waiting for hint bar content to appear before asserting. All 365 lib + 65 bin + 35 E2E tests pass. Binary reinstalled.
+
 ## 2026-02-16 - Fixed Flaky test_tab_focuses_terminal Test
 
 Fixed `test_tab_focuses_terminal` which passed in isolation but failed when running the full E2E test suite. The test was using fixed sleep times that weren't sufficient when the system was under load from running 30+ other tests. Fix: (1) Added `cleanup_test_sessions()` at test start for clean state, (2) Replaced fixed sleep with polling loop that waits up to 2 seconds (10 x 200ms) for UI state to change, (3) Fixed unused variable warning in `cleanup_test_sessions()`. All 365 lib + 65 bin + 35 E2E tests pass. Binary reinstalled.

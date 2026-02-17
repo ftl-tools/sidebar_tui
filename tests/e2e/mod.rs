@@ -1048,19 +1048,28 @@ fn test_hint_bar_context() {
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
-    // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
-    session.read_and_parse().expect("Failed to read output");
+    // Wait for TUI to fully initialize and hint bar to appear.
+    // Poll up to 10 times (200ms each = 2 seconds total) for the hint bar to show.
+    let mut has_ctrl_b = false;
+    let mut has_ctrl_n = false;
+    let mut screen_contents = String::new();
 
-    // By default, terminal is focused - hint bar should show ctrl+b bindings
-    let screen_contents = session.parser.screen().contents();
+    for _attempt in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        screen_contents = session.parser.screen().contents();
+
+        has_ctrl_b = screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
+        has_ctrl_n = screen_contents.contains("ctrl + n") || screen_contents.contains("ctrl+n");
+
+        if has_ctrl_b || has_ctrl_n {
+            break;
+        }
+    }
 
     // The hint bar shows at the bottom, should have keybinding hints
     // Look for "ctrl" which should appear in terminal focus mode
     eprintln!("Initial screen:\n{}", screen_contents);
-
-    let has_ctrl_b = screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
-    let has_ctrl_n = screen_contents.contains("ctrl + n") || screen_contents.contains("ctrl+n");
 
     assert!(
         has_ctrl_b || has_ctrl_n,
@@ -1638,6 +1647,9 @@ fn test_delete_confirmation() {
 #[test]
 #[serial]
 fn test_quit_confirmation() {
+    // Clean up ALL sessions to prevent sidebar overflow which affects quit confirmation
+    cleanup_test_sessions();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
