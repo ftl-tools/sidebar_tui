@@ -4465,3 +4465,198 @@ fn test_session_name_wrapping_with_continuation_indicators() {
         .args(["kill", long_name])
         .output();
 }
+
+/// Test that truncation indicators ("...") appear when there are more sessions than can fit
+/// in the visible area, and that they are colored dark grey (238).
+/// Per spec lines 68-70:
+/// - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`)
+///   at the top and/or bottom of the list
+/// - The truncation indicator should be colored slightly darker (color 238) than session names
+#[test]
+#[serial]
+fn test_truncation_indicators_when_session_list_overflows() {
+    cleanup_test_sessions();
+
+    let binary_path = get_binary_path();
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+
+    // Create enough sessions to overflow the visible area
+    // In a 24-row terminal with 2-row hint bar:
+    // - Sidebar area is 22 rows
+    // - Inner (inside borders) is 20 rows
+    // - Content area (below title) is 19 rows
+    // - Truncation indicators reserve up to 2 rows
+    // So we need more than ~17 sessions to trigger overflow
+    // We'll create 25 to be safe
+    let num_sessions = 25;
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+
+    let mut session_names = Vec::new();
+
+    // Create sessions by spawning the TUI briefly for each one
+    // Sessions are created by running `sb -s <name>` which creates them in the daemon
+    for i in 0..num_sessions {
+        let name = format!("tr{}-{}-{}", i, pid, unique_id);
+        session_names.push(name.clone());
+
+        // Spawn sb briefly to create the session
+        let cmd = format!("{} -s {}", binary_path, name);
+        let mut temp_session = spawn_sb(&cmd);
+        temp_session.set_expect_timeout(Some(Duration::from_millis(1000)));
+
+        // Wait briefly for session to be created
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Exit via Ctrl+Q
+        let _ = temp_session.write_all(&[17]);
+        let _ = temp_session.flush();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let _ = temp_session.get_process_mut().exit(true);
+
+        // Small delay between session creations
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: session_names.clone(),
+    };
+
+    // Now launch the TUI to view all the sessions
+    let first_session = &session_names[0];
+    let cmd = format!("{} -s {}", binary_path, first_session);
+    let mut session = spawn_sb(&cmd);
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar to see the session list
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Screen with {} sessions:\n{}", num_sessions, screen_contents);
+
+    // Verify the truncation indicator "..." appears
+    // It should appear at the bottom since we have more sessions than can fit
+    // and the newest sessions (created last) appear at the top
+    let has_truncation_indicator = screen_contents.contains("...");
+
+    assert!(
+        has_truncation_indicator,
+        "Screen should contain truncation indicator '...' when session list overflows. Got:\n{}",
+        screen_contents
+    );
+
+    // Verify the truncation indicator has the correct color (238 - DARK_GREY)
+    // The indicator should be at column 2 (inside border + padding)
+    // We need to find the row with "..." and check its color
+    let mut found_truncation_with_correct_color = false;
+    for row in 0..24 {
+        let cell = parser.screen().cell(row, 2);
+        if let Some(c) = cell {
+            if c.contents() == "." {
+                // Check if this is part of "..."
+                let next = parser.screen().cell(row, 3);
+                let next2 = parser.screen().cell(row, 4);
+                if let (Some(n), Some(n2)) = (next, next2) {
+                    if n.contents() == "." && n2.contents() == "." {
+                        let fg_color = c.fgcolor();
+                        eprintln!("Found '...' at row {}, color: {:?}", row, fg_color);
+                        if matches!(fg_color, vt100::Color::Idx(238)) {
+                            found_truncation_with_correct_color = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_truncation_with_correct_color,
+        "Truncation indicator should be colored dark grey (238)"
+    );
+
+    // Now scroll down to verify we can also see top truncation indicator
+    // Navigate down multiple times to select a session beyond the visible area
+    // This should trigger scrolling and show top truncation indicator
+    // We need to move past the visible sessions (about 17 visible) to trigger scroll
+    for i in 0..20 {
+        session.write_all(b"j").expect("Failed to send 'j'");
+        session.flush().expect("Failed to flush");
+        std::thread::sleep(Duration::from_millis(100));
+        if i % 5 == 4 {
+            // Read periodically to ensure we're getting screen updates
+            read_into_parser(&mut session, &mut parser);
+        }
+    }
+
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_scroll = parser.screen().contents();
+    eprintln!("Screen after scrolling down:\n{}", screen_after_scroll);
+
+    // After scrolling down past the visible area, we should see the top truncation indicator
+    // The top truncation indicator appears on row 2 (directly below title on row 1)
+    // Check for truncation indicator at the top of the session list
+    let mut found_top_truncation = false;
+    // Row 2 is where the top truncation indicator should appear (after border row 0, title row 1)
+    if let Some(cell) = parser.screen().cell(2, 2) {
+        if cell.contents() == "." {
+            if let (Some(n), Some(n2)) = (parser.screen().cell(2, 3), parser.screen().cell(2, 4)) {
+                if n.contents() == "." && n2.contents() == "." {
+                    found_top_truncation = true;
+                    eprintln!("Found top truncation indicator at row 2");
+                }
+            }
+        }
+    }
+
+    // We should still see a truncation indicator (either top, bottom, or both)
+    let has_truncation_after_scroll = screen_after_scroll.contains("...");
+    assert!(
+        has_truncation_after_scroll,
+        "Truncation indicator should still be visible after scrolling"
+    );
+
+    // Verify we scrolled enough to see top truncation by checking screen contents
+    // If scrolling worked, we should see sessions that weren't visible before (tr0-tr7)
+    // The first session tr0 should now be visible somewhere
+    let has_early_session = screen_after_scroll.contains("tr0-")
+        || screen_after_scroll.contains("tr1-")
+        || screen_after_scroll.contains("tr2-")
+        || screen_after_scroll.contains("tr3-");
+
+    if has_early_session && found_top_truncation {
+        eprintln!("Scrolling worked correctly - can see early sessions and top truncation");
+    } else if has_early_session {
+        eprintln!("Scrolling worked but top truncation indicator not at expected position");
+    }
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}

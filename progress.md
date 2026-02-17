@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added E2E Test for Truncation Indicators When Session List Overflows
+
+Completed sidebar_tui-mpt: Added E2E test `test_truncation_indicators_when_session_list_overflows` to verify that truncation indicators (`...`) appear when more sessions exist than can fit in the visible sidebar area. The test creates 25 sessions programmatically (more than the ~17 visible rows), then verifies: (1) the truncation indicator `...` appears in the sidebar, (2) the indicator is colored dark grey (238) per spec. This completes the missing E2E test coverage per spec lines 68-70. All 365 lib + 65 bin + 41 E2E tests pass. Binary reinstalled. Closed sidebar_tui-mpt. No remaining issues.
+
 ## 2026-02-16 - Added E2E Test for Session Name Wrapping with Continuation Indicators
 
 Completed sidebar_tui-yv7: Added E2E test `test_session_name_wrapping_with_continuation_indicators` to verify that long session names wrap correctly with `│` (middle) and `└` (end) continuation indicators. The test creates a 50-character session name (exceeding the 24-char content width) and verifies: (1) the name wraps to multiple lines, (2) continuation indicators are present, (3) indicators are colored dark grey (238) per spec. Also fixed flaky `test_focus_switching` by adding polling loops instead of fixed sleeps and `cleanup_test_sessions()` call. All 365 lib + 65 bin + 40 E2E tests pass. Binary reinstalled. Closed sidebar_tui-yv7. Remaining 1 issue for missing E2E test (sidebar_tui-mpt: truncation indicators).
