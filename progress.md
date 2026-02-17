@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added E2E Tests for Space and Right Arrow Keys
+
+Completed sidebar_tui-aur: Added two E2E tests `test_space_focuses_terminal_from_sidebar` and `test_right_arrow_focuses_terminal_from_sidebar` to verify that Space and Right Arrow keys work as alternative ways to focus the terminal from the sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane"). Also added `send_space()` and `send_right_arrow()` helper methods to SbSession. All 365 lib + 65 bin + 39 E2E tests pass. Binary reinstalled. Closed sidebar_tui-aur. Remaining 2 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt).
+
 ## 2026-02-16 - Added E2E Test for Esc Jump Back Feature
 
 Completed sidebar_tui-c20: Added E2E test `test_esc_jump_back` to verify that pressing Esc in the sidebar performs "Jump Back" - returning focus to the terminal AND restoring selection to the session that was selected before the sidebar was focused. The test creates two sessions, focuses sidebar, navigates to a different session with 'j', then presses Esc and verifies: (1) terminal regains focus (sidebar border unfocused), (2) selection returns to the original session. Also fixed flaky `test_quit_confirmation` by adding a polling loop for the confirmation prompt. All 365 lib + 65 bin + 37 E2E tests pass. Binary reinstalled. Closed sidebar_tui-c20. Remaining 3 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt, sidebar_tui-aur).

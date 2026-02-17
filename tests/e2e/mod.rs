@@ -201,6 +201,21 @@ impl SbSession {
         Ok(())
     }
 
+    /// Send Space key
+    fn send_space(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.session.write_all(&[0x20])?; // Space
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Send Right Arrow key
+    fn send_right_arrow(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Right arrow is ESC [ C
+        self.session.write_all(&[0x1b, b'[', b'C'])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
     /// Get cell at position
     fn cell_at(&self, row: u16, col: u16) -> Option<vt100::Cell> {
         self.parser.screen().cell(row, col).cloned()
@@ -4222,4 +4237,112 @@ fn test_esc_jump_back() {
     session.write_all(&[17]).expect("Failed to send Ctrl+Q");
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
+}
+
+/// Test that Space key focuses terminal from sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane")
+#[test]
+#[serial]
+fn test_space_focuses_terminal_from_sidebar() {
+    cleanup_test_sessions();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar with Ctrl+B
+    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.session.flush().expect("Failed to flush");
+
+    // Poll until sidebar is focused (color 250) or timeout
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+
+    // Now send Space to focus terminal - this should work just like Enter
+    session.send_space().expect("Failed to send space");
+
+    // Poll until terminal is focused (sidebar color 238) or timeout
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Space - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing Space");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that Right Arrow key focuses terminal from sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane")
+#[test]
+#[serial]
+fn test_right_arrow_focuses_terminal_from_sidebar() {
+    cleanup_test_sessions();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(1500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar with Ctrl+B
+    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.session.flush().expect("Failed to flush");
+
+    // Poll until sidebar is focused (color 250) or timeout
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+
+    // Now send Right Arrow to focus terminal - this should work just like Enter
+    session.send_right_arrow().expect("Failed to send right arrow");
+
+    // Poll until terminal is focused (sidebar color 238) or timeout
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Right Arrow - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing Right Arrow");
+
+    session.quit().expect("Failed to quit");
 }
