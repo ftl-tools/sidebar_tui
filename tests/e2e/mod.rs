@@ -57,7 +57,7 @@ fn cleanup_test_sessions() {
     let binary_path = get_binary_path();
 
     // Try multiple times to clean up all sessions
-    for attempt in 0..5 {
+    for _attempt in 0..5 {
         let list_output = std::process::Command::new(&binary_path)
             .args(["list"])
             .output();
@@ -1157,44 +1157,52 @@ fn test_focus_switching() {
 #[test]
 #[serial]
 fn test_tab_focuses_terminal() {
+    cleanup_test_sessions();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1500));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(800));
-    session.read_and_parse().expect("Failed to read output");
 
-    // Verify sidebar is focused (border should be 250)
-    if let Some(sidebar_corner) = session.cell_at(0, 0) {
-        let sidebar_fg = sidebar_corner.fgcolor();
-        eprintln!("After Ctrl+B sidebar border color: {:?}", sidebar_fg);
-        assert!(
-            matches!(sidebar_fg, vt100::Color::Idx(250)),
-            "Sidebar border should be focused (250) when sidebar focused. Got: {:?}",
-            sidebar_fg
-        );
+    // Poll until sidebar is focused (color 250) or timeout
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
     }
+    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
 
     // Now send Tab to focus terminal - this should work just like Enter
     session.send_tab().expect("Failed to send tab");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
 
-    // Sidebar border should be DARK_GREY (238) since terminal is now focused
-    if let Some(sidebar_corner) = session.cell_at(0, 0) {
-        let sidebar_fg = sidebar_corner.fgcolor();
-        eprintln!("After Tab sidebar border color: {:?}", sidebar_fg);
-        assert!(
-            matches!(sidebar_fg, vt100::Color::Idx(238)),
-            "Sidebar border should be dark grey (238) after Tab focuses terminal. Got: {:?}",
-            sidebar_fg
-        );
+    // Poll until terminal is focused (sidebar color 238) or timeout
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Tab - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
     }
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Tab");
 
     session.quit().expect("Failed to quit");
 }

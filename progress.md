@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Fixed Flaky test_tab_focuses_terminal Test
+
+Fixed `test_tab_focuses_terminal` which passed in isolation but failed when running the full E2E test suite. The test was using fixed sleep times that weren't sufficient when the system was under load from running 30+ other tests. Fix: (1) Added `cleanup_test_sessions()` at test start for clean state, (2) Replaced fixed sleep with polling loop that waits up to 2 seconds (10 x 200ms) for UI state to change, (3) Fixed unused variable warning in `cleanup_test_sessions()`. All 365 lib + 65 bin + 35 E2E tests pass. Binary reinstalled.
+
 ## 2026-02-16 - Added Dirty Tracking for Incremental Rendering (Performance)
 
 Completed sidebar_tui-ced: Implemented dirty tracking to avoid rebuilding Line objects when terminal content hasn't changed. Changes: (1) Added `dirty: bool` flag to Terminal struct that tracks when content changes, (2) Added `RenderCache` struct to store previously rendered lines along with scroll offset and dimensions, (3) Modified `process()`, `scroll_up()`, `scroll_down()`, and `resize()` to set dirty flag appropriately, (4) Updated `render()` and `render_with_cursor()` to take `&mut self` and use cached Lines when not dirty, (5) Changed `render_daemon_app()` signature to take `&mut DaemonApp` to allow mutable terminal access, (6) Added 9 new unit tests for dirty tracking behavior. When terminal content hasn't changed between frames, the render function now returns cached Line objects instead of iterating over all cells. All 365 lib + 65 bin + 35 E2E + 2 scaffold tests pass. Binary reinstalled. Closed sidebar_tui-ced.
