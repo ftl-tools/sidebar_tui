@@ -51,6 +51,52 @@ fn ensure_daemon_ready() {
     // Continue anyway - daemon should auto-start when test spawns sb
 }
 
+/// Clean up ALL test sessions to prevent test isolation issues.
+/// When too many sessions exist, the sidebar fills up and can cause rendering/parsing issues.
+fn cleanup_test_sessions() {
+    let binary_path = get_binary_path();
+
+    // Try multiple times to clean up all sessions
+    for attempt in 0..5 {
+        let list_output = std::process::Command::new(&binary_path)
+            .args(["list"])
+            .output();
+
+        let list_str = match list_output {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
+            Err(_) => return,
+        };
+
+        if list_str.contains("No active sessions") {
+            return;
+        }
+
+        // Parse and kill each session
+        for line in list_str.lines().skip(1) {
+            if line.len() >= 20 {
+                let display_name = line[..20].trim().to_string();
+                if display_name.is_empty() || display_name == "No" || display_name.starts_with("NAME") {
+                    continue;
+                }
+                // Kill ALL sessions to ensure clean state
+                let _ = std::process::Command::new(&binary_path)
+                    .args(["kill", &display_name])
+                    .output();
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Spawn an sb session with daemon readiness check.
+/// Use this instead of `spawn(&cmd)` directly to ensure daemon is ready.
+fn spawn_sb(cmd: &str) -> expectrl::session::OsSession {
+    ensure_daemon_ready();
+    std::thread::sleep(Duration::from_millis(100));
+    spawn(cmd).expect("Failed to spawn sb")
+}
+
 /// Helper to spawn sb and get its output parsed through vt100
 struct SbSession {
     session: expectrl::session::OsSession,
@@ -65,7 +111,7 @@ impl SbSession {
         ensure_daemon_ready();
 
         // Small delay after daemon check to ensure it's fully stable.
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(200));
 
         let binary_path = get_binary_path();
         let session_name = get_unique_session_name();
@@ -508,7 +554,7 @@ fn test_session_persistence_across_restart() {
     // ============ PHASE 1: Start TUI, open vi, type text, detach ============
     {
         let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn(&cmd).expect("Failed to spawn sb");
+        let mut session = spawn_sb(&cmd);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -574,7 +620,7 @@ fn test_session_persistence_across_restart() {
     // ============ PHASE 2: Reattach and verify vi is still running ============
     {
         let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn(&cmd).expect("Failed to spawn sb for reattach");
+        let mut session = spawn_sb(&cmd);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -738,7 +784,7 @@ fn test_stale_session_persistence() {
     // ============ PHASE 1: Create a session via proper PTY using expectrl ============
     {
         let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn(&cmd).expect("Failed to spawn sb");
+        let mut session = spawn_sb(&cmd);
         session.set_expect_timeout(Some(Duration::from_secs(5)));
 
         // Wait for TUI to initialize and shell to be ready
@@ -997,6 +1043,9 @@ fn test_sidebar_session_list() {
 #[test]
 #[serial]
 fn test_hint_bar_context() {
+    // Clean up test sessions to prevent sidebar overflow which can cause rendering issues
+    cleanup_test_sessions();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
@@ -1110,14 +1159,14 @@ fn test_focus_switching() {
 fn test_tab_focuses_terminal() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
-    // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(2000));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(800));
     session.read_and_parse().expect("Failed to read output");
 
     // Verify sidebar is focused (border should be 250)
@@ -1190,7 +1239,7 @@ fn test_create_mode_flow() {
     };
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1308,7 +1357,7 @@ fn test_rename_flow() {
     };
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1405,7 +1454,7 @@ fn test_rename_keeps_focus() {
     };
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1494,7 +1543,7 @@ fn test_delete_confirmation() {
     };
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1671,7 +1720,7 @@ fn test_navigation() {
 
     // First create session1
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1790,7 +1839,7 @@ fn test_welcome_state() {
     // by creating, deleting, and checking the state.
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1881,7 +1930,7 @@ fn test_session_selection_no_crash() {
     };
 
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2021,7 +2070,7 @@ fn test_agent_session_no_nested_error() {
 
     // First create a regular session so we have a TUI
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2138,7 +2187,7 @@ fn test_live_preview_basic() {
 
     // Create first session and run a command that produces unique output
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2281,7 +2330,7 @@ fn test_live_preview_rapid_navigation() {
 
     // Create first session
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2408,7 +2457,7 @@ fn test_live_preview_then_select() {
 
     // Create first session with unique marker
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2543,7 +2592,7 @@ fn test_live_preview_then_create() {
 
     // Create two sessions
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2672,7 +2721,7 @@ fn test_ctrl_q_quit_from_terminal() {
 
     // Spawn sb
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2766,7 +2815,7 @@ fn test_mod_keys_work_from_sidebar() {
 
     // Spawn sb
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3154,7 +3203,7 @@ fn test_session_ordering_by_last_used() {
 
     // Create first session with specific name via CLI
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3307,7 +3356,7 @@ fn test_session_order_preserved_across_restart() {
 
     // Create first session with specific name via CLI
     let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3722,7 +3771,7 @@ fn test_sessions_work_after_shutdown() {
     // Create a new session - this should start a new daemon
     let session_name = get_unique_session_name();
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb after shutdown");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
 
     // Wait for initialization
@@ -3801,7 +3850,7 @@ fn test_ctrl_s_toggles_mouse_mode() {
 
     // Spawn sb
     let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn(&cmd).expect("Failed to spawn sb");
+    let mut session = spawn_sb(&cmd);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 

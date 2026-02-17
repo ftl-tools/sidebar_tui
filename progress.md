@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Comprehensive E2E Test Isolation Fixes
+
+Fixed remaining flaky E2E tests that failed when run in the full test suite. Root causes: (1) Tests using `spawn()` directly weren't calling `ensure_daemon_ready()`, (2) Session cleanup wasn't aggressive enough - leftover sessions from unit tests ("newer_session", "s1", "s2") and other E2E tests filled the sidebar causing parsing issues. Fixes: (1) Added `spawn_sb()` helper that wraps spawn with daemon readiness check, replaced 20+ direct spawn calls, (2) Updated `cleanup_test_sessions()` to kill ALL sessions instead of just pattern-matched ones, (3) Increased stabilization delay from 100ms to 200ms in `SbSession::new()`, (4) Increased wait times for tab focus test. Closed sidebar_tui-9t5 (quit confirmation test now passes as part of overall fix). All 356 lib + 65 bin + 35 E2E + 2 scaffold tests pass. Binary reinstalled.
+
 ## 2026-02-16 - Compressed History (Entries from 2026-02-15 to 2026-02-16)
 
 Early development focused on core TUI functionality and quality-of-life improvements. Key completed work includes: session ordering by last-used timestamp with persistence across restarts, auto-generated three-word session names eliminating manual naming, terminal pane color fixes for Apple Terminal (default foreground to white), grey text rendering fixes for empty cells, and Linux builds for Docker containers. Also implemented render batching (drain socket before rendering), VecDeque for O(1) history trimming, fixed broken mouse scroll tests, reduced unnecessary screen captures (on-demand instead of every process() call), Cow-based String allocation reduction for render performance, text selection mode toggle (Ctrl+S), and comprehensive E2E test isolation fixes with daemon readiness checks.
