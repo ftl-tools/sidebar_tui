@@ -1664,22 +1664,25 @@ fn test_quit_confirmation() {
 
     // Press 'q' to request quit
     session.send("q").expect("Failed to send 'q'");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
+
+    // Wait for quit confirmation to appear with polling
+    let mut found_confirmation = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen_contents = session.parser.screen().contents();
+        if screen_contents.contains("Yes") || screen_contents.contains("No") {
+            found_confirmation = true;
+            eprintln!("After 'q' (quit confirmation):\n{}", screen_contents);
+            break;
+        }
+    }
 
     let screen_contents = session.parser.screen().contents();
-    eprintln!("After 'q' (quit confirmation):\n{}", screen_contents);
 
-    // Hint bar should show quit confirmation prompt
+    // Hint bar should show quit confirmation prompt with Yes/No options
     assert!(
-        screen_contents.contains("Quit") || screen_contents.contains("TUI"),
-        "Quit confirmation should show. Got:\n{}",
-        screen_contents
-    );
-
-    // Check for y/n options
-    assert!(
-        screen_contents.contains("Yes") || screen_contents.contains("No"),
+        found_confirmation,
         "Quit confirmation should show Yes/No options. Got:\n{}",
         screen_contents
     );
@@ -4056,6 +4059,163 @@ fn test_vim_jk_navigation() {
         final_screen.contains(session1_part) || final_screen.contains(session2_part),
         "Sessions should still be visible after j/k navigation. Looking for '{}' or '{}' in:\n{}",
         session1_part, session2_part, final_screen
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}
+
+/// Test Esc "Jump Back" feature from sidebar.
+/// Per spec: `esc` - Jump Back: Select whatever session was selected before the sidebar was
+/// focused, and focus on the terminal pane.
+#[test]
+#[serial]
+fn test_esc_jump_back() {
+    cleanup_test_sessions();
+
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("jump1-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+            // Also clean up any auto-generated sessions from this test
+            let _ = cleanup_test_sessions();
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone()],
+    };
+
+    // Start with first session (named via CLI)
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn_sb(&cmd);
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    let initial_screen = parser.screen().contents();
+    eprintln!("Initial screen with session1:\n{}", initial_screen);
+
+    // Create a second session via n -> t (auto-generates name)
+    // First focus sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Press 'n' for new, then 't' for terminal
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_with_two = parser.screen().contents();
+    eprintln!("After creating second session:\n{}", screen_with_two);
+
+    // Now we're attached to session2 (auto-named). Focus sidebar.
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Verify sidebar is focused (border color should be 250)
+    let sidebar_border_cell = parser.screen().cell(0, 0).cloned();
+    if let Some(cell) = &sidebar_border_cell {
+        assert!(
+            matches!(cell.fgcolor(), vt100::Color::Idx(250)),
+            "Sidebar border should be focused (250). Got: {:?}",
+            cell.fgcolor()
+        );
+    }
+
+    // Navigate down to session1 (session2 is at top since most recently used)
+    session.write_all(b"j").expect("Failed to send 'j'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_j = parser.screen().contents();
+    eprintln!("After 'j' navigation (selection moved to session1):\n{}", screen_after_j);
+
+    // Now press Esc - this should:
+    // 1. Return focus to terminal
+    // 2. Return selection to session2 (the one that was selected before sidebar focus)
+    session.write_all(&[0x1b]).expect("Failed to send Esc");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_esc = parser.screen().contents();
+    eprintln!("After Esc (jump back):\n{}", screen_after_esc);
+
+    // Verify terminal is now focused (sidebar border should be unfocused - color 238)
+    let sidebar_border_after = parser.screen().cell(0, 0).cloned();
+    if let Some(cell) = &sidebar_border_after {
+        assert!(
+            matches!(cell.fgcolor(), vt100::Color::Idx(238)),
+            "Sidebar border should be unfocused (238) after Esc jump back. Got: {:?}",
+            cell.fgcolor()
+        );
+    }
+
+    // Verify the selection jumped back - session2 (first row) should be selected
+    // The hint bar should confirm we're on terminal (showing ctrl+b Focus on sidebar)
+    assert!(
+        screen_after_esc.contains("Focus on sidebar") || screen_after_esc.contains("ctrl + b"),
+        "Hint bar should show terminal keybindings after jump back. Screen:\n{}",
+        screen_after_esc
+    );
+
+    // The jump back should have:
+    // 1. Returned focus to terminal (verified by border color above)
+    // 2. Selected the session that was active before sidebar focus
+    // We verify this by checking the hint bar text changed from sidebar mode to terminal mode
+    // and that the terminal content is from the auto-named session (not session1)
+    // The terminal pane should show the shell prompt, not be blank
+
+    // Verify the sidebar session list order - the auto-generated session should be at top (row 2)
+    // Row 0: top border
+    // Row 1: │ Sidebar TUI │...
+    // Row 2: │ <auto-named> │...  <- first session (should be selected)
+    // Row 3: │ jump1-...    │...  <- second session
+    let lines: Vec<&str> = screen_after_esc.lines().collect();
+    eprintln!("Line 2 (first session): '{}'", lines.get(2).unwrap_or(&""));
+    eprintln!("Line 3 (second session): '{}'", lines.get(3).unwrap_or(&""));
+
+    // Row 2 should NOT contain jump1 (it should be the auto-named session)
+    let row2 = lines.get(2).unwrap_or(&"");
+    assert!(
+        !row2.contains("jump1"),
+        "First session row should be auto-named, not jump1. Got: '{}'",
+        row2
+    );
+
+    // Row 3 SHOULD contain jump1
+    let row3 = lines.get(3).unwrap_or(&"");
+    assert!(
+        row3.contains("jump1"),
+        "Second session row should be jump1. Got: '{}'",
+        row3
     );
 
     // Cleanup

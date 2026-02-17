@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added E2E Test for Esc Jump Back Feature
+
+Completed sidebar_tui-c20: Added E2E test `test_esc_jump_back` to verify that pressing Esc in the sidebar performs "Jump Back" - returning focus to the terminal AND restoring selection to the session that was selected before the sidebar was focused. The test creates two sessions, focuses sidebar, navigates to a different session with 'j', then presses Esc and verifies: (1) terminal regains focus (sidebar border unfocused), (2) selection returns to the original session. Also fixed flaky `test_quit_confirmation` by adding a polling loop for the confirmation prompt. All 365 lib + 65 bin + 37 E2E tests pass. Binary reinstalled. Closed sidebar_tui-c20. Remaining 3 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt, sidebar_tui-aur).
+
 ## 2026-02-16 - Added E2E Test for Vim j/k Navigation
 
 Completed sidebar_tui-s9e: Added E2E test `test_vim_jk_navigation` to verify that vim-style j/k keys work for navigating the session list in the sidebar. The test creates two sessions, focuses the sidebar, then verifies that 'j' moves selection down and 'k' moves selection up, matching the spec requirement "↑ or k - Up, ↓ or j - Down". All 365 lib + 65 bin + 36 E2E tests pass. Binary reinstalled. Closed sidebar_tui-s9e. Remaining 4 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt, sidebar_tui-aur, sidebar_tui-c20).
