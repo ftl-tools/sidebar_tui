@@ -1122,6 +1122,8 @@ fn test_hint_bar_context() {
 #[test]
 #[serial]
 fn test_focus_switching() {
+    cleanup_test_sessions();
+
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
@@ -1144,35 +1146,41 @@ fn test_focus_switching() {
     // Focus sidebar with Ctrl+B
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
 
-    // Now sidebar should be FOCUSED_BORDER (250), terminal should be DARK_GREY (238)
-    if let Some(sidebar_corner) = session.cell_at(0, 0) {
-        let sidebar_fg = sidebar_corner.fgcolor();
-        eprintln!("After Ctrl+B sidebar border color: {:?}", sidebar_fg);
-        assert!(
-            matches!(sidebar_fg, vt100::Color::Idx(250)),
-            "Sidebar border should be focused (250) when sidebar focused. Got: {:?}",
-            sidebar_fg
-        );
+    // Poll until sidebar is focused (color 250) or timeout
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
     }
+    assert!(sidebar_focused, "Sidebar border should be focused (250) when sidebar focused");
 
     // Focus terminal again with Enter (select session)
     session.send_enter().expect("Failed to send enter");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
 
-    // Sidebar border should be DARK_GREY again
-    if let Some(sidebar_corner) = session.cell_at(0, 0) {
-        let sidebar_fg = sidebar_corner.fgcolor();
-        eprintln!("After Enter sidebar border color: {:?}", sidebar_fg);
-        assert!(
-            matches!(sidebar_fg, vt100::Color::Idx(238)),
-            "Sidebar border should be dark grey (238) after returning to terminal. Got: {:?}",
-            sidebar_fg
-        );
+    // Poll until terminal is focused (sidebar color 238) or timeout
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Polling Enter - sidebar border color: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
     }
+    assert!(terminal_focused, "Sidebar border should be dark grey (238) after returning to terminal");
 
     session.quit().expect("Failed to quit");
 }
@@ -4345,4 +4353,115 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
     assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing Right Arrow");
 
     session.quit().expect("Failed to quit");
+}
+
+/// Test that long session names wrap with continuation indicators (│ and └)
+/// Per spec: "If a session name is too long to fit in the sidebar it should be wrapped with │(s) and └ characters"
+#[test]
+#[serial]
+fn test_session_name_wrapping_with_continuation_indicators() {
+    // Clean up ALL sessions to ensure we're testing with only our specific long-named session
+    cleanup_test_sessions();
+
+    let binary_path = get_binary_path();
+
+    // Content width is 24 chars (sidebar 28 - 2 borders - 2 padding)
+    // Create a session name that's longer than 24 chars to force wrapping
+    // Using 50 characters to ensure we get at least 2 lines of wrapping
+    let long_name = "VeryLongSessionNameThatShouldWrapToMultipleLines12";
+
+    // Create a session with this long name via CLI (no quotes needed for alphanumeric names)
+    let cmd = format!("{} -s {}", binary_path, long_name);
+    let mut session = spawn_sb(&cmd);
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(2000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("Screen with long session name:\n{}", screen_contents);
+
+    // Focus sidebar to make sure we can see the session list clearly
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let sidebar_focused_screen = parser.screen().contents();
+    eprintln!("Screen with sidebar focused:\n{}", sidebar_focused_screen);
+
+    // The session name should wrap. Looking at sidebar.rs:
+    // - First line: up to 24 chars of the name
+    // - Continuation lines: │ or └ prefix + up to 23 chars
+    // For a 50-char name: 24 + 23 + 3 = 50, so we need 3 lines
+    // Line 1: "VeryLongSessionNameThat" (24 chars)
+    // Line 2: "│ShouldWrapToMultipleLi" (│ + 23 chars)
+    // Line 3: "└nes12" (└ + remaining chars)
+
+    // Check that the screen contains the continuation indicators
+    // The └ character indicates the last line of a wrapped name
+    let has_continuation_end = sidebar_focused_screen.contains("└");
+
+    // The │ character indicates middle lines of a wrapped name
+    // But if the name is exactly 2 lines, only └ appears
+    // For a 50-char name (24 + 23 + 3), we should have │ on line 2 and └ on line 3
+    let has_continuation_middle = sidebar_focused_screen.contains("│");
+
+    // Check for the start of the long session name
+    let has_name_start = sidebar_focused_screen.contains("VeryLongSession");
+
+    eprintln!(
+        "Checking for wrapping indicators: has_continuation_end={}, has_continuation_middle={}, has_name_start={}",
+        has_continuation_end, has_continuation_middle, has_name_start
+    );
+
+    assert!(
+        has_name_start,
+        "Screen should contain the start of the long session name. Got:\n{}",
+        sidebar_focused_screen
+    );
+
+    assert!(
+        has_continuation_end,
+        "Screen should contain the └ continuation end indicator for wrapped session name. Got:\n{}",
+        sidebar_focused_screen
+    );
+
+    // Also verify the continuation indicator has the correct color (238 - DARK_GREY)
+    // The continuation indicators should be at column 2 (after border + padding) on continuation lines
+    // Row 3 (after border row 0, title row 1, first session line row 2) should have the continuation
+    // Actually row 2 is first line, row 3 is second line with │, row 4 is third line with └
+
+    // Find a row with the continuation indicator and check its color
+    let mut found_continuation_with_correct_color = false;
+    for row in 2..10 {
+        if let Some(cell) = parser.screen().cell(row, 2) {
+            let symbol = cell.contents();
+            if symbol == "│" || symbol == "└" {
+                let fg_color = cell.fgcolor();
+                eprintln!("Found continuation '{}' at row {}, color: {:?}", symbol, row, fg_color);
+                if matches!(fg_color, vt100::Color::Idx(238)) {
+                    found_continuation_with_correct_color = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_continuation_with_correct_color,
+        "Continuation indicator should be colored dark grey (238)"
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+
+    // Kill the session
+    let _ = std::process::Command::new(&binary_path)
+        .args(["kill", long_name])
+        .output();
 }

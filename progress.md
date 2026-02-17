@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added E2E Test for Session Name Wrapping with Continuation Indicators
+
+Completed sidebar_tui-yv7: Added E2E test `test_session_name_wrapping_with_continuation_indicators` to verify that long session names wrap correctly with `│` (middle) and `└` (end) continuation indicators. The test creates a 50-character session name (exceeding the 24-char content width) and verifies: (1) the name wraps to multiple lines, (2) continuation indicators are present, (3) indicators are colored dark grey (238) per spec. Also fixed flaky `test_focus_switching` by adding polling loops instead of fixed sleeps and `cleanup_test_sessions()` call. All 365 lib + 65 bin + 40 E2E tests pass. Binary reinstalled. Closed sidebar_tui-yv7. Remaining 1 issue for missing E2E test (sidebar_tui-mpt: truncation indicators).
+
 ## 2026-02-16 - Added E2E Tests for Space and Right Arrow Keys
 
 Completed sidebar_tui-aur: Added two E2E tests `test_space_focuses_terminal_from_sidebar` and `test_right_arrow_focuses_terminal_from_sidebar` to verify that Space and Right Arrow keys work as alternative ways to focus the terminal from the sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane"). Also added `send_space()` and `send_right_arrow()` helper methods to SbSession. All 365 lib + 65 bin + 39 E2E tests pass. Binary reinstalled. Closed sidebar_tui-aur. Remaining 2 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt).
