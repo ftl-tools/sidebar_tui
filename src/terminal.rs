@@ -32,6 +32,19 @@ struct HistoryLine {
     cells: Vec<(Cow<'static, str>, Style)>,
 }
 
+/// Cached render state for incremental rendering.
+/// Stores the previously rendered lines to avoid rebuilding when content hasn't changed.
+#[derive(Clone)]
+struct RenderCache {
+    /// Cached Line objects from last render
+    lines: Vec<Line<'static>>,
+    /// Scroll offset when cache was built
+    scroll_offset: usize,
+    /// Terminal dimensions when cache was built
+    area_width: u16,
+    area_height: u16,
+}
+
 /// Terminal emulator that parses escape sequences and maintains screen state.
 pub struct Terminal {
     parser: vt100::Parser,
@@ -41,6 +54,10 @@ pub struct Terminal {
     history: VecDeque<HistoryLine>,
     /// Maximum history size
     max_history: usize,
+    /// Whether content has changed since last render (dirty flag)
+    dirty: bool,
+    /// Cached render output for incremental rendering
+    render_cache: Option<RenderCache>,
 }
 
 impl Terminal {
@@ -55,6 +72,8 @@ impl Terminal {
             scroll_offset: 0,
             history: VecDeque::new(),
             max_history: DEFAULT_HISTORY_SIZE,
+            dirty: true, // Start dirty to force initial render
+            render_cache: None,
         }
     }
 
@@ -112,7 +131,9 @@ impl Terminal {
         self.parser.process(data);
 
         // Reset scroll to bottom when new output arrives (show live terminal)
+        // Mark as dirty since content may have changed
         if !data.is_empty() {
+            self.dirty = true;
             self.scroll_offset = 0;
         }
     }
@@ -133,6 +154,7 @@ impl Terminal {
         let new_offset = (self.scroll_offset + lines).min(max_scroll);
         if new_offset != self.scroll_offset {
             self.scroll_offset = new_offset;
+            self.dirty = true;
             true
         } else {
             false
@@ -145,6 +167,7 @@ impl Terminal {
         let new_offset = self.scroll_offset.saturating_sub(lines);
         if new_offset != self.scroll_offset {
             self.scroll_offset = new_offset;
+            self.dirty = true;
             true
         } else {
             false
@@ -170,6 +193,9 @@ impl Terminal {
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.capture_screen_to_history();
         self.parser.set_size(rows, cols);
+        self.dirty = true;
+        // Invalidate cache since dimensions changed
+        self.render_cache = None;
     }
 
     /// Get the current size of the terminal as (rows, cols).
@@ -196,9 +222,21 @@ impl Terminal {
         self.parser.screen()
     }
 
-    /// Render the terminal contents to a ratatui frame in the given area.
-    /// Handles scroll offset to show scrollback history when scrolled up.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    /// Check if the cache is valid for the current render state.
+    fn is_cache_valid(&self, area: Rect) -> bool {
+        if let Some(cache) = &self.render_cache {
+            !self.dirty
+                && cache.scroll_offset == self.scroll_offset
+                && cache.area_width == area.width
+                && cache.area_height == area.height
+        } else {
+            false
+        }
+    }
+
+    /// Build the lines for rendering. This is the expensive operation that
+    /// iterates over all cells and creates Span objects.
+    fn build_lines(&self, area: Rect) -> Vec<Line<'static>> {
         let screen = self.parser.screen();
         let mut lines = Vec::with_capacity(area.height as usize);
 
@@ -285,13 +323,43 @@ impl Terminal {
             lines.push(Line::from(spans));
         }
 
+        lines
+    }
+
+    /// Render the terminal contents to a ratatui frame in the given area.
+    /// Handles scroll offset to show scrollback history when scrolled up.
+    ///
+    /// Uses dirty tracking to avoid rebuilding lines when content hasn't changed.
+    /// The cache is invalidated when:
+    /// - New output arrives (process() called with data)
+    /// - Scroll position changes
+    /// - Terminal is resized
+    /// - Area dimensions change
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        // Check if we can reuse cached lines
+        let lines = if self.is_cache_valid(area) {
+            // Reuse cached lines - just clone the Vec (Lines are already 'static)
+            self.render_cache.as_ref().unwrap().lines.clone()
+        } else {
+            // Rebuild lines and update cache
+            let lines = self.build_lines(area);
+            self.render_cache = Some(RenderCache {
+                lines: lines.clone(),
+                scroll_offset: self.scroll_offset,
+                area_width: area.width,
+                area_height: area.height,
+            });
+            self.dirty = false;
+            lines
+        };
+
         let paragraph = Paragraph::new(lines);
         frame.render_widget(paragraph, area);
     }
 
     /// Render the terminal and return the cursor position if visible.
     /// Returns the absolute position of the cursor on the frame.
-    pub fn render_with_cursor(&self, frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
+    pub fn render_with_cursor(&mut self, frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
         self.render(frame, area);
 
         let screen = self.parser.screen();
@@ -694,5 +762,163 @@ mod tests {
         // Verify that default_empty_style returns white foreground
         let style = super::default_empty_style();
         assert_eq!(style.fg, Some(Color::Indexed(255)));
+    }
+
+    // ========== Dirty Tracking Tests ==========
+
+    #[test]
+    fn test_terminal_starts_dirty() {
+        // A new terminal should start dirty to force initial render
+        let term = Terminal::new(24, 80);
+        assert!(term.dirty, "New terminal should start with dirty flag set");
+    }
+
+    #[test]
+    fn test_process_sets_dirty_flag() {
+        let mut term = Terminal::new(24, 80);
+        term.dirty = false; // Reset dirty flag
+
+        // Processing data should set dirty flag
+        term.process(b"Hello");
+        assert!(term.dirty, "Processing data should set dirty flag");
+    }
+
+    #[test]
+    fn test_process_empty_does_not_set_dirty() {
+        let mut term = Terminal::new(24, 80);
+        term.dirty = false; // Reset dirty flag
+
+        // Processing empty data should NOT set dirty flag
+        term.process(b"");
+        assert!(!term.dirty, "Processing empty data should not set dirty flag");
+    }
+
+    #[test]
+    fn test_scroll_up_sets_dirty() {
+        let mut term = Terminal::new(24, 80);
+        term.dirty = false;
+
+        // Add some content to make scrolling possible
+        for i in 0..30 {
+            term.process(format!("Line {}\r\n", i).as_bytes());
+        }
+        term.dirty = false; // Reset after processing
+
+        // Scrolling should set dirty
+        term.scroll_up(5);
+        assert!(term.dirty, "scroll_up should set dirty flag when scroll changes");
+    }
+
+    #[test]
+    fn test_scroll_down_sets_dirty() {
+        let mut term = Terminal::new(24, 80);
+
+        // Add content and scroll up first
+        for i in 0..30 {
+            term.process(format!("Line {}\r\n", i).as_bytes());
+        }
+        term.scroll_up(10);
+        term.dirty = false; // Reset
+
+        // Scrolling down should set dirty
+        term.scroll_down(3);
+        assert!(term.dirty, "scroll_down should set dirty flag when scroll changes");
+    }
+
+    #[test]
+    fn test_resize_sets_dirty_and_invalidates_cache() {
+        let mut term = Terminal::new(24, 80);
+        term.dirty = false;
+        term.render_cache = Some(RenderCache {
+            lines: vec![],
+            scroll_offset: 0,
+            area_width: 80,
+            area_height: 24,
+        });
+
+        term.resize(30, 100);
+        assert!(term.dirty, "Resize should set dirty flag");
+        assert!(term.render_cache.is_none(), "Resize should invalidate cache");
+    }
+
+    #[test]
+    fn test_cache_validity_check() {
+        let mut term = Terminal::new(24, 80);
+        term.dirty = false;
+        term.render_cache = Some(RenderCache {
+            lines: vec![],
+            scroll_offset: 0,
+            area_width: 50,
+            area_height: 20,
+        });
+
+        let area = Rect::new(0, 0, 50, 20);
+        assert!(term.is_cache_valid(area), "Cache should be valid when params match");
+
+        // Different width
+        let area_diff_width = Rect::new(0, 0, 60, 20);
+        assert!(!term.is_cache_valid(area_diff_width), "Cache should be invalid with different width");
+
+        // Different height
+        let area_diff_height = Rect::new(0, 0, 50, 25);
+        assert!(!term.is_cache_valid(area_diff_height), "Cache should be invalid with different height");
+
+        // Dirty flag set
+        term.dirty = true;
+        assert!(!term.is_cache_valid(area), "Cache should be invalid when dirty");
+    }
+
+    #[test]
+    fn test_render_clears_dirty_flag() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatatuiTerminal;
+
+        let mut term = Terminal::new(24, 80);
+        assert!(term.dirty, "Should start dirty");
+
+        let backend = TestBackend::new(50, 20);
+        let mut ratatui_term = RatatuiTerminal::new(backend).unwrap();
+
+        ratatui_term.draw(|frame| {
+            let area = Rect::new(0, 0, 50, 20);
+            term.render(frame, area);
+        }).unwrap();
+
+        assert!(!term.dirty, "Render should clear dirty flag");
+        assert!(term.render_cache.is_some(), "Render should populate cache");
+    }
+
+    #[test]
+    fn test_render_uses_cache_when_not_dirty() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal as RatatuiTerminal;
+
+        let mut term = Terminal::new(24, 80);
+        term.process(b"Test content");
+
+        let backend = TestBackend::new(50, 20);
+        let mut ratatui_term = RatatuiTerminal::new(backend).unwrap();
+
+        // First render - builds cache
+        ratatui_term.draw(|frame| {
+            let area = Rect::new(0, 0, 50, 20);
+            term.render(frame, area);
+        }).unwrap();
+
+        assert!(!term.dirty);
+        let cache_after_first = term.render_cache.clone();
+
+        // Second render - should use cache (dirty is false)
+        ratatui_term.draw(|frame| {
+            let area = Rect::new(0, 0, 50, 20);
+            term.render(frame, area);
+        }).unwrap();
+
+        // Cache should remain the same
+        assert!(!term.dirty);
+        assert_eq!(
+            cache_after_first.as_ref().unwrap().scroll_offset,
+            term.render_cache.as_ref().unwrap().scroll_offset
+        );
     }
 }

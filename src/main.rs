@@ -674,7 +674,7 @@ fn run_attached(
         }
 
         // Render the UI once after processing all available messages
-        ratatui_term.draw(|frame| render_daemon_app(frame, &app))?;
+        ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
 
         // Handle input events
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
@@ -1002,7 +1002,7 @@ pub const SIDEBAR_WIDTH: u16 = 28;
 pub const TERMINAL_H_PADDING: u16 = 1;
 
 /// Render the application UI with daemon-connected terminal emulator.
-fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
+fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     // Calculate hint bar height first
     let hint_bar = hint_bar_for_state(&app.app_state);
     let hint_bar_height = hint_bar.calculate_height(frame.area().width);
@@ -1029,7 +1029,7 @@ fn render_daemon_app(frame: &mut Frame, app: &DaemonApp) {
 
     // Render terminal at full area - padding is applied inside the border by render function
     let terminal_area = horizontal_chunks[1];
-    render_terminal_emulator_with_state(frame, terminal_area, &app.term_emulator, &app.app_state);
+    render_terminal_emulator_with_state(frame, terminal_area, &mut app.term_emulator, &app.app_state);
 
     // Render hint bar
     frame.render_widget(hint_bar, hint_bar_area);
@@ -1134,7 +1134,7 @@ fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppSta
 }
 
 /// Render the terminal emulator with focus-aware border colors.
-fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &Terminal, state: &AppState) {
+fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &mut Terminal, state: &AppState) {
     // During drafting mode, terminal pane should be blank and non-interactive
     let is_drafting = matches!(state.mode, AppMode::Drafting(_));
 

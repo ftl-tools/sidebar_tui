@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added Dirty Tracking for Incremental Rendering (Performance)
+
+Completed sidebar_tui-ced: Implemented dirty tracking to avoid rebuilding Line objects when terminal content hasn't changed. Changes: (1) Added `dirty: bool` flag to Terminal struct that tracks when content changes, (2) Added `RenderCache` struct to store previously rendered lines along with scroll offset and dimensions, (3) Modified `process()`, `scroll_up()`, `scroll_down()`, and `resize()` to set dirty flag appropriately, (4) Updated `render()` and `render_with_cursor()` to take `&mut self` and use cached Lines when not dirty, (5) Changed `render_daemon_app()` signature to take `&mut DaemonApp` to allow mutable terminal access, (6) Added 9 new unit tests for dirty tracking behavior. When terminal content hasn't changed between frames, the render function now returns cached Line objects instead of iterating over all cells. All 365 lib + 65 bin + 35 E2E + 2 scaffold tests pass. Binary reinstalled. Closed sidebar_tui-ced.
+
 ## 2026-02-16 - Comprehensive E2E Test Isolation Fixes
 
 Fixed remaining flaky E2E tests that failed when run in the full test suite. Root causes: (1) Tests using `spawn()` directly weren't calling `ensure_daemon_ready()`, (2) Session cleanup wasn't aggressive enough - leftover sessions from unit tests ("newer_session", "s1", "s2") and other E2E tests filled the sidebar causing parsing issues. Fixes: (1) Added `spawn_sb()` helper that wraps spawn with daemon readiness check, replaced 20+ direct spawn calls, (2) Updated `cleanup_test_sessions()` to kill ALL sessions instead of just pattern-matched ones, (3) Increased stabilization delay from 100ms to 200ms in `SbSession::new()`, (4) Increased wait times for tab focus test. Closed sidebar_tui-9t5 (quit confirmation test now passes as part of overall fix). All 356 lib + 65 bin + 35 E2E + 2 scaffold tests pass. Binary reinstalled.
