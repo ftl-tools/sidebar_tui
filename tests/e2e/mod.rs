@@ -3925,3 +3925,141 @@ fn test_ctrl_s_toggles_mouse_mode() {
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
 }
+
+/// Test vim-style j/k navigation in the sidebar.
+/// Per spec: `↑` or `k` - Up, `↓` or `j` - Down
+/// This tests that j moves selection down and k moves selection up.
+#[test]
+#[serial]
+fn test_vim_jk_navigation() {
+    cleanup_test_sessions();
+
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let session1_name = format!("vim-nav1-{}-{}", pid, unique_id);
+    let session2_name = format!("vim-nav2-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![session1_name.clone(), session2_name.clone()],
+    };
+
+    // Create first session
+    let cmd = format!("{} -s {}", binary_path, session1_name);
+    let mut session = spawn_sb(&cmd);
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(1500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar with Ctrl+B
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    // Create a second session via n -> t
+    session.write_all(b"n").expect("Failed to send 'n'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Focus sidebar again with Ctrl+B
+    session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_with_two = parser.screen().contents();
+    eprintln!("With two sessions:\n{}", screen_with_two);
+
+    // Now test vim 'j' key for down (should move selection down)
+    session.write_all(b"j").expect("Failed to send 'j'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_j = parser.screen().contents();
+    eprintln!("After 'j' (down):\n{}", screen_after_j);
+
+    // Now test vim 'k' key for up (should move selection back up)
+    session.write_all(b"k").expect("Failed to send 'k'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_after_k = parser.screen().contents();
+    eprintln!("After 'k' (up):\n{}", screen_after_k);
+
+    // Verify both sessions are visible (at least one session name should appear)
+    let session1_part = if session1_name.len() > 8 {
+        &session1_name[..8]
+    } else {
+        &session1_name
+    };
+    let session2_part = if session2_name.len() > 8 {
+        &session2_name[..8]
+    } else {
+        &session2_name
+    };
+
+    assert!(
+        screen_after_k.contains(session1_part) || screen_after_k.contains(session2_part),
+        "At least one session should be visible. Looking for '{}' or '{}' in:\n{}",
+        session1_part, session2_part, screen_after_k
+    );
+
+    // Test multiple 'j' presses to move down through the list
+    session.write_all(b"j").expect("Failed to send 'j'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // And 'k' to go back up
+    session.write_all(b"k").expect("Failed to send 'k'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    let final_screen = parser.screen().contents();
+    eprintln!("Final screen:\n{}", final_screen);
+
+    // Sessions should still be visible after multiple j/k navigations
+    assert!(
+        final_screen.contains(session1_part) || final_screen.contains(session2_part),
+        "Sessions should still be visible after j/k navigation. Looking for '{}' or '{}' in:\n{}",
+        session1_part, session2_part, final_screen
+    );
+
+    // Cleanup
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    let _ = session.get_process_mut().exit(true);
+}

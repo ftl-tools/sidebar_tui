@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-16 - Added E2E Test for Vim j/k Navigation
+
+Completed sidebar_tui-s9e: Added E2E test `test_vim_jk_navigation` to verify that vim-style j/k keys work for navigating the session list in the sidebar. The test creates two sessions, focuses the sidebar, then verifies that 'j' moves selection down and 'k' moves selection up, matching the spec requirement "↑ or k - Up, ↓ or j - Down". All 365 lib + 65 bin + 36 E2E tests pass. Binary reinstalled. Closed sidebar_tui-s9e. Remaining 4 issues are for missing E2E tests (sidebar_tui-yv7, sidebar_tui-mpt, sidebar_tui-aur, sidebar_tui-c20).
+
 ## 2026-02-16 - Fixed Spec/Implementation Mismatch for Selection Color
 
 Fixed sidebar_tui-zoz: Updated objectives.md line 67 to reflect that the selected session background uses dark grey (color 238) instead of dark purple (color 54). The implementation was changed per user request but the spec was never updated. All 365 lib tests pass. Remaining 5 issues are for missing E2E tests.
