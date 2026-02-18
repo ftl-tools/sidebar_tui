@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::io::Write as IoWrite;
 use std::os::unix::net::UnixStream;
@@ -336,6 +337,8 @@ struct DaemonApp {
     session_name: String,
     /// Application UI state (focus, mode, sessions list)
     app_state: AppState,
+    /// Per-session terminal scroll offsets (saved when switching away, restored when switching back)
+    session_scroll_offsets: HashMap<String, usize>,
     /// Last time a scroll action was performed (for throttling)
     last_scroll_time: std::time::Instant,
     /// Last time any scroll event was received (for velocity calculation)
@@ -355,6 +358,7 @@ impl DaemonApp {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
             app_state,
+            session_scroll_offsets: HashMap::new(),
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
@@ -368,6 +372,7 @@ impl DaemonApp {
             term_emulator: Terminal::new(rows, cols),
             session_name: String::new(),
             app_state,
+            session_scroll_offsets: HashMap::new(),
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
@@ -919,6 +924,14 @@ fn run_attached(
                         EventResult::SwitchSession { name } => {
                             // Only switch if it's a different session
                             if name != app.session_name {
+                                // Save scroll position for current session before switching
+                                let current_scroll = app.term_emulator.get_scroll_offset();
+                                if current_scroll > 0 {
+                                    app.session_scroll_offsets.insert(app.session_name.clone(), current_scroll);
+                                } else {
+                                    app.session_scroll_offsets.remove(&app.session_name);
+                                }
+
                                 // Drain any pending async messages before sync operation
                                 drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
@@ -935,10 +948,14 @@ fn run_attached(
 
                                 match switch_response {
                                     DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } => {
-                                        app.session_name = attached_name;
+                                        app.session_name = attached_name.clone();
                                         app.term_emulator = Terminal::new(term_rows, term_cols);
                                         if let Some(state_bytes) = new_state {
                                             app.process_output(&state_bytes);
+                                        }
+                                        // Restore scroll position for the newly attached session
+                                        if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                            app.term_emulator.scroll_up(saved_offset);
                                         }
                                     }
                                     DaemonResponse::Error { message } => {
@@ -1048,6 +1065,14 @@ fn run_attached(
                                         app.app_state.selected_index = 0;
                                     }
 
+                                    // Save scroll position for current session before switching workspace
+                                    let current_scroll = app.term_emulator.get_scroll_offset();
+                                    if current_scroll > 0 {
+                                        app.session_scroll_offsets.insert(app.session_name.clone(), current_scroll);
+                                    } else {
+                                        app.session_scroll_offsets.remove(&app.session_name);
+                                    }
+
                                     // If current session is not in new workspace, switch to last selected or first available
                                     let target_session = last_selected_session
                                         .filter(|name| app.app_state.sessions.iter().any(|s| &s.name == name))
@@ -1061,10 +1086,14 @@ fn run_attached(
                                                 cwd: cwd.clone(),
                                             }, &mut app)?;
                                             if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
-                                                app.session_name = attached_name;
+                                                app.session_name = attached_name.clone();
                                                 app.term_emulator = Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
+                                                }
+                                                // Restore scroll position for the newly attached session
+                                                if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                                    app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
                                         } else {

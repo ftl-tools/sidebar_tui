@@ -504,6 +504,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     KeybindingInfo::new("enter", "Move here"),
                     KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                     KeybindingInfo::new("esc", "Cancel"),
+                    KeybindingInfo::new("q", "Quit"),
                 ]
             } else {
                 vec![
@@ -1323,6 +1324,33 @@ mod tests {
 
         let quit_path = get_quit_path_for_state(&state);
         assert_eq!(quit_path, "q Quit", "Workspace overlay quit path should be 'q Quit'");
+    }
+
+    #[test]
+    fn test_get_bindings_workspace_overlay_move_mode_includes_q_quit() {
+        use crate::state::WorkspaceOverlayState;
+        let state = AppState {
+            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new_move_mode(
+                vec!["Default".to_string()],
+                "Default".to_string(),
+                "mysession".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+        assert!(
+            bindings.iter().any(|b| b.key == "q" && b.description == "Quit"),
+            "Workspace overlay move mode bindings should include 'q' for Quit"
+        );
+        assert!(
+            bindings.iter().any(|b| b.key == "enter" && b.description == "Move here"),
+            "Workspace overlay move mode bindings should include 'enter' for Move here"
+        );
+        assert!(
+            bindings.iter().any(|b| b.key == "esc" && b.description == "Cancel"),
+            "Workspace overlay move mode bindings should include 'esc' for Cancel"
+        );
     }
 
 }

@@ -78,6 +78,11 @@ impl Terminal {
         self.parser.screen().scrollback()
     }
 
+    /// Get the current scroll offset (lines scrolled back from the bottom).
+    pub fn get_scroll_offset(&self) -> usize {
+        self.scroll_offset()
+    }
+
     /// Scroll up (back in history) by the given number of lines.
     /// Returns true if scroll position changed.
     pub fn scroll_up(&mut self, lines: usize) -> bool {
