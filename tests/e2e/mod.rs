@@ -401,15 +401,15 @@ fn test_layout_matches_spec() {
         );
     }
 
-    // Verify the title text has purple foreground color (ANSI 165)
+    // Verify the title text has purple foreground color (ANSI 55)
     // Note: vt100 uses different color representations
     // Title starts at row 1, column 2 (after border + padding)
     if let Some(title_cell) = session.cell_at(1, 2) {
         let fg_color = title_cell.fgcolor();
-        // Purple is ANSI index 165
+        // Purple is ANSI index 55
         assert!(
-            matches!(fg_color, vt100::Color::Idx(165)),
-            "Title should have purple foreground (165), got: {:?}",
+            matches!(fg_color, vt100::Color::Idx(55)),
+            "Title should have purple foreground (55), got: {:?}",
             fg_color
         );
     }

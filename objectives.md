@@ -73,7 +73,7 @@ Key properties of workspaces:
 
 - The Sidebar pane should be a fixed width following the design above.
 - There should be one char of padding on the left and right between the session names and the sidebar border.
-- The top row should show the current workspace name in purple text (color 165). It should be left aligned. If the workspace name is too long to fit, it should be truncated with `...` at the end.
+- The top row should show the current workspace name in purple text (color 55). It should be left aligned. If the workspace name is too long to fit, it should be truncated with `...` at the end.
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).
 - If a session name is too long to fit in the sidebar it should be wrapped with `│`(s) and `└` characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
@@ -141,7 +141,7 @@ Key properties of workspaces:
 - The whole bottom row(s) of the TUI should be a hint bar.
 - The background of the hint bar should be dark grey (color 238).
 - The hint bar should almost always show the currently available keybindings and actions given the current context.
-  - The text in the hint bar should be formatted like the example above, with the keybinding in purple (color 165), the description in white (color 255), and two spaces separating each keybinding from the next. The keybindings and descriptions should be left aligned.
+  - The text in the hint bar should be formatted like the example above, with the keybinding in purple (color 55), the description in white (color 255), and two spaces separating each keybinding from the next. The keybindings and descriptions should be left aligned.
   - If the available keybindings are too long to fit on one line they should wrap to multiple lines. The hint bar should grow vertically as needed to accomidate this. A keybinding and its description should never be split across lines.
 - The right side of the hint bar should always show the path to quitting the TUI. For example if the terminal pane is focused it should show `mod + b -> q Quit`, because the user must focus on the sidebar pane and then press `q` to quit. Or, if renaming a new session it should show `esc -> q Quit` because the user must stop renaming and then press `q` to quit. This should update dynamically based on the current state of the TUI to always show the correct path to quitting. There should be a separator of `│` colored gray (color 242) just before the quit instructions to separate it from the rest of the hint bar content.
 - Sometimes the hint bar might need to show a prompt message along with the keybindings for that prompt. This prompt message should be on the left before any of the keybindings. It should wrap like the keybindings if it's too long to fit on one line, and its text should be colored white (color 255). Generally if we say we want to show a prompt of some sort that should get shown here.
@@ -151,7 +151,7 @@ Key properties of workspaces:
 
 #### First-time Start Up
 
-On the very first launch (no workspaces or sessions exist), a workspace named "Default" is automatically created and made active. The terminal pane should be blank and the sidebar pane should be focused. There should be some text in the sidebar pane that says something like "Welcome to Sidebar TUI press `n` to create your first terminal session!" This text should be colored grey (color 238) and should be centered in the sidebar pane. The keybinding in this text should be colored purple (color 165), and should change dynamically if the user changes focus to the empty terminal pane before creating their first session.
+On the very first launch (no workspaces or sessions exist), a workspace named "Default" is automatically created and made active. The terminal pane should be blank and the sidebar pane should be focused. There should be some text in the sidebar pane that says something like "Welcome to Sidebar TUI press `n` to create your first terminal session!" This text should be colored grey (color 238) and should be centered in the sidebar pane. The keybinding in this text should be colored purple (color 55), and should change dynamically if the user changes focus to the empty terminal pane before creating their first session.
 
 #### Workspace Overlay
 
@@ -160,7 +160,7 @@ The workspace overlay is a full-screen layer that appears on top of the normal T
 **Layout:**
 
 The overlay covers the entire terminal window. It shows:
-- A title row at the top: "Workspaces" in purple text (color 165), left aligned.
+- A title row at the top: "Workspaces" in purple text (color 55), left aligned.
 - A list of all workspaces below the title, one per row, in white (color 255). The currently active workspace is marked with a `*` indicator to the left of its name.
 - The selected/highlighted workspace row has a dark grey background (color 238), same as selected sessions in the sidebar.
 - If the list is too long to fit, truncation indicators (`...`) appear at the top and/or bottom, same as in the sidebar session list.

@@ -5,8 +5,8 @@
 
 use ratatui::style::Color;
 
-/// Purple (ANSI 165) - Used for title text, keybindings in hint bar.
-pub const PURPLE: Color = Color::Indexed(165);
+/// Purple (ANSI 55) - Used for title text, keybindings in hint bar.
+pub const PURPLE: Color = Color::Indexed(55);
 
 /// White (ANSI 255) - Used for session names, terminal text.
 pub const WHITE: Color = Color::Indexed(255);
@@ -34,9 +34,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_purple_is_indexed_165() {
+    fn test_purple_is_indexed_55() {
         match PURPLE {
-            Color::Indexed(n) => assert_eq!(n, 165),
+            Color::Indexed(n) => assert_eq!(n, 55),
             _ => panic!("PURPLE should be Color::Indexed"),
         }
     }
