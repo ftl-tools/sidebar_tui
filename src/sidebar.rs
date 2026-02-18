@@ -539,7 +539,7 @@ mod tests {
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         // Top-left corner
         let cell = &buf[(0, 0)];
-        assert_eq!(cell.fg, FOCUSED_BORDER, "Focused border should be color 250");
+        assert_eq!(cell.fg, FOCUSED_BORDER, "Focused border should be color 55 (purple)");
     }
 
     #[test]

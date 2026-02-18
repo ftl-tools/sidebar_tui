@@ -21,9 +21,9 @@ pub const DARK_PURPLE: Color = Color::Indexed(54);
 /// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
 pub const DARK_RED: Color = Color::Indexed(88);
 
-/// Focused border (ANSI 250) - Used for focused pane outlines.
-/// Slightly dimmer than WHITE to reduce visual intensity.
-pub const FOCUSED_BORDER: Color = Color::Indexed(250);
+/// Focused border (ANSI 55) - Used for focused pane outlines.
+/// Purple to visually distinguish the active pane.
+pub const FOCUSED_BORDER: Color = Color::Indexed(55);
 
 /// Separator (ANSI 242) - Used for the separator in the hint bar.
 /// More gray than white for visual distinction.
@@ -74,9 +74,9 @@ mod tests {
     }
 
     #[test]
-    fn test_focused_border_is_indexed_250() {
+    fn test_focused_border_is_indexed_55() {
         match FOCUSED_BORDER {
-            Color::Indexed(n) => assert_eq!(n, 250),
+            Color::Indexed(n) => assert_eq!(n, 55),
             _ => panic!("FOCUSED_BORDER should be Color::Indexed"),
         }
     }
@@ -91,7 +91,8 @@ mod tests {
 
     #[test]
     fn test_all_colors_are_distinct() {
-        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, FOCUSED_BORDER, SEPARATOR];
+        // FOCUSED_BORDER == PURPLE (both are ANSI 55) so excluded from this check
+        let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, SEPARATOR];
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
                 assert_ne!(

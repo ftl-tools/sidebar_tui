@@ -81,7 +81,7 @@ Key properties of workspaces:
 - If there are more sessions than can fit in the sidebar, show a truncation indicator (`...`) at the top and or bottom of the list if extra entries are beyond the visible area.
 - If it exists, the top truncation indicator should go directly below the title.
 - The truncation indicator should be colored slightly darker (color 238) than the session names.
-- When the sidebar is focused it's outline should be lighter (color 250) and when it's not focused it should be darker (color 238).
+- When the sidebar is focused it's outline should be purple (color 55) and when it's not focused it should be darker (color 238).
 - The following keybindings should work when the sidebar pane is focused:
   - `enter`, `space`, `→`, `b`, `mod + b`, or `mod + t` - Select: Focus on the terminal pane.
   - `↑` or `k` - Up: Move the selection up one session in the list. If the next row above is the truncation indicator scroll up one and move the selection. If already at the top, do nothing.
@@ -107,7 +107,7 @@ Key properties of workspaces:
 - It should show the selected terminal session. This should be a fully functional terminal where I can run commands and see their output. Or even run command line applications like vi.
 - There should be one char of padding on the left and right of the terminal pane between the terminal content and the border.
 - The terminal text should be white (color 255).
-- When the terminal is focused it should have a lighter outline (color 250) and when it's not focused it should have a darker outline (color 238).
+- When the terminal is focused it should have a purple outline (color 55) and when it's not focused it should have a darker outline (color 238).
 - Mouse scrolling when the Sidebar TUI is openned at all, regardless of focus should scroll the terminal pane's visible history. NOTE: This only works when mouse mode is enabled (see `mod + s` below).
 - By default, mouse mode is disabled to allow native terminal text selection (for copying text). Use `mod + s` to toggle between text selection mode and mouse scroll mode.
 - When quitting the Sidebar TUI, restarting the computer, and reopening the Sidebar TUI, the terminal sessions should be restored to their previous state as best we can, with comand history, working directory, scrollable visible history, env vars, and anything else we can manage to save and restore.

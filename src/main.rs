@@ -1740,7 +1740,7 @@ mod tests {
             corner.symbol()
         );
 
-        // Check border color - sidebar is focused by default, so should be FOCUSED_BORDER (250)
+        // Check border color - sidebar is focused by default, so should be FOCUSED_BORDER (55, purple)
         assert_eq!(
             corner.fg,
             colors::FOCUSED_BORDER,
@@ -2342,13 +2342,13 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be FOCUSED_BORDER (250) when focused (starts right after sidebar)
+        // Terminal border should be FOCUSED_BORDER (55, purple) when focused (starts right after sidebar)
         let term_start_x = SIDEBAR_WIDTH;
         let corner = &buffer[(term_start_x, 0)];
         assert_eq!(
             corner.fg,
             colors::FOCUSED_BORDER,
-            "Terminal border should be color 250 when focused, got: {:?}",
+            "Terminal border should be color 55 (purple) when focused, got: {:?}",
             corner.fg
         );
 
@@ -2430,12 +2430,12 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Sidebar border should be FOCUSED_BORDER (250) during drafting (focused)
+        // Sidebar border should be FOCUSED_BORDER (55, purple) during drafting (focused)
         let sidebar_corner = &buffer[(0, 0)];
         assert_eq!(
             sidebar_corner.fg,
             colors::FOCUSED_BORDER,
-            "Sidebar border should be color 250 during drafting, got: {:?}",
+            "Sidebar border should be color 55 (purple) during drafting, got: {:?}",
             sidebar_corner.fg
         );
     }
