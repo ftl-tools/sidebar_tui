@@ -1531,14 +1531,13 @@ fn process_message(
             DaemonResponse::Output { data: vec![] }
         }
         ClientMessage::Resize { rows, cols } => {
-            if let Some(session_name) = current_session {
-                let mut sessions_guard = sessions.lock().unwrap();
-                if let Some(session) = sessions_guard.get_mut(session_name) {
-                    if let Err(e) = session.resize(rows, cols) {
-                        return DaemonResponse::Error {
-                            message: format!("Failed to resize: {}", e),
-                        };
-                    }
+            let mut sessions_guard = sessions.lock().unwrap();
+            for session in sessions_guard.values_mut() {
+                if let Err(e) = session.resize(rows, cols) {
+                    let name = session.name.clone();
+                    return DaemonResponse::Error {
+                        message: format!("Failed to resize session '{}': {}", name, e),
+                    };
                 }
             }
             DaemonResponse::Output { data: vec![] }
@@ -3037,6 +3036,37 @@ mod tests {
         let session = sessions.get("test").unwrap();
         assert_eq!(session.rows, 30);
         assert_eq!(session.cols, 100);
+    }
+
+    #[test]
+    fn test_process_resize_updates_all_sessions() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = Some("session1".to_string());
+
+        // Create two sessions
+        {
+            let mut sessions = sessions.lock().unwrap();
+            sessions.insert("session1".to_string(), Session::new("session1".to_string(), 24, 80, None).unwrap());
+            sessions.insert("session2".to_string(), Session::new("session2".to_string(), 24, 80, None).unwrap());
+        }
+
+        let msg = ClientMessage::Resize { rows: 30, cols: 100 };
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
+
+        match response {
+            DaemonResponse::Output { .. } => {}
+            _ => panic!("Expected Output response"),
+        }
+
+        // Verify BOTH sessions were resized, not just the current one
+        let sessions = sessions.lock().unwrap();
+        let s1 = sessions.get("session1").unwrap();
+        assert_eq!(s1.rows, 30, "session1 should be resized");
+        assert_eq!(s1.cols, 100, "session1 should be resized");
+        let s2 = sessions.get("session2").unwrap();
+        assert_eq!(s2.rows, 30, "session2 (background) should also be resized");
+        assert_eq!(s2.cols, 100, "session2 (background) should also be resized");
     }
 
     #[test]

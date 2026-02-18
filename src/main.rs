@@ -263,10 +263,9 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
-    // Initialize TUI with mouse capture enabled for scroll wheel support.
-    // Users can disable with Ctrl+M if they need native text selection.
+    // Initialize TUI without mouse capture so native text selection works by default.
+    // Users can enable mouse scroll mode with Ctrl+S.
     let mut ratatui_term = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
 
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
 
@@ -611,9 +610,9 @@ fn run_attached(
     // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
     let size = ratatui_term.size()?;
     // Subtract sidebar width, 2*h_padding (left + right), and 2 for terminal border (left + right)
-    let term_cols = size.width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+    let mut term_cols = size.width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
     // Subtract 2 for terminal border (top + bottom), and hint bar height (1)
-    let term_rows = size.height.saturating_sub(3);
+    let mut term_rows = size.height.saturating_sub(3);
 
     // Get current working directory
     let cwd = env::current_dir().ok();
@@ -858,6 +857,9 @@ fn run_attached(
 
                             match kill_response {
                                 DaemonResponse::Killed { .. } => {
+                                    // Remove scroll offset for the deleted session
+                                    app.session_scroll_offsets.remove(&name);
+
                                     // If we deleted the current session, switch to another
                                     if app.session_name == name {
                                         if let Some(session) = app.app_state.sessions.first() {
@@ -870,10 +872,14 @@ fn run_attached(
                                             }, &mut app)?;
 
                                             if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
-                                                app.session_name = attached_name;
+                                                app.session_name = attached_name.clone();
                                                 app.term_emulator = Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
+                                                }
+                                                // Restore scroll position for the newly attached session
+                                                if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                                    app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
                                         } else {
@@ -903,6 +909,10 @@ fn run_attached(
 
                             match rename_response {
                                 DaemonResponse::Renamed { .. } => {
+                                    // Update scroll offset HashMap key for renamed session
+                                    if let Some(offset) = app.session_scroll_offsets.remove(&old_name) {
+                                        app.session_scroll_offsets.insert(new_name.clone(), offset);
+                                    }
                                     // Update current session name if it was renamed
                                     if app.session_name == old_name {
                                         app.session_name = new_name;
@@ -1251,9 +1261,9 @@ fn run_attached(
                     if (width, height) != last_size {
                         last_size = (width, height);
                         // Account for sidebar, horizontal padding (left + right), and terminal border
-                        let term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+                        term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
                         // Account for terminal border (top + bottom), and hint bar height (1)
-                        let term_rows = height.saturating_sub(3);
+                        term_rows = height.saturating_sub(3);
                         app.resize(term_rows, term_cols);
 
                         // Send resize to daemon
