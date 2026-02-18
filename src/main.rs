@@ -22,7 +22,7 @@ use sidebar_tui::daemon::{
     ensure_runtime_dir, decode_message, encode_message,
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
-use sidebar_tui::input::key_to_bytes;
+use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
 use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode, WorkspaceOverlayState};
 use sidebar_tui::terminal::Terminal;
@@ -1339,78 +1339,74 @@ fn run_attached(
                     }
                 }
                 Event::Mouse(mouse_event) => {
-                    // Handle mouse scroll wheel events - scroll through terminal history
-                    // Works regardless of focus per spec, but only in Normal mode
-                    // Per spec: "Mouse scrolling when the Sidebar TUI is opened at all,
-                    // regardless of focus should scroll the terminal pane's visible history."
+                    // Handle mouse scroll wheel events.
+                    // Per spec: scrolling works regardless of focus when mouse mode is enabled.
                     //
-                    // Velocity-based scrolling for trackpads:
-                    // - Fast gestures (events <15ms apart) = more lines per action
-                    // - Slow gestures (events >15ms apart) = fewer lines per action
-                    // This lets users control scroll speed with gesture speed.
+                    // Behavior depends on whether a full-screen app is running:
+                    // - Normal terminal (shell prompt, etc.): scroll through TUI history
+                    // - Full-screen app (vim, less, htop via alt screen): forward to PTY
                     if matches!(app.app_state.mode, AppMode::Normal)
                         && !app.session_name.is_empty()
                     {
-                        let now = std::time::Instant::now();
-                        let since_last_action = now.duration_since(app.last_scroll_time).as_millis();
-                        let since_last_event = now.duration_since(app.last_scroll_event_time).as_millis();
-
                         match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                // Track event timing for velocity
-                                let is_fast = since_last_event < SCROLL_FAST_THRESHOLD_MS;
-                                app.last_scroll_event_time = now;
+                                let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp);
 
-                                if is_fast {
-                                    app.scroll_event_count += 1;
+                                if app.term_emulator.is_alt_screen() {
+                                    // Full-screen app running — forward scroll to PTY as ANSI
+                                    let bytes = encode_mouse_scroll(scroll_up, mouse_event.column + 1, mouse_event.row + 1);
+                                    let input_msg = ClientMessage::Input { data: bytes };
+                                    let encoded = encode_message(&input_msg)?;
+                                    stream.write_all(&encoded)?;
+                                    stream.flush()?;
                                 } else {
-                                    app.scroll_event_count = 1; // Reset for slow/new gesture
-                                }
+                                    // Normal terminal — scroll TUI history with velocity throttling
+                                    let now = std::time::Instant::now();
+                                    let since_last_action = now.duration_since(app.last_scroll_time).as_millis();
+                                    let since_last_event = now.duration_since(app.last_scroll_event_time).as_millis();
 
-                                // Only act every SCROLL_THROTTLE_MS
-                                if since_last_action >= SCROLL_THROTTLE_MS {
-                                    // Calculate scroll amount based on accumulated velocity
-                                    // More events accumulated = faster gesture = more lines
-                                    // Scales in blocks of 5 events, caps at 6 lines
-                                    let scroll_lines = match app.scroll_event_count {
-                                        0..=5 => 1,    // Slow: 1 line
-                                        6..=10 => 2,   // Medium: 2 lines
-                                        11..=15 => 3,  // Fast: 3 lines
-                                        16..=20 => 4,  // Faster: 4 lines
-                                        21..=25 => 5,  // Very fast: 5 lines
-                                        _ => 6,        // Maximum: 6 lines
-                                    };
+                                    let is_fast = since_last_event < SCROLL_FAST_THRESHOLD_MS;
+                                    app.last_scroll_event_time = now;
 
-                                    // Drain queued events and determine direction
-                                    let mut up_count: i32 = 0;
-                                    let mut down_count: i32 = 0;
-
-                                    if matches!(mouse_event.kind, MouseEventKind::ScrollUp) {
-                                        up_count += 1;
+                                    if is_fast {
+                                        app.scroll_event_count += 1;
                                     } else {
-                                        down_count += 1;
+                                        app.scroll_event_count = 1;
                                     }
 
-                                    while event::poll(Duration::from_millis(0))? {
-                                        match event::read()? {
-                                            Event::Mouse(m) => match m.kind {
-                                                MouseEventKind::ScrollUp => up_count += 1,
-                                                MouseEventKind::ScrollDown => down_count += 1,
+                                    if since_last_action >= SCROLL_THROTTLE_MS {
+                                        let scroll_lines = match app.scroll_event_count {
+                                            0..=5 => 1,
+                                            6..=10 => 2,
+                                            11..=15 => 3,
+                                            16..=20 => 4,
+                                            21..=25 => 5,
+                                            _ => 6,
+                                        };
+
+                                        let mut up_count: i32 = if scroll_up { 1 } else { 0 };
+                                        let mut down_count: i32 = if scroll_up { 0 } else { 1 };
+
+                                        while event::poll(Duration::from_millis(0))? {
+                                            match event::read()? {
+                                                Event::Mouse(m) => match m.kind {
+                                                    MouseEventKind::ScrollUp => up_count += 1,
+                                                    MouseEventKind::ScrollDown => down_count += 1,
+                                                    _ => break,
+                                                },
                                                 _ => break,
-                                            },
-                                            _ => break,
+                                            }
                                         }
-                                    }
 
-                                    // Apply scroll in dominant direction
-                                    if up_count > down_count {
-                                        app.term_emulator.scroll_up(scroll_lines);
-                                    } else if down_count > up_count {
-                                        app.term_emulator.scroll_down(scroll_lines);
-                                    }
+                                        if up_count > down_count {
+                                            app.term_emulator.scroll_up(scroll_lines);
+                                        } else if down_count > up_count {
+                                            app.term_emulator.scroll_down(scroll_lines);
+                                        }
 
-                                    app.last_scroll_time = now;
-                                    app.scroll_event_count = 0; // Reset after action
+                                        app.last_scroll_time = now;
+                                        app.scroll_event_count = 0;
+                                    }
                                 }
                             }
                             _ => {}

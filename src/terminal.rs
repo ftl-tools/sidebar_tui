@@ -60,16 +60,12 @@ impl Terminal {
     }
 
     /// Process raw terminal output (escape sequences, text, etc).
-    /// Resets scroll offset to show live output when new data arrives.
+    /// Scroll position is preserved when new output arrives — users can stay scrolled
+    /// in history while the terminal continues running. Use reset_scroll() to jump to live.
     pub fn process(&mut self, data: &[u8]) {
         self.parser.process(data);
-
-        // Reset scroll to bottom when new output arrives (show live terminal)
-        // Mark as dirty since content may have changed
         if !data.is_empty() {
             self.dirty = true;
-            // Reset scrollback to show live terminal
-            self.parser.set_scrollback(0);
         }
     }
 
@@ -120,9 +116,15 @@ impl Terminal {
     }
 
     /// Reset scroll to show live terminal output.
-    #[allow(dead_code)]
     pub fn reset_scroll(&mut self) {
         self.parser.set_scrollback(0);
+        self.dirty = true;
+    }
+
+    /// Returns true if the terminal is currently in alternate screen mode.
+    /// Alternate screen is used by full-screen apps like vim, less, and htop.
+    pub fn is_alt_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
     }
 
     /// Resize the terminal to new dimensions.
@@ -535,7 +537,9 @@ mod tests {
     }
 
     #[test]
-    fn test_process_resets_scroll_offset() {
+    fn test_process_preserves_scroll_offset() {
+        // Scroll position is preserved when new output arrives so users can stay
+        // scrolled in history while the terminal continues running.
         let mut term = Terminal::new(5, 20);
 
         // Generate scrollback content
@@ -545,11 +549,41 @@ mod tests {
 
         // Scroll up
         term.scroll_up(5);
-        assert!(term.scroll_offset() > 0);
+        let offset_before = term.scroll_offset();
+        assert!(offset_before > 0);
 
-        // New output should reset scroll to bottom
+        // New output should NOT reset scroll (user stays in history view)
         term.process(b"new data");
+        assert!(term.scroll_offset() > 0, "scroll position should be preserved when new output arrives");
+    }
+
+    #[test]
+    fn test_reset_scroll_goes_to_bottom() {
+        let mut term = Terminal::new(5, 20);
+        for i in 0..30 {
+            term.process(format!("Line {}\r\n", i).as_bytes());
+        }
+        term.scroll_up(5);
+        assert!(term.scroll_offset() > 0);
+        term.reset_scroll();
         assert_eq!(term.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_is_alt_screen_false_by_default() {
+        let term = Terminal::new(24, 80);
+        assert!(!term.is_alt_screen(), "terminal should not be in alt screen by default");
+    }
+
+    #[test]
+    fn test_is_alt_screen_true_when_alt_screen_entered() {
+        let mut term = Terminal::new(24, 80);
+        // Enter alternate screen via escape sequence
+        term.process(b"\x1b[?1049h");
+        assert!(term.is_alt_screen(), "terminal should be in alt screen after \\e[?1049h");
+        // Exit alternate screen
+        term.process(b"\x1b[?1049l");
+        assert!(!term.is_alt_screen(), "terminal should exit alt screen after \\e[?1049l");
     }
 
     #[test]
