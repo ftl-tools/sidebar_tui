@@ -351,8 +351,6 @@ impl DaemonApp {
         if !app_state.sessions.is_empty() {
             app_state.focus = Focus::Terminal;
         }
-        // Mouse mode enabled by default for scroll wheel support
-        app_state.mouse_mode = true;
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
@@ -365,9 +363,7 @@ impl DaemonApp {
 
     /// Create app in welcome state (no sessions, sidebar focused).
     fn new_welcome_state(rows: u16, cols: u16) -> Self {
-        let mut app_state = AppState::default();
-        // Mouse mode enabled by default for scroll wheel support
-        app_state.mouse_mode = true;
+        let app_state = AppState::default();
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: String::new(),

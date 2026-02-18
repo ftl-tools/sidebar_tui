@@ -3993,17 +3993,17 @@ fn test_ctrl_s_toggles_mouse_mode() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    // Check initial state - mouse_mode defaults to true, so hint bar shows "Mouse scroll"
+    // Check initial state - mouse_mode defaults to false (text selection mode), so hint bar shows "Text select"
     let screen_contents = parser.screen().contents();
     eprintln!("Initial state:\n{}", screen_contents);
 
     assert!(
-        screen_contents.contains("Mouse scroll"),
-        "Initial state should show 'Mouse scroll' (mouse_mode defaults to true). Got:\n{}",
+        screen_contents.contains("Text select"),
+        "Initial state should show 'Text select' (mouse_mode defaults to false per spec). Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S (ASCII 19) to toggle mouse mode off
+    // Send Ctrl+S (ASCII 19) to toggle mouse mode on
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -4012,14 +4012,14 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After first Ctrl+S:\n{}", screen_contents);
 
-    // Should now show "Text select"
+    // Should now show "Mouse scroll"
     assert!(
-        screen_contents.contains("Text select"),
-        "After toggle, should show 'Text select'. Got:\n{}",
+        screen_contents.contains("Mouse scroll"),
+        "After toggle, should show 'Mouse scroll'. Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S again to toggle back on
+    // Send Ctrl+S again to toggle back off
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -4028,10 +4028,10 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After second Ctrl+S:\n{}", screen_contents);
 
-    // Should be back to "Mouse scroll"
+    // Should be back to "Text select"
     assert!(
-        screen_contents.contains("Mouse scroll"),
-        "After second toggle, should show 'Mouse scroll'. Got:\n{}",
+        screen_contents.contains("Text select"),
+        "After second toggle, should show 'Text select'. Got:\n{}",
         screen_contents
     );
 
@@ -6133,4 +6133,316 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     let _ = session.get_process_mut().exit(true);
+}
+
+/// Test that ctrl+t from the terminal pane focuses the sidebar.
+/// Per spec line 115: "mod + b or mod + t - Focus on sidebar: Focus on the sidebar pane."
+#[test]
+fn test_ctrl_t_from_terminal_focuses_sidebar() {
+    let _timer = TestTimer::new("test_ctrl_t_from_terminal_focuses_sidebar");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to initialize with session (terminal should be focused)
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_contents = session.screen_contents();
+    eprintln!("Initial (terminal focused):\n{}", screen_contents);
+
+    // Verify terminal is focused initially (lighter terminal border, darker sidebar border)
+    // The terminal pane is focused when sidebar border is dimmer (color 238)
+    let height = session.parser.screen().size().0;
+
+    // Sidebar border is at column 27 (the right border of the 28-char-wide sidebar)
+    // When terminal is focused, sidebar border should be darker (color 238)
+    let sidebar_border_col = 27u16;
+    let sidebar_border_focused = (0..height).any(|row| {
+        if let Some(cell) = session.parser.screen().cell(row, sidebar_border_col) {
+            matches!(cell.fgcolor(), vt100::Color::Idx(238))
+        } else {
+            false
+        }
+    });
+
+    // Terminal border is at column 28 (left border of terminal pane)
+    let terminal_border_col = 28u16;
+    let terminal_border_focused = (0..height).any(|row| {
+        if let Some(cell) = session.parser.screen().cell(row, terminal_border_col) {
+            matches!(cell.fgcolor(), vt100::Color::Idx(250))
+        } else {
+            false
+        }
+    });
+
+    eprintln!("Sidebar border darker: {}, Terminal border lighter: {}", sidebar_border_focused, terminal_border_focused);
+
+    // Hint bar shows ctrl+b when terminal is focused
+    let has_ctrl_b_hint = screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
+    assert!(
+        has_ctrl_b_hint,
+        "When terminal is focused, hint bar should show ctrl+b binding. Got:\n{}",
+        screen_contents
+    );
+
+    // Send Ctrl+T (ASCII 20) from terminal pane to focus sidebar
+    session.session.write_all(&[20]).expect("Failed to send Ctrl+T");
+    session.session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_contents = session.screen_contents();
+    eprintln!("After Ctrl+T (sidebar should be focused):\n{}", screen_contents);
+
+    // When sidebar is focused, hint bar shows single-key bindings (n, d, r, q, etc.)
+    // and NOT ctrl+b (since that's a terminal-focused binding for "focus sidebar")
+    let sidebar_mode_indicators = screen_contents.contains("n New")
+        || screen_contents.contains("q Quit")
+        || screen_contents.contains("r Rename")
+        || screen_contents.contains("d Delete");
+
+    assert!(
+        sidebar_mode_indicators,
+        "After Ctrl+T, sidebar should be focused (hint bar should show sidebar keybindings). Got:\n{}",
+        screen_contents
+    );
+
+    let _ = session.quit();
+}
+
+/// Test that the workspace delete confirmation prompt shows a dark red (color 88) background.
+/// Per spec line 175: "Show an important (dark red background, color 88) confirmation prompt
+/// in the hint bar: 'Delete workspace and ALL its sessions permanently?'"
+#[test]
+fn test_workspace_delete_confirmation_has_dark_red_background() {
+    let _timer = TestTimer::new("test_workspace_delete_confirmation_has_dark_red_background");
+    let env = TestEnv::setup();
+
+    // Create a second workspace to delete (can't delete the only workspace)
+    let _: std::process::Output = env.iso_command()
+        .args(["workspace", "create", "ToDeleteRed"])
+        .output()
+        .expect("Failed to create workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay:\n{}", screen);
+    assert!(screen.contains("ToDeleteRed"), "ToDeleteRed workspace should appear in overlay. Got:\n{}", screen);
+
+    // Navigate to ToDeleteRed (comes after Default alphabetically)
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Press 'd' to show delete confirmation
+    session.send("d").expect("Failed to send 'd'");
+
+    // Poll for delete confirmation to appear
+    let mut found_confirmation = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Delete") && (screen.contains("permanently") || screen.contains("Yes") || screen.contains("No")) {
+            found_confirmation = true;
+            eprintln!("After 'd' (workspace delete confirmation):\n{}", screen);
+            break;
+        }
+    }
+
+    assert!(found_confirmation, "Workspace delete confirmation prompt should appear after pressing 'd'");
+
+    // Check for dark red (color 88) background in the hint bar rows
+    let height = session.parser.screen().size().0;
+    let width = session.parser.screen().size().1;
+    let found_red_bg = ((height - 3)..height).any(|row| {
+        (0..width).any(|col| {
+            if let Some(cell) = session.parser.screen().cell(row, col) {
+                matches!(cell.bgcolor(), vt100::Color::Idx(88))
+            } else {
+                false
+            }
+        })
+    });
+
+    assert!(
+        found_red_bg,
+        "Workspace delete confirmation hint bar should have dark red (color 88) background per spec"
+    );
+
+    // Cancel the delete
+    session.send("n").expect("Failed to send 'n'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Close overlay and quit
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = session.quit();
+}
+
+/// Test that the hint bar wraps to multiple lines when keybindings are too long to fit.
+/// Per spec line 145: "If the available keybindings are too long to fit on one line they
+/// should wrap to multiple lines. A keybinding and its description should never be split
+/// across lines."
+#[test]
+fn test_hint_bar_wraps_when_keybindings_too_long() {
+    let _timer = TestTimer::new("test_hint_bar_wraps_when_keybindings_too_long");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar - sidebar mode has many keybindings that should overflow a single line
+    // at 80 columns: enter/tab Select, ↑/↓/j/k Navigate, n New, r Rename, d Delete,
+    // m Move to workspace, ctrl+w Workspaces, ctrl+s Mouse/Text, q Quit, │ quit path
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Sidebar focused (hint bar should wrap):\n{}", screen);
+
+    // The hint bar at the bottom should span at least 2 rows.
+    // We detect this by checking that the hint bar background (color 238) appears on
+    // at least 2 of the last 4 rows, meaning the content wrapped to multiple lines.
+    let height = session.parser.screen().size().0;
+    let width = session.parser.screen().size().1;
+
+    let mut hint_bar_row_count = 0u16;
+    for row in (0..height).rev() {
+        let row_has_hint_bg = (0..width).any(|col| {
+            if let Some(cell) = session.parser.screen().cell(row, col) {
+                matches!(cell.bgcolor(), vt100::Color::Idx(238))
+            } else {
+                false
+            }
+        });
+        if row_has_hint_bg {
+            hint_bar_row_count += 1;
+        } else {
+            break; // Stop counting once we leave the hint bar area
+        }
+    }
+
+    eprintln!("Hint bar spans {} rows", hint_bar_row_count);
+
+    assert!(
+        hint_bar_row_count >= 2,
+        "Hint bar should wrap to at least 2 rows when sidebar is focused at 80 cols (many keybindings). \
+        Got {} rows with hint bar background. Screen:\n{}",
+        hint_bar_row_count, screen
+    );
+
+    let _ = session.quit();
+}
+
+/// Test that the terminal pane is non-interactive during create mode.
+/// Per spec lines 127-133: When in create mode, focus should not shift to the terminal,
+/// and the terminal pane should not be interactive.
+#[test]
+fn test_terminal_not_interactive_during_create_mode() {
+    let _timer = TestTimer::new("test_terminal_not_interactive_during_create_mode");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to initialize with terminal focused
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let initial_screen = session.screen_contents();
+    eprintln!("Initial state (terminal focused):\n{}", initial_screen);
+
+    // Verify terminal is focused initially
+    assert!(
+        initial_screen.contains("ctrl + n") || initial_screen.contains("ctrl + b"),
+        "Terminal should be focused initially. Got:\n{}", initial_screen
+    );
+
+    // Enter create mode with Ctrl+N from terminal
+    session.session.write_all(&[14]).expect("Failed to send Ctrl+N");
+    session.session.flush().expect("Failed to flush");
+
+    // Wait for create mode to appear
+    let mut found_create_mode = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("t Terminal") || screen.contains("a Agent") {
+            found_create_mode = true;
+            eprintln!("After Ctrl+N (create mode):\n{}", screen);
+            break;
+        }
+    }
+
+    assert!(
+        found_create_mode,
+        "Ctrl+N should enter create mode showing session type options"
+    );
+
+    // Try to interact with the terminal by pressing Ctrl+B - this should NOT focus terminal
+    // during create mode (only t, a, and esc should work)
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_ctrl_b = session.screen_contents();
+    eprintln!("After Ctrl+B during create mode (should stay in create mode):\n{}", screen_after_ctrl_b);
+
+    // Should still be in create mode - session type options should still be visible
+    assert!(
+        screen_after_ctrl_b.contains("t Terminal") || screen_after_ctrl_b.contains("a Agent"),
+        "Ctrl+B should not exit create mode - should still show session type options. Got:\n{}",
+        screen_after_ctrl_b
+    );
+
+    // Try typing random text - it should not appear in terminal during create mode
+    // In create mode, only t, a, and esc are valid; other keys are consumed/ignored
+    session.send("z").expect("Failed to send 'z'"); // not a valid create mode key
+    std::thread::sleep(Duration::from_millis(200));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_z = session.screen_contents();
+    // Should still be in create mode (z was consumed/ignored)
+    assert!(
+        screen_after_z.contains("t Terminal") || screen_after_z.contains("a Agent"),
+        "Invalid key 'z' should be ignored in create mode. Got:\n{}",
+        screen_after_z
+    );
+
+    // Press Esc to cancel create mode
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_cancel = session.screen_contents();
+    eprintln!("After Esc (cancelled create mode):\n{}", screen_after_cancel);
+
+    // After cancelling, should be back to normal mode with terminal focused bindings
+    let back_to_normal = screen_after_cancel.contains("ctrl + n")
+        || screen_after_cancel.contains("ctrl + b")
+        || screen_after_cancel.contains("ctrl + w");
+    assert!(
+        back_to_normal,
+        "After Esc from create mode, should return to normal mode. Got:\n{}",
+        screen_after_cancel
+    );
+
+    let _ = session.quit();
 }
