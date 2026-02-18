@@ -225,7 +225,7 @@ pub enum DaemonResponse {
     /// Workspace was deleted.
     WorkspaceDeleted { name: String },
     /// Switched to a different workspace.
-    WorkspaceSwitched { name: String, sessions: Vec<SessionInfo> },
+    WorkspaceSwitched { name: String, sessions: Vec<SessionInfo>, last_selected_session: Option<String>, last_focused_pane: String, sidebar_scroll_offset: usize },
     /// Session was moved to a different workspace.
     SessionMoved { session_name: String, workspace_name: String },
     /// Workspace state was saved.
@@ -1031,11 +1031,15 @@ impl Daemon {
     }
 
     /// Switch to a different workspace. Returns sessions in the new workspace.
-    pub fn switch_workspace(&self, name: &str) -> Result<Vec<SessionInfo>> {
+    pub fn switch_workspace(&self, name: &str) -> Result<(Vec<SessionInfo>, Option<String>, String, usize)> {
         let workspaces = self.workspaces.lock().unwrap();
         if !workspaces.contains_key(name) {
             bail!("Workspace '{}' not found", name);
         }
+        let ws = workspaces.get(name).unwrap();
+        let last_selected = ws.last_selected_session.clone();
+        let last_focused = ws.last_focused_pane.clone();
+        let scroll_offset = ws.sidebar_scroll_offset;
         drop(workspaces);
 
         *self.active_workspace.lock().unwrap() = name.to_string();
@@ -1047,7 +1051,7 @@ impl Daemon {
             .map(|s| s.info())
             .collect();
         workspace_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
-        Ok(workspace_sessions)
+        Ok((workspace_sessions, last_selected, last_focused, scroll_offset))
     }
 
     /// Move a session to a different workspace.
@@ -1814,14 +1818,16 @@ fn process_message(
             DaemonResponse::WorkspaceDeleted { name }
         }
         ClientMessage::SwitchWorkspace { name } => {
-            {
+            let (last_selected, last_focused, scroll_offset) = {
                 let workspaces_guard = workspaces.lock().unwrap();
                 if !workspaces_guard.contains_key(&name) {
                     return DaemonResponse::Error {
                         message: format!("Workspace '{}' not found", name),
                     };
                 }
-            }
+                let ws = workspaces_guard.get(&name).unwrap();
+                (ws.last_selected_session.clone(), ws.last_focused_pane.clone(), ws.sidebar_scroll_offset)
+            };
             *active_workspace.lock().unwrap() = name.clone();
 
             let sessions_guard = sessions.lock().unwrap();
@@ -1830,7 +1836,13 @@ fn process_message(
                 .map(|s| s.info())
                 .collect();
             workspace_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
-            DaemonResponse::WorkspaceSwitched { name, sessions: workspace_sessions }
+            DaemonResponse::WorkspaceSwitched {
+                name,
+                sessions: workspace_sessions,
+                last_selected_session: last_selected,
+                last_focused_pane: last_focused,
+                sidebar_scroll_offset: scroll_offset,
+            }
         }
         ClientMessage::MoveSessionToWorkspace { session_name, workspace_name } => {
             {
@@ -2438,7 +2450,7 @@ mod tests {
         let msg = ClientMessage::SwitchWorkspace { name: "Work".to_string() };
         let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
         match response {
-            DaemonResponse::WorkspaceSwitched { name, sessions: _ } => {
+            DaemonResponse::WorkspaceSwitched { name, sessions: _, .. } => {
                 assert_eq!(name, "Work");
             }
             _ => panic!("Expected WorkspaceSwitched response"),

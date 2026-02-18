@@ -164,6 +164,8 @@ impl RenamingState {
 pub enum ConfirmAction {
     /// Delete a session by its index.
     DeleteSession(usize),
+    /// Delete a workspace (and all its sessions) by name.
+    DeleteWorkspace(String),
     /// Quit the TUI.
     Quit,
 }
@@ -190,13 +192,14 @@ impl ConfirmState {
     pub fn message(&self) -> &'static str {
         match &self.action {
             ConfirmAction::DeleteSession(_) => "Delete this session permanently?",
+            ConfirmAction::DeleteWorkspace(_) => "Delete workspace and ALL its sessions permanently?",
             ConfirmAction::Quit => "Quit Sidebar TUI?",
         }
     }
 
     /// Check if this confirmation should show as important (red background).
     pub fn is_important(&self) -> bool {
-        matches!(&self.action, ConfirmAction::DeleteSession(_))
+        matches!(&self.action, ConfirmAction::DeleteSession(_) | ConfirmAction::DeleteWorkspace(_))
     }
 }
 

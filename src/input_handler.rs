@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::name_generator::generate_unique_session_name;
 use crate::state::{
-    AppMode, AppState, ConfirmAction, EventResult, Focus, RenamingState, SessionType,
+    AppMode, AppState, ConfirmAction, ConfirmState, EventResult, Focus, RenamingState, SessionType,
     WorkspaceOverlayMode,
 };
 
@@ -501,7 +501,7 @@ impl AppState {
                     }
                     return EventResult::Consumed;
                 }
-                // Delete selected workspace (disabled in move mode)
+                // Delete selected workspace (disabled in move mode) - shows confirmation
                 KeyCode::Char('d') => {
                     let is_move_mode = matches!(
                         self.mode,
@@ -514,12 +514,15 @@ impl AppState {
                             return EventResult::Consumed;
                         };
                         let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
-                        // Don't delete the active workspace
-                        if workspace_name.is_empty() || workspace_name == active || workspaces.len() <= 1 {
+                        // Don't delete the last workspace or the active workspace
+                        if workspace_name.is_empty() || workspaces.len() <= 1 {
                             return EventResult::Consumed;
                         }
-                        self.mode = AppMode::Normal;
-                        return EventResult::DeleteWorkspace { name: workspace_name };
+                        // Close overlay and show confirmation
+                        self.mode = AppMode::Confirming(ConfirmState::new(
+                            ConfirmAction::DeleteWorkspace(workspace_name),
+                            if active == "Default" { self.focus } else { self.focus },
+                        ));
                     }
                     return EventResult::Consumed;
                 }
@@ -556,6 +559,9 @@ impl AppState {
                             } else {
                                 EventResult::Consumed
                             }
+                        }
+                        ConfirmAction::DeleteWorkspace(name) => {
+                            EventResult::DeleteWorkspace { name }
                         }
                     }
                 }

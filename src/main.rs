@@ -1010,21 +1010,56 @@ fn run_attached(
                         }
                         EventResult::SwitchWorkspace { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            // Save current workspace state before switching
+                            let current_ws = app.app_state.workspace_name.clone();
+                            let last_selected = app.app_state.sessions
+                                .get(app.app_state.selected_index)
+                                .map(|s| s.name.clone());
+                            let focused_pane = match app.app_state.focus {
+                                Focus::Sidebar => "sidebar".to_string(),
+                                Focus::Terminal => "terminal".to_string(),
+                            };
+                            let _ = send_daemon_message_sync(stream, ClientMessage::SaveWorkspaceState {
+                                workspace_name: current_ws,
+                                last_selected_session: last_selected,
+                                last_focused_pane: focused_pane,
+                                sidebar_scroll_offset: app.app_state.scroll_offset,
+                            }, &mut app);
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                             let response = send_daemon_message_sync(stream, ClientMessage::SwitchWorkspace {
                                 name: name.clone(),
                             }, &mut app)?;
                             match response {
-                                DaemonResponse::WorkspaceSwitched { name: new_ws, sessions: ws_sessions } => {
+                                DaemonResponse::WorkspaceSwitched { name: new_ws, sessions: ws_sessions, last_selected_session, last_focused_pane, sidebar_scroll_offset } => {
                                     // Update sessions from the response
                                     app.app_state.sessions = ws_sessions.iter()
                                         .map(|s| Session::attached(&s.name))
                                         .collect();
                                     app.app_state.workspace_name = new_ws;
-                                    // If current session is not in new workspace, switch to first available
+
+                                    // Restore saved workspace state
+                                    app.app_state.scroll_offset = sidebar_scroll_offset;
+                                    app.app_state.focus = if last_focused_pane == "sidebar" { Focus::Sidebar } else { Focus::Terminal };
+
+                                    // Restore last selected session index
+                                    if let Some(ref last_name) = last_selected_session {
+                                        if let Some(idx) = app.app_state.sessions.iter().position(|s| &s.name == last_name) {
+                                            app.app_state.selected_index = idx;
+                                        } else {
+                                            app.app_state.selected_index = 0;
+                                        }
+                                    } else {
+                                        app.app_state.selected_index = 0;
+                                    }
+
+                                    // If current session is not in new workspace, switch to last selected or first available
+                                    let target_session = last_selected_session
+                                        .filter(|name| app.app_state.sessions.iter().any(|s| &s.name == name))
+                                        .or_else(|| app.app_state.sessions.first().map(|s| s.name.clone()));
                                     if !app.app_state.sessions.iter().any(|s| s.name == app.session_name) {
-                                        if let Some(first) = app.app_state.sessions.first() {
+                                        if let Some(first) = target_session.or_else(|| app.app_state.sessions.first().map(|s| s.name.clone())) {
                                             let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                                session_name: first.name.clone(),
+                                                session_name: first.clone(),
                                                 rows: term_rows,
                                                 cols: term_cols,
                                                 cwd: cwd.clone(),

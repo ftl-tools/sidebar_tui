@@ -5120,8 +5120,16 @@ fn test_delete_workspace() {
     session.send_down_arrow().expect("Failed to send Down");
     std::thread::sleep(Duration::from_millis(200));
 
-    // Press 'd' to delete
+    // Press 'd' to delete - this opens a confirmation dialog
     session.send("d").expect("Failed to send 'd'");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Confirmation dialog:\n{}", screen);
+
+    // Confirm deletion with 'y'
+    session.send("y").expect("Failed to confirm deletion");
     std::thread::sleep(Duration::from_millis(800));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5263,5 +5271,74 @@ fn test_workspace_persists_across_restart() {
     );
 
     session.send_esc().expect("Failed to send Esc");
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that workspace state (last selected session, focus) is restored when switching back.
+#[test]
+#[serial]
+fn test_workspace_state_restored_on_switch_back() {
+    let _timer = TestTimer::new("test_workspace_state_restored_on_switch_back");
+    let _env = TestEnv::setup();
+
+    // Create a second workspace
+    let binary_path = get_binary_path();
+    let _: std::process::Output = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", "Other"])
+        .output()
+        .expect("Failed to create workspace");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let session_name = session.session_name.clone();
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar so session is selected, then switch to Other workspace
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Navigate to "Other" (comes after "Default" alphabetically)
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch to Other");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("In Other workspace:\n{}", screen);
+    assert!(screen.contains("Other"), "Should be in Other workspace. Got:\n{}", screen);
+
+    // Switch back to Default workspace
+    session.send_ctrl_w().expect("Failed to re-open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // "Other" is the active workspace (index 1), "Default" is at index 0
+    // Navigate up to select "Default"
+    session.send_up_arrow().expect("Failed to send Up");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch back to Default");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching back to Default:\n{}", screen);
+    assert!(
+        screen.contains("Default"),
+        "Should be back in Default workspace. Got:\n{}", screen
+    );
+    // The session from Default should be visible again (workspace state restored)
+    assert!(
+        screen.contains(&session_name),
+        "Session '{}' should be visible again in Default after switching back. Got:\n{}",
+        session_name, screen
+    );
+
     session.quit().expect("Failed to quit");
 }
