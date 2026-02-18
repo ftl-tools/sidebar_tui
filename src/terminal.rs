@@ -3,9 +3,6 @@
 //! This module wraps vt100::Parser to provide terminal emulation
 //! and rendering to ratatui widgets.
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,13 +22,6 @@ fn default_empty_style() -> Style {
     Style::default().fg(Color::Indexed(255))
 }
 
-/// A line in the scrollback history with cell data and styles.
-/// Uses Cow<'static, str> to avoid allocations for static space strings.
-#[derive(Clone)]
-struct HistoryLine {
-    cells: Vec<(Cow<'static, str>, Style)>,
-}
-
 /// Cached render state for incremental rendering.
 /// Stores the previously rendered lines to avoid rebuilding when content hasn't changed.
 #[derive(Clone)]
@@ -46,14 +36,9 @@ struct RenderCache {
 }
 
 /// Terminal emulator that parses escape sequences and maintains screen state.
+/// Uses vt100's built-in scrollback buffer for history.
 pub struct Terminal {
     parser: vt100::Parser,
-    /// Scroll offset from bottom (0 = showing live terminal, >0 = scrolled back in history)
-    scroll_offset: usize,
-    /// Scrollback history buffer (oldest lines first)
-    history: VecDeque<HistoryLine>,
-    /// Maximum history size
-    max_history: usize,
     /// Whether content has changed since last render (dirty flag)
     dirty: bool,
     /// Cached render output for incremental rendering
@@ -68,65 +53,14 @@ impl Terminal {
     /// * `cols` - Number of columns
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 0),
-            scroll_offset: 0,
-            history: VecDeque::new(),
-            max_history: DEFAULT_HISTORY_SIZE,
+            parser: vt100::Parser::new(rows, cols, DEFAULT_HISTORY_SIZE),
             dirty: true, // Start dirty to force initial render
             render_cache: None,
         }
     }
 
-    /// Capture the current screen content and save to history.
-    ///
-    /// This is called on-demand (before scrolling or on resize) rather than
-    /// on every process() call, significantly improving performance during
-    /// high-throughput operations like paste.
-    fn capture_screen_to_history(&mut self) {
-        let screen = self.parser.screen();
-        let (rows, cols) = screen.size();
-
-        for row in 0..rows {
-            let mut cells = Vec::with_capacity(cols as usize);
-            for col in 0..cols {
-                if let Some(cell) = screen.cell(row, col) {
-                    if cell.is_wide_continuation() {
-                        continue;
-                    }
-                    let contents = cell.contents();
-                    let style = cell_to_style(cell);
-                    // Use Cow::Borrowed for static space string, Cow::Owned for actual content
-                    let text: Cow<'static, str> = if contents.is_empty() {
-                        Cow::Borrowed(SPACE)
-                    } else {
-                        Cow::Owned(contents.to_string())
-                    };
-                    cells.push((text, style));
-                } else {
-                    cells.push((Cow::Borrowed(SPACE), default_empty_style()));
-                }
-            }
-
-            // Only add non-empty lines to history
-            let is_empty = cells.iter().all(|(s, _)| s.trim().is_empty());
-            if !is_empty {
-                self.history.push_back(HistoryLine { cells });
-
-                // Trim history if it exceeds max size - O(1) with VecDeque
-                if self.history.len() > self.max_history {
-                    self.history.pop_front();
-                }
-            }
-        }
-    }
-
     /// Process raw terminal output (escape sequences, text, etc).
     /// Resets scroll offset to show live output when new data arrives.
-    ///
-    /// Performance optimization: This does NOT capture the screen to history
-    /// on every call. History is captured on-demand before scrolling and on
-    /// resize. This significantly improves performance during paste operations
-    /// where many data chunks arrive rapidly.
     pub fn process(&mut self, data: &[u8]) {
         self.parser.process(data);
 
@@ -134,26 +68,24 @@ impl Terminal {
         // Mark as dirty since content may have changed
         if !data.is_empty() {
             self.dirty = true;
-            self.scroll_offset = 0;
+            // Reset scrollback to show live terminal
+            self.parser.set_scrollback(0);
         }
+    }
+
+    /// Get current scroll offset (0 = live terminal, >0 = scrolled back)
+    fn scroll_offset(&self) -> usize {
+        self.parser.screen().scrollback()
     }
 
     /// Scroll up (back in history) by the given number of lines.
     /// Returns true if scroll position changed.
-    ///
-    /// Captures current screen to history before scrolling to ensure
-    /// the user can see what was on screen in the scrollback.
     pub fn scroll_up(&mut self, lines: usize) -> bool {
-        // Capture current screen before scrolling so it appears in history.
-        // Only capture if we're not already scrolled (showing live terminal).
-        if self.scroll_offset == 0 {
-            self.capture_screen_to_history();
-        }
-
-        let max_scroll = self.history.len();
-        let new_offset = (self.scroll_offset + lines).min(max_scroll);
-        if new_offset != self.scroll_offset {
-            self.scroll_offset = new_offset;
+        let current = self.scroll_offset();
+        let new_offset = current + lines;
+        self.parser.set_scrollback(new_offset);
+        let actual = self.scroll_offset();
+        if actual != current {
             self.dirty = true;
             true
         } else {
@@ -164,9 +96,11 @@ impl Terminal {
     /// Scroll down (toward live terminal) by the given number of lines.
     /// Returns true if scroll position changed.
     pub fn scroll_down(&mut self, lines: usize) -> bool {
-        let new_offset = self.scroll_offset.saturating_sub(lines);
-        if new_offset != self.scroll_offset {
-            self.scroll_offset = new_offset;
+        let current = self.scroll_offset();
+        let new_offset = current.saturating_sub(lines);
+        self.parser.set_scrollback(new_offset);
+        let actual = self.scroll_offset();
+        if actual != current {
             self.dirty = true;
             true
         } else {
@@ -177,21 +111,17 @@ impl Terminal {
     /// Check if we're currently scrolled back in history.
     #[allow(dead_code)]
     pub fn is_scrolled(&self) -> bool {
-        self.scroll_offset > 0
+        self.scroll_offset() > 0
     }
 
     /// Reset scroll to show live terminal output.
     #[allow(dead_code)]
     pub fn reset_scroll(&mut self) {
-        self.scroll_offset = 0;
+        self.parser.set_scrollback(0);
     }
 
     /// Resize the terminal to new dimensions.
-    ///
-    /// Captures current screen to history before resizing to preserve
-    /// content that might be lost during the resize.
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.capture_screen_to_history();
         self.parser.set_size(rows, cols);
         self.dirty = true;
         // Invalidate cache since dimensions changed
@@ -226,7 +156,7 @@ impl Terminal {
     fn is_cache_valid(&self, area: Rect) -> bool {
         if let Some(cache) = &self.render_cache {
             !self.dirty
-                && cache.scroll_offset == self.scroll_offset
+                && cache.scroll_offset == self.scroll_offset()
                 && cache.area_width == area.width
                 && cache.area_height == area.height
         } else {
@@ -236,6 +166,9 @@ impl Terminal {
 
     /// Build the lines for rendering. This is the expensive operation that
     /// iterates over all cells and creates Span objects.
+    ///
+    /// vt100 handles scrollback internally - when set_scrollback() is called,
+    /// the cell() method automatically returns cells from the scrollback buffer.
     fn build_lines(&self, area: Rect) -> Vec<Line<'static>> {
         let screen = self.parser.screen();
         let mut lines = Vec::with_capacity(area.height as usize);
@@ -243,80 +176,26 @@ impl Terminal {
         for display_row in 0..area.height {
             let mut spans = Vec::new();
 
-            if self.scroll_offset > 0 {
-                // When scrolled back, show history content
-                // scroll_offset=1 means top line of display shows history[len-1]
-                // scroll_offset=N means top N lines show history content
+            for col in 0..area.width {
+                if let Some(cell) = screen.cell(display_row, col) {
+                    // Skip wide continuation cells (second half of wide chars)
+                    if cell.is_wide_continuation() {
+                        continue;
+                    }
 
-                // Calculate which history line to show for this display row
-                // History is stored oldest-first, so we want recent history at top when scrolling
-                let history_lines_to_show = self.scroll_offset.min(area.height as usize);
-                let rows_showing_history = history_lines_to_show as u16;
-
-                if display_row < rows_showing_history {
-                    // Show history content
-                    // display_row 0 -> history[len - scroll_offset]
-                    // display_row 1 -> history[len - scroll_offset + 1]
-                    let history_idx = self.history.len().saturating_sub(self.scroll_offset) + display_row as usize;
-
-                    if history_idx < self.history.len() {
-                        let history_line = &self.history[history_idx];
-                        for (text, style) in &history_line.cells {
-                            spans.push(Span::styled(text.clone(), *style));
-                        }
-                        // Pad to full width using static space
-                        while spans.len() < area.width as usize {
-                            spans.push(Span::styled(SPACE, default_empty_style()));
-                        }
+                    let contents = cell.contents();
+                    let style = cell_to_style(cell);
+                    if contents.is_empty() {
+                        // Use static space string to avoid allocation
+                        spans.push(Span::styled(SPACE, style));
                     } else {
-                        // No history for this position, show empty line
-                        for _ in 0..area.width {
-                            spans.push(Span::styled(SPACE, default_empty_style()));
-                        }
+                        // Only allocate for non-empty cells
+                        spans.push(Span::styled(contents.to_string(), style));
                     }
                 } else {
-                    // Show current screen content (shifted up)
-                    let screen_row = display_row - rows_showing_history;
-                    for col in 0..area.width {
-                        if let Some(cell) = screen.cell(screen_row, col) {
-                            if cell.is_wide_continuation() {
-                                continue;
-                            }
-                            let contents = cell.contents();
-                            let style = cell_to_style(cell);
-                            if contents.is_empty() {
-                                spans.push(Span::styled(SPACE, style));
-                            } else {
-                                spans.push(Span::styled(contents.to_string(), style));
-                            }
-                        } else {
-                            spans.push(Span::styled(SPACE, default_empty_style()));
-                        }
-                    }
-                }
-            } else {
-                // Not scrolled - show current screen content
-                for col in 0..area.width {
-                    if let Some(cell) = screen.cell(display_row, col) {
-                        // Skip wide continuation cells (second half of wide chars)
-                        if cell.is_wide_continuation() {
-                            continue;
-                        }
-
-                        let contents = cell.contents();
-                        let style = cell_to_style(cell);
-                        if contents.is_empty() {
-                            // Use static space string to avoid allocation
-                            spans.push(Span::styled(SPACE, style));
-                        } else {
-                            // Only allocate for non-empty cells
-                            spans.push(Span::styled(contents.to_string(), style));
-                        }
-                    } else {
-                        // Cell doesn't exist, fill with space using explicit white-on-reset style
-                        // to ensure consistent colors and avoid terminal state corruption
-                        spans.push(Span::styled(SPACE, default_empty_style()));
-                    }
+                    // Cell doesn't exist, fill with space using explicit white-on-reset style
+                    // to ensure consistent colors and avoid terminal state corruption
+                    spans.push(Span::styled(SPACE, default_empty_style()));
                 }
             }
 
@@ -345,7 +224,7 @@ impl Terminal {
             let lines = self.build_lines(area);
             self.render_cache = Some(RenderCache {
                 lines: lines.clone(),
-                scroll_offset: self.scroll_offset,
+                scroll_offset: self.scroll_offset(),
                 area_width: area.width,
                 area_height: area.height,
             });
@@ -628,133 +507,44 @@ mod tests {
     }
 
     #[test]
-    fn test_process_does_not_capture_history() {
-        // Verify that process() does NOT capture to history (for performance).
-        // History is only captured on-demand (scroll_up, resize).
-        let mut term = Terminal::new(24, 80);
-
-        // Process some data
-        term.process(b"Hello, World!");
-
-        // History should still be empty
-        assert!(term.history.is_empty(), "process() should not capture to history");
-    }
-
-    #[test]
-    fn test_scroll_up_captures_history() {
-        // Verify that scroll_up() captures the current screen to history.
-        let mut term = Terminal::new(24, 80);
-
-        // Process some data
-        term.process(b"Hello, World!");
-
-        // History starts empty
-        assert!(term.history.is_empty());
-
-        // Scroll up should capture current screen
-        term.scroll_up(1);
-
-        // Now history should have content
-        assert!(!term.history.is_empty(), "scroll_up should capture to history");
-    }
-
-    #[test]
-    fn test_resize_captures_history() {
-        // Verify that resize() captures the current screen to history.
-        let mut term = Terminal::new(24, 80);
-
-        // Process some data
-        term.process(b"Hello, World!");
-
-        // History starts empty
-        assert!(term.history.is_empty());
-
-        // Resize should capture current screen
-        term.resize(30, 100);
-
-        // Now history should have content
-        assert!(!term.history.is_empty(), "resize should capture to history");
-    }
-
-    #[test]
-    fn test_scroll_up_only_captures_once() {
-        // Verify that multiple scroll_up calls don't keep re-capturing.
+    fn test_scroll_up_and_down() {
+        // Test basic scroll functionality using vt100's native scrollback
         let mut term = Terminal::new(5, 20);
 
-        // Process some data to have content
-        term.process(b"Line 1\r\nLine 2\r\nLine 3");
+        // Generate enough content to create scrollback
+        for i in 0..30 {
+            term.process(format!("Line {}\r\n", i).as_bytes());
+        }
 
-        // First scroll captures
-        term.scroll_up(1);
-        let history_len_after_first = term.history.len();
+        // Should start at scroll offset 0
+        assert_eq!(term.scroll_offset(), 0);
 
-        // Second scroll should NOT re-capture (we're already scrolled)
-        term.scroll_up(1);
-        let history_len_after_second = term.history.len();
+        // Scroll up
+        term.scroll_up(5);
+        assert!(term.scroll_offset() > 0, "scroll_up should increase offset");
 
-        assert_eq!(
-            history_len_after_first, history_len_after_second,
-            "scroll_up should only capture when scroll_offset was 0"
-        );
+        // Scroll down
+        let before = term.scroll_offset();
+        term.scroll_down(2);
+        assert!(term.scroll_offset() < before, "scroll_down should decrease offset");
     }
 
     #[test]
     fn test_process_resets_scroll_offset() {
         let mut term = Terminal::new(5, 20);
 
-        // Process some data
-        term.process(b"Line 1\r\nLine 2\r\nLine 3");
+        // Generate scrollback content
+        for i in 0..30 {
+            term.process(format!("Line {}\r\n", i).as_bytes());
+        }
 
         // Scroll up
-        term.scroll_up(1);
-        assert_eq!(term.scroll_offset, 1);
+        term.scroll_up(5);
+        assert!(term.scroll_offset() > 0);
 
         // New output should reset scroll to bottom
         term.process(b"new data");
-        assert_eq!(term.scroll_offset, 0);
-    }
-
-    #[test]
-    fn test_history_trimming_still_works() {
-        // Verify that history still gets trimmed when it exceeds max size.
-        let mut term = Terminal::new(5, 20);
-        term.max_history = 10; // Small limit for testing
-
-        // Trigger multiple history captures via resize
-        for i in 0..15 {
-            term.process(format!("line {}\r\n", i).as_bytes());
-            term.resize(5, 20); // Each resize captures
-        }
-
-        // History should be capped at max_history
-        assert!(term.history.len() <= term.max_history);
-    }
-
-    #[test]
-    fn test_history_uses_cow_borrowed_for_empty_cells() {
-        // Verify that empty cells use Cow::Borrowed to avoid allocation.
-        let mut term = Terminal::new(5, 20);
-
-        // Process minimal content - most cells will be empty
-        term.process(b"A");
-
-        // Capture to history via resize
-        term.resize(5, 20);
-
-        // Check that history contains Cow::Borrowed for empty cells
-        assert!(!term.history.is_empty());
-
-        let line = &term.history[0];
-        // First cell should be "A" (Owned), rest should be spaces (Borrowed)
-        let (first_text, _) = &line.cells[0];
-        let (second_text, _) = &line.cells[1];
-
-        // First cell is actual content - can be either owned or borrowed
-        assert_eq!(first_text.as_ref(), "A");
-
-        // Second cell should be a borrowed space
-        assert_eq!(second_text.as_ref(), " ");
-        assert!(matches!(second_text, Cow::Borrowed(_)), "Empty cells should use Cow::Borrowed");
+        assert_eq!(term.scroll_offset(), 0);
     }
 
     #[test]

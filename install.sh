@@ -8,10 +8,18 @@ cd "$SCRIPT_DIR"
 
 echo "=== Building and installing sidebar-tui locally ==="
 
-echo "Building sidebar-tui..."
-cargo build --release
+# Increment patch version in Cargo.toml
+CARGO_TOML="$SCRIPT_DIR/Cargo.toml"
+CURRENT_VERSION=$(grep '^version = ' "$CARGO_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
+MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+NEW_PATCH=$((PATCH + 1))
+NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
+echo "Version: $NEW_VERSION"
 
-echo "Installing to ~/.cargo/bin/sb..."
+echo "Building and installing to ~/.cargo/bin/sb..."
 cargo install --path . --force
 
 echo "Done. sb installed to ~/.cargo/bin/sb"

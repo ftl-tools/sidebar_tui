@@ -237,12 +237,19 @@ impl<'a> Sidebar<'a> {
         Self { state }
     }
 
-    /// Render the sidebar title.
+    /// Render the sidebar title (current workspace name).
     fn render_title(&self, buf: &mut Buffer, area: Rect) {
-        // Title is "Sidebar TUI" in purple, left-aligned with padding
-        let title = "Sidebar TUI";
+        // Title shows current workspace name in purple, left-aligned with padding.
+        // Truncate with "..." if the name is too long to fit.
+        let max_width = area.width.saturating_sub(PADDING * 2) as usize;
+        let title = if self.state.workspace_name.len() > max_width {
+            let truncated = &self.state.workspace_name[..max_width.saturating_sub(3)];
+            format!("{}...", truncated)
+        } else {
+            self.state.workspace_name.clone()
+        };
         let style = Style::default().fg(PURPLE);
-        buf.set_string(area.x + PADDING, area.y, title, style);
+        buf.set_string(area.x + PADDING, area.y, &title, style);
     }
 
     /// Render the welcome state message.
@@ -510,7 +517,8 @@ mod tests {
     fn test_sidebar_title_rendered() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        assert!(buffer_contains(&buf, "Sidebar TUI"));
+        // Default workspace name is shown as title
+        assert!(buffer_contains(&buf, "Default"));
     }
 
     #[test]

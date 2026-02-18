@@ -18,7 +18,20 @@ The general requirements are as follows:
   - You can run `vi` in the TUI terminal, open a file, edit it, save it, and exit, and the file is changed as expected.
   - In the TUI terminal, you can start typing `git status`, backspace before you send it, type `echo "hello world"`, send that, and see the expected output in the TUI terminal.
   - There must be at least one E2E test that works on the real Sidebar TUI in the Apple terminal for each individual bullet point in this spec.
+  - There must be E2E tests covering: creating a workspace, switching between workspaces (verifying sessions are isolated per workspace), renaming a workspace, deleting a workspace (verifying its sessions are gone), moving a session between workspaces, and verifying workspace state is restored after switching away and back.
 - NO E2E or unit tests are skipped, FOR ANY REASON. Install requirements if missing, or do WHATEVER IS REQUIRED to unblock them.
+
+### Workspaces
+
+A workspace is a named container that groups terminal sessions and saves view/layout state. Every session belongs to exactly one workspace. Workspaces allow you to organize sessions by project, context, or any other grouping that makes sense to you.
+
+Key properties of workspaces:
+- Every session belongs to exactly one workspace. Sessions cannot be shared across workspaces.
+- Background sessions in other workspaces keep running when you switch — they are just hidden.
+- Each workspace saves its full view state: which session was last selected, which pane was focused, scroll position of the sidebar list, and scroll position of each session's terminal history. This state is restored when you switch back to the workspace.
+- Workspaces persist across restarts, including all saved state.
+- There must always be at least one workspace. If deleting a workspace would leave none, a new "Default" workspace is auto-created.
+- New sessions are always created in the currently active workspace.
 
 ### TUI
 
@@ -27,7 +40,7 @@ The general requirements are as follows:
 - The TUI has three components: the sidebar pane, the terminal pane, and the hint bar. They should be laid out like so:
   ```
   ┌──────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
-  │ Sidebar TUI              ││ (base) melchiahmauck@Melchiahs-MacBook-Air sidebar_tui % █           │
+  │ WorkspaceName            ││ (base) melchiahmauck@Melchiahs-MacBook-Air sidebar_tui % █           │
   │ ...                      ││                                                                      │
   │ Name of Terminal Session ││                                                                      │
   │ Really, really long name ││                                                                      │
@@ -60,7 +73,7 @@ The general requirements are as follows:
 
 - The Sidebar pane should be a fixed width following the design above.
 - There should be one char of padding on the left and right between the session names and the sidebar border.
-- The top row should say "Sidebar TUI" in purple text (color 165). It should be left aligned.
+- The top row should show the current workspace name in purple text (color 165). It should be left aligned. If the workspace name is too long to fit, it should be truncated with `...` at the end.
 - Below the title should be a list of terminal sessions with most recently used at the top.
 - The session names should be in white (color 255).
 - If a session name is too long to fit in the sidebar it should be wrapped with `│`(s) and `└` characters used to indicate subsequent lines of the same session name. See the example above for reference. These wrapping indicators should be colored slightly darker (color 238) than the session names.
@@ -82,6 +95,8 @@ The general requirements are as follows:
     - This should work similarly to drafting a new session in create mode, but instead of an empty name there should be the current session name with the cursor at the end. The user can then backspace and type to change the name. The same character restrictions apply as when drafting a new session.
     - `enter` - Rename: Rename the session to the current name. Exit rename mode and focus on the terminal pane.
     - `esc` - Cancel: Exit rename mode without changing the session name, and return focus to wherever it was before renaming was started.
+  - `m` - Move: Open the workspace overlay in "move to workspace" mode. The user selects a destination workspace and the currently selected session is moved there. See the Workspace Overlay section for details.
+  - `mod + w` - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)
   - `q` - Quit: Show a confirmation prompt in the hint bar to quit the TUI.
     - `y` or `q` - Yes: Quit the TUI and return to the normal terminal.
     - `n` - No: Exit the confirmation prompt. (Focus should remain on the sidebar pane.)
@@ -100,6 +115,7 @@ The general requirements are as follows:
   - `mod + b` or `mod + t` - Focus on sidebar: Focus on the sidebar pane.
   - `mod + n` - New: Enter create mode.
   - `mod + s` - Toggle mouse mode: Toggle between text selection mode (native terminal selection works) and mouse scroll mode (scroll wheel works but text selection is blocked). The hint bar shows the current mode ("Text select" or "Mouse scroll").
+  - `mod + w` - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)
 
 #### Create Mode
 
@@ -135,7 +151,45 @@ The general requirements are as follows:
 
 #### First-time Start Up
 
-If this is the first time starting up the TUI and there are no existing terminal sessions, the terminal pane should be blank and the sidebar pane should be focused. There should be some text in the sidebare pane that says something like "Welcome to Sidebar TUI press `n` to create your first terminal session!" This text should be colored grey (color 238) and should be centered in the sidebar pane. The keybinding in this text should be colored purple (color 165), and should change dynamically if the user changes focus to the empty terminal pane before creating their first session.
+On the very first launch (no workspaces or sessions exist), a workspace named "Default" is automatically created and made active. The terminal pane should be blank and the sidebar pane should be focused. There should be some text in the sidebar pane that says something like "Welcome to Sidebar TUI press `n` to create your first terminal session!" This text should be colored grey (color 238) and should be centered in the sidebar pane. The keybinding in this text should be colored purple (color 165), and should change dynamically if the user changes focus to the empty terminal pane before creating their first session.
+
+#### Workspace Overlay
+
+The workspace overlay is a full-screen layer that appears on top of the normal TUI layout when `mod + w` is pressed from any pane. It is used to view, switch, create, rename, and delete workspaces.
+
+**Layout:**
+
+The overlay covers the entire terminal window. It shows:
+- A title row at the top: "Workspaces" in purple text (color 165), left aligned.
+- A list of all workspaces below the title, one per row, in white (color 255). The currently active workspace is marked with a `*` indicator to the left of its name.
+- The selected/highlighted workspace row has a dark grey background (color 238), same as selected sessions in the sidebar.
+- If the list is too long to fit, truncation indicators (`...`) appear at the top and/or bottom, same as in the sidebar session list.
+- The hint bar at the bottom shows the available keybindings for the overlay (see below).
+
+**Normal mode keybindings:**
+- `↑` / `k` - Up: Move the selection up one workspace.
+- `↓` / `j` - Down: Move the selection down one workspace.
+- `enter` - Switch: Switch to the selected workspace. Close the overlay and restore the workspace's last saved state (last focused pane, last selected session, scroll positions, etc.).
+- `n` - New: Start drafting a new workspace inline. An empty row appears at the top of the list with a blinking `|` cursor. The same character restrictions apply as when drafting a new session. Press `enter` to create or `esc` to cancel.
+- `r` - Rename: Start renaming the selected workspace inline. The current name is shown with the cursor at the end. Press `enter` to confirm or `esc` to cancel.
+- `d` - Delete: Show an important (dark red background, color 88) confirmation prompt in the hint bar: "Delete workspace and ALL its sessions permanently?" with `y` to confirm and `n` to cancel. If confirmed, the workspace and all of its sessions are permanently deleted. If the deleted workspace was the active one, switch to the first remaining workspace. If there are no remaining workspaces, auto-create a new "Default" workspace.
+- `esc` - Close: Close the overlay and return to the TUI without switching workspaces.
+- `q` - Quit: Show the quit confirmation prompt in the hint bar, same as when on the sidebar pane.
+
+**Move-to-workspace mode:**
+
+When triggered by pressing `m` in the sidebar, the workspace overlay opens in move mode. The title row changes to "Move to Workspace" in purple. The behavior is identical to normal mode except:
+- `enter` - Move: Move the currently selected session (from the sidebar) to the highlighted workspace. If the selected workspace is the current workspace, do nothing. Close the overlay and return focus to the sidebar.
+- `esc` - Cancel: Close the overlay and return focus to the sidebar without moving anything.
+- Creating, renaming, and deleting workspaces are not available in move mode.
+
+**Quit path hint:**
+
+When the workspace overlay is open, the right side of the hint bar should show `q Quit` as the quit path (since `q` works directly from the overlay).
+
+**Persistence:**
+
+The workspace's saved state (last focused pane, last selected session, scroll position of each session's terminal history, sidebar scroll position) is persisted to disk and restored when the TUI is reopened, same as sessions.
 
 ## Order
 

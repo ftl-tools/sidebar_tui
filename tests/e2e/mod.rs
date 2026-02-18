@@ -56,7 +56,33 @@ impl Drop for TestEnv {
 /// Called before and after every test via TestEnv.
 fn reset_environment() {
     cleanup_test_sessions();
+    reset_workspaces();
     ensure_daemon_ready();
+}
+
+/// Reset workspaces to just the "Default" workspace.
+/// This prevents leftover workspace state from affecting tests.
+fn reset_workspaces() {
+    let binary_path = get_binary_path();
+    // Shut down daemon so we can reset workspace state on disk
+    // Then restart by listing (which auto-starts the daemon)
+    let _ = std::process::Command::new(&binary_path)
+        .args(["shutdown"])
+        .output();
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Reset workspaces.json to just Default
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let data_dir = std::path::PathBuf::from(home).join(".local/share/sidebar-tui");
+    let workspaces_file = data_dir.join("workspaces.json");
+    let default_workspace = r#"[{"name":"Default","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0}]"#;
+    let _ = std::fs::write(&workspaces_file, default_workspace);
+
+    // Restart daemon
+    let _ = std::process::Command::new(&binary_path)
+        .args(["list"])
+        .output();
+    std::thread::sleep(Duration::from_millis(300));
 }
 
 /// Atomic counter to generate unique session names for each test
@@ -305,7 +331,7 @@ impl Drop for SbSession {
 
 /// Test that the layout matches the spec:
 /// - Sidebar is 28 chars wide with border outline
-/// - "Sidebar TUI" title is blue and left-aligned
+/// - Workspace name title is purple and left-aligned (default: "Default")
 /// - Both sidebar and terminal have borders (terminal border is lighter)
 #[test]
 #[serial]
@@ -328,32 +354,33 @@ fn test_layout_matches_spec() {
         );
     }
 
-    // Verify "Sidebar TUI" appears on row 1 (inside the border)
+    // Verify workspace name appears on row 1 (inside the border)
+    // The default workspace name is "Default"
     let second_row = session.row_contents(1);
     assert!(
-        second_row.contains("Sidebar TUI"),
-        "Second row should contain 'Sidebar TUI', got: '{}'",
+        second_row.contains("Default"),
+        "Second row should contain workspace name 'Default', got: '{}'",
         second_row
     );
 
-    // The sidebar title should be within the first 28 columns
+    // The workspace name title should be within the first 28 columns
     // Use char-based slicing to handle UTF-8 border characters
     let sidebar_chars: Vec<char> = second_row.chars().take(28).collect();
     let sidebar_portion: String = sidebar_chars.into_iter().collect();
     assert!(
-        sidebar_portion.contains("Sidebar TUI"),
-        "Sidebar portion should contain 'Sidebar TUI', got: '{}'",
+        sidebar_portion.contains("Default"),
+        "Sidebar portion should contain workspace name 'Default', got: '{}'",
         sidebar_portion
     );
 
     // Title should be left-aligned (starts after left border + padding at position 2)
-    // The first char should be a border (│), then padding, then "Sidebar TUI" starts
+    // The first char should be a border (│), then padding, then workspace name starts
     let chars: Vec<char> = second_row.chars().collect();
     if chars.len() > 2 {
         // Check that title starts at position 2 (after border + padding)
-        let title_start: String = chars[2..].iter().take(11).collect();
+        let title_start: String = chars[2..].iter().take(7).collect();
         assert!(
-            title_start == "Sidebar TUI",
+            title_start == "Default",
             "Title should be left-aligned starting at position 2 (after border + padding), got: '{}'",
             title_start
         );
@@ -1417,7 +1444,7 @@ fn test_create_mode_flow() {
         screen_contents
     );
 
-    // Count current sessions in sidebar (lines containing text between Sidebar TUI and hint bar)
+    // Count current sessions in sidebar (lines after workspace title)
     let lines_before: Vec<&str> = screen_contents.lines()
         .skip(1) // Skip title
         .take_while(|l| !l.contains("Terminal Session"))
@@ -1837,7 +1864,7 @@ fn test_quit_confirmation() {
 
     // Should still see the sidebar title
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running after cancel. Got:\n{}",
         screen_contents
     );
@@ -2042,7 +2069,7 @@ fn test_welcome_state() {
     // If no sessions, sidebar should indicate this somehow
     // At minimum, the TUI should still be running
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "Sidebar title should still be visible. Got:\n{}",
         screen_contents
     );
@@ -2127,7 +2154,7 @@ fn test_session_selection_no_crash() {
 
     // Verify TUI is still running - sidebar title should still be visible
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running after Enter. Got:\n{}",
         screen_contents
     );
@@ -2190,7 +2217,7 @@ fn test_session_selection_no_crash() {
 
     // Verify TUI is still running after the switch
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running after session switch. Got:\n{}",
         screen_contents
     );
@@ -2574,7 +2601,7 @@ fn test_live_preview_rapid_navigation() {
 
     // TUI should still be running without crashes
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running after rapid navigation. Got:\n{}",
         screen_contents
     );
@@ -2589,7 +2616,7 @@ fn test_live_preview_rapid_navigation() {
     eprintln!("After Enter (select):\n{}", screen_contents);
 
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still work after rapid navigation and selection. Got:\n{}",
         screen_contents
     );
@@ -2847,7 +2874,7 @@ fn test_live_preview_then_create() {
 
     // TUI should still be working - new session should be visible
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running. Got:\n{}",
         screen_contents
     );
@@ -2948,7 +2975,7 @@ fn test_ctrl_q_quit_from_terminal() {
 
     // TUI should still be running
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should still be running after cancel. Got:\n{}",
         screen_contents
     );
@@ -3230,8 +3257,8 @@ fn test_welcome_state_on_fresh_start() {
 
     // Always verify basic TUI structure
     assert!(
-        screen_contents.contains("Sidebar TUI"),
-        "Should show Sidebar TUI title. Got:\n{}",
+        screen_contents.contains("Default"),
+        "Should show workspace name title. Got:\n{}",
         screen_contents
     );
 
@@ -3992,7 +4019,7 @@ fn test_sessions_work_after_shutdown() {
 
     // Verify TUI is rendered properly
     assert!(
-        screen_contents.contains("Sidebar TUI"),
+        screen_contents.contains("Default"),
         "TUI should render after shutdown + restart. Got:\n{}",
         screen_contents
     );
@@ -4376,7 +4403,7 @@ fn test_esc_jump_back() {
 
     // Verify the sidebar session list order - the auto-generated session should be at top (row 2)
     // Row 0: top border
-    // Row 1: │ Sidebar TUI │...
+    // Row 1: │ Default │... (workspace name)
     // Row 2: │ <auto-named> │...  <- first session (should be selected)
     // Row 3: │ jump1-...    │...  <- second session
     let lines: Vec<&str> = screen_after_esc.lines().collect();

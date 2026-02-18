@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-17 - Implemented Workspace Data Model and Sidebar Header
+
+Fixed failing `test_vi_editing_workflow` E2E test (stale vim swap file causing ATTENTION dialog). Implemented complete workspace data model in daemon.rs: `WorkspaceMetadata` struct with persistence, `workspace_name` field added to `SessionInfo` and `SessionMetadata`, workspace CRUD operations in `ClientMessage`/`DaemonResponse`, and all process_message handlers for ListWorkspaces, CreateWorkspace, RenameWorkspace, DeleteWorkspace, SwitchWorkspace, MoveSessionToWorkspace, SaveWorkspaceState. Daemon auto-creates "Default" workspace on first run. Added `DaemonClient` workspace methods. Updated sidebar to show active workspace name (not "Sidebar TUI"). Updated AppState with `workspace_name` field. Updated `run_attached` to load workspace info and filter sessions by active workspace. Added 9 new workspace unit tests (369 lib + 41 E2E all pass). Closed sidebar_tui-hka and sidebar_tui-56v.
+
 ## 2026-02-16 - Added E2E Test for Truncation Indicators When Session List Overflows
 
 Completed sidebar_tui-mpt: Added E2E test `test_truncation_indicators_when_session_list_overflows` to verify that truncation indicators (`...`) appear when more sessions exist than can fit in the visible sidebar area. The test creates 25 sessions programmatically (more than the ~17 visible rows), then verifies: (1) the truncation indicator `...` appears in the sidebar, (2) the indicator is colored dark grey (238) per spec. This completes the missing E2E test coverage per spec lines 68-70. All 365 lib + 65 bin + 41 E2E tests pass. Binary reinstalled. Closed sidebar_tui-mpt. No remaining issues.

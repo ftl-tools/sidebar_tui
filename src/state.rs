@@ -305,7 +305,7 @@ pub enum EventResult {
 }
 
 /// Main application state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     /// Which pane currently has focus.
     pub focus: Focus,
@@ -322,6 +322,23 @@ pub struct AppState {
     /// Whether mouse capture is enabled (for scroll wheel support).
     /// When disabled, native terminal text selection works.
     pub mouse_mode: bool,
+    /// The name of the currently active workspace.
+    pub workspace_name: String,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            focus: Focus::default(),
+            mode: AppMode::default(),
+            sessions: Vec::new(),
+            selected_index: 0,
+            scroll_offset: 0,
+            previous_session: None,
+            mouse_mode: false,
+            workspace_name: "Default".to_string(),
+        }
+    }
 }
 
 

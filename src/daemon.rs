@@ -161,6 +161,25 @@ pub enum ClientMessage {
     Rename { old_name: String, new_name: String },
     /// Get terminal state for preview (without attaching).
     Preview { session_name: String },
+    /// List all workspaces.
+    ListWorkspaces,
+    /// Create a new workspace.
+    CreateWorkspace { name: String },
+    /// Rename a workspace.
+    RenameWorkspace { old_name: String, new_name: String },
+    /// Delete a workspace and all its sessions.
+    DeleteWorkspace { name: String },
+    /// Switch active workspace (saves current workspace state, restores target workspace state).
+    SwitchWorkspace { name: String },
+    /// Move a session to a different workspace.
+    MoveSessionToWorkspace { session_name: String, workspace_name: String },
+    /// Save workspace view state (selected session, focused pane, scroll offset).
+    SaveWorkspaceState {
+        workspace_name: String,
+        last_selected_session: Option<String>,
+        last_focused_pane: String,
+        sidebar_scroll_offset: usize,
+    },
     /// Shutdown the daemon.
     Shutdown,
 }
@@ -197,6 +216,20 @@ pub enum DaemonResponse {
         /// Serialized terminal state for preview.
         terminal_state: Option<Vec<u8>>,
     },
+    /// Workspace list.
+    Workspaces { workspaces: Vec<WorkspaceInfo>, active_workspace: String },
+    /// Workspace was created.
+    WorkspaceCreated { name: String },
+    /// Workspace was renamed.
+    WorkspaceRenamed { old_name: String, new_name: String },
+    /// Workspace was deleted.
+    WorkspaceDeleted { name: String },
+    /// Switched to a different workspace.
+    WorkspaceSwitched { name: String, sessions: Vec<SessionInfo> },
+    /// Session was moved to a different workspace.
+    SessionMoved { session_name: String, workspace_name: String },
+    /// Workspace state was saved.
+    WorkspaceStateSaved,
     /// Error occurred.
     Error { message: String },
     /// Daemon is shutting down.
@@ -212,6 +245,8 @@ pub struct SessionInfo {
     pub cols: u16,
     /// Timestamp when the session was last active (Unix epoch seconds).
     pub last_active: u64,
+    /// Workspace this session belongs to.
+    pub workspace_name: String,
 }
 
 /// Persistent session metadata saved to disk for reboot survival.
@@ -230,11 +265,94 @@ pub struct SessionMetadata {
     pub created_at: u64,
     /// Timestamp when the session was last active (Unix epoch seconds).
     pub last_active: u64,
+    /// Workspace this session belongs to (default: "Default").
+    #[serde(default = "default_workspace_name")]
+    pub workspace_name: String,
+}
+
+fn default_workspace_name() -> String {
+    "Default".to_string()
+}
+
+/// Workspace metadata persisted to disk.
+/// A workspace groups terminal sessions and saves view/layout state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMetadata {
+    /// Unique name for the workspace.
+    pub name: String,
+    /// Timestamp when the workspace was created (Unix epoch seconds).
+    pub created_at: u64,
+    /// The session that was last selected in this workspace.
+    pub last_selected_session: Option<String>,
+    /// The pane that was last focused ("sidebar" or "terminal").
+    pub last_focused_pane: String,
+    /// Scroll offset in the sidebar session list.
+    pub sidebar_scroll_offset: usize,
+}
+
+impl WorkspaceMetadata {
+    /// Create a new workspace with default state.
+    pub fn new(name: String) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self {
+            name,
+            created_at: now,
+            last_selected_session: None,
+            last_focused_pane: "terminal".to_string(),
+            sidebar_scroll_offset: 0,
+        }
+    }
+
+    /// Get the path to the workspaces config file.
+    pub fn file_path() -> PathBuf {
+        get_data_dir().join("workspaces.json")
+    }
+
+    /// Load all workspaces from disk.
+    pub fn load_all() -> Result<Vec<Self>> {
+        let path = Self::file_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let data = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read workspaces from {:?}", path))?;
+        let workspaces: Vec<Self> = serde_json::from_str(&data)
+            .with_context(|| format!("Failed to parse workspaces from {:?}", path))?;
+        Ok(workspaces)
+    }
+
+    /// Save all workspaces to disk.
+    pub fn save_all(workspaces: &[Self]) -> Result<()> {
+        ensure_data_dir()?;
+        let path = Self::file_path();
+        let data = serde_json::to_string_pretty(workspaces)
+            .context("Failed to serialize workspaces")?;
+        fs::write(&path, data)
+            .with_context(|| format!("Failed to write workspaces to {:?}", path))?;
+        Ok(())
+    }
+}
+
+/// Information about a workspace returned to clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    pub name: String,
+    pub last_selected_session: Option<String>,
+    pub last_focused_pane: String,
+    pub sidebar_scroll_offset: usize,
 }
 
 impl SessionMetadata {
-    /// Create new session metadata.
+    /// Create new session metadata in the given workspace.
     pub fn new(name: String, cwd: Option<PathBuf>, rows: u16, cols: u16) -> Self {
+        Self::new_in_workspace(name, cwd, rows, cols, "Default".to_string())
+    }
+
+    /// Create new session metadata in a specific workspace.
+    pub fn new_in_workspace(name: String, cwd: Option<PathBuf>, rows: u16, cols: u16, workspace_name: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -246,6 +364,7 @@ impl SessionMetadata {
             cols,
             created_at: now,
             last_active: now,
+            workspace_name,
         }
     }
 
@@ -432,6 +551,10 @@ pub fn ensure_sessions_dir() -> Result<PathBuf> {
 pub struct Daemon {
     /// Map of session names to session handles.
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    /// Workspace metadata, keyed by workspace name.
+    workspaces: Arc<Mutex<HashMap<String, WorkspaceMetadata>>>,
+    /// Active workspace name.
+    active_workspace: Arc<Mutex<String>>,
     /// Path to the Unix socket.
     socket_path: PathBuf,
     /// Flag to signal shutdown.
@@ -465,8 +588,13 @@ pub struct Session {
 }
 
 impl Session {
-    /// Create a new session with a PTY.
+    /// Create a new session with a PTY in the "Default" workspace.
     pub fn new(name: String, rows: u16, cols: u16, cwd: Option<PathBuf>) -> Result<Self> {
+        Self::new_in_workspace(name, rows, cols, cwd, "Default".to_string())
+    }
+
+    /// Create a new session with a PTY in a specific workspace.
+    pub fn new_in_workspace(name: String, rows: u16, cols: u16, cwd: Option<PathBuf>, workspace_name: String) -> Result<Self> {
         // Validate dimensions - vt100 panics with 0 dimensions
         let rows = if rows == 0 { 24 } else { rows };
         let cols = if cols == 0 { 80 } else { cols };
@@ -478,7 +606,7 @@ impl Session {
         let terminal_parser = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK);
 
         // Create and save metadata for persistence across reboots
-        let metadata = SessionMetadata::new(name.clone(), cwd, rows, cols);
+        let metadata = SessionMetadata::new_in_workspace(name.clone(), cwd, rows, cols, workspace_name);
         if let Err(e) = metadata.save() {
             eprintln!("Warning: Failed to save session metadata: {:?}", e);
         }
@@ -723,16 +851,28 @@ impl Session {
             rows: self.rows,
             cols: self.cols,
             last_active: self.metadata.last_active,
+            workspace_name: self.metadata.workspace_name.clone(),
+        }
+    }
+
+    /// Move this session to a different workspace.
+    pub fn move_to_workspace(&mut self, workspace_name: String) {
+        self.metadata.workspace_name = workspace_name;
+        if let Err(e) = self.metadata.save() {
+            eprintln!("Warning: Failed to save session metadata after workspace move: {:?}", e);
         }
     }
 }
 
 impl Daemon {
-    /// Create a new daemon instance.
+    /// Create a new daemon instance, loading workspaces from disk.
     pub fn new() -> Result<Self> {
         let socket_path = get_socket_path();
+        let (workspaces, active_workspace) = Self::load_or_init_workspaces()?;
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            workspaces: Arc::new(Mutex::new(workspaces)),
+            active_workspace: Arc::new(Mutex::new(active_workspace)),
             socket_path,
             shutdown: Arc::new(AtomicBool::new(false)),
         })
@@ -740,11 +880,207 @@ impl Daemon {
 
     /// Create a daemon with a custom socket path (for testing).
     pub fn with_socket_path(socket_path: PathBuf) -> Self {
+        let default_ws = WorkspaceMetadata::new("Default".to_string());
+        let mut workspaces = HashMap::new();
+        workspaces.insert("Default".to_string(), default_ws);
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            workspaces: Arc::new(Mutex::new(workspaces)),
+            active_workspace: Arc::new(Mutex::new("Default".to_string())),
             socket_path,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Load workspaces from disk, or initialize with a Default workspace.
+    fn load_or_init_workspaces() -> Result<(HashMap<String, WorkspaceMetadata>, String)> {
+        let persisted = WorkspaceMetadata::load_all().unwrap_or_default();
+        if persisted.is_empty() {
+            // First run: create Default workspace
+            let default_ws = WorkspaceMetadata::new("Default".to_string());
+            let mut map = HashMap::new();
+            map.insert("Default".to_string(), default_ws.clone());
+            if let Err(e) = WorkspaceMetadata::save_all(&[default_ws]) {
+                eprintln!("Warning: Failed to save default workspace: {:?}", e);
+            }
+            Ok((map, "Default".to_string()))
+        } else {
+            let mut map = HashMap::new();
+            for ws in persisted {
+                map.insert(ws.name.clone(), ws);
+            }
+            // Active workspace is the first one (could be made configurable later)
+            let active = map.keys().next().cloned().unwrap_or_else(|| "Default".to_string());
+            Ok((map, active))
+        }
+    }
+
+    /// Get the active workspace name.
+    pub fn active_workspace(&self) -> String {
+        self.active_workspace.lock().unwrap().clone()
+    }
+
+    /// Get workspace info list for the client.
+    pub fn list_workspaces(&self) -> (Vec<WorkspaceInfo>, String) {
+        let workspaces = self.workspaces.lock().unwrap();
+        let active = self.active_workspace.lock().unwrap().clone();
+        let mut list: Vec<WorkspaceInfo> = workspaces.values()
+            .map(|ws| WorkspaceInfo {
+                name: ws.name.clone(),
+                last_selected_session: ws.last_selected_session.clone(),
+                last_focused_pane: ws.last_focused_pane.clone(),
+                sidebar_scroll_offset: ws.sidebar_scroll_offset,
+            })
+            .collect();
+        // Sort alphabetically for consistent display
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        (list, active)
+    }
+
+    /// Create a new workspace.
+    pub fn create_workspace(&self, name: &str) -> Result<()> {
+        let mut workspaces = self.workspaces.lock().unwrap();
+        if workspaces.contains_key(name) {
+            bail!("Workspace '{}' already exists", name);
+        }
+        let ws = WorkspaceMetadata::new(name.to_string());
+        workspaces.insert(name.to_string(), ws);
+        let list: Vec<WorkspaceMetadata> = workspaces.values().cloned().collect();
+        drop(workspaces);
+        WorkspaceMetadata::save_all(&list)?;
+        Ok(())
+    }
+
+    /// Rename a workspace.
+    pub fn rename_workspace(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let mut workspaces = self.workspaces.lock().unwrap();
+        if !workspaces.contains_key(old_name) {
+            bail!("Workspace '{}' not found", old_name);
+        }
+        if workspaces.contains_key(new_name) {
+            bail!("Workspace '{}' already exists", new_name);
+        }
+        let mut ws = workspaces.remove(old_name).unwrap();
+        ws.name = new_name.to_string();
+        workspaces.insert(new_name.to_string(), ws);
+        let list: Vec<WorkspaceMetadata> = workspaces.values().cloned().collect();
+        drop(workspaces);
+        WorkspaceMetadata::save_all(&list)?;
+
+        // Update active workspace name if needed
+        let mut active = self.active_workspace.lock().unwrap();
+        if *active == old_name {
+            *active = new_name.to_string();
+        }
+
+        // Update all sessions belonging to the renamed workspace
+        let mut sessions = self.sessions.lock().unwrap();
+        for session in sessions.values_mut() {
+            if session.metadata.workspace_name == old_name {
+                session.move_to_workspace(new_name.to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Delete a workspace and all its sessions.
+    /// If this would leave no workspaces, auto-creates a "Default" workspace.
+    pub fn delete_workspace(&self, name: &str) -> Result<String> {
+        // Kill all sessions in this workspace
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            let to_kill: Vec<String> = sessions.values()
+                .filter(|s| s.metadata.workspace_name == name)
+                .map(|s| s.name.clone())
+                .collect();
+            for session_name in to_kill {
+                if let Some(session) = sessions.remove(&session_name) {
+                    let _ = session.delete_metadata();
+                    let _ = PersistedSessionState::delete(&session_name);
+                }
+            }
+        }
+
+        let new_active = {
+            let mut workspaces = self.workspaces.lock().unwrap();
+            workspaces.remove(name);
+
+            // If no workspaces left, create Default
+            if workspaces.is_empty() {
+                let default_ws = WorkspaceMetadata::new("Default".to_string());
+                workspaces.insert("Default".to_string(), default_ws);
+            }
+
+            let list: Vec<WorkspaceMetadata> = workspaces.values().cloned().collect();
+            drop(workspaces);
+            WorkspaceMetadata::save_all(&list)?;
+
+            // Determine new active workspace
+            let workspaces = self.workspaces.lock().unwrap();
+            workspaces.keys().next().cloned().unwrap_or_else(|| "Default".to_string())
+        };
+
+        // Update active workspace if deleted workspace was active
+        let mut active = self.active_workspace.lock().unwrap();
+        if *active == name {
+            *active = new_active.clone();
+        }
+
+        Ok(new_active)
+    }
+
+    /// Switch to a different workspace. Returns sessions in the new workspace.
+    pub fn switch_workspace(&self, name: &str) -> Result<Vec<SessionInfo>> {
+        let workspaces = self.workspaces.lock().unwrap();
+        if !workspaces.contains_key(name) {
+            bail!("Workspace '{}' not found", name);
+        }
+        drop(workspaces);
+
+        *self.active_workspace.lock().unwrap() = name.to_string();
+
+        // Return sessions in the new workspace
+        let sessions = self.sessions.lock().unwrap();
+        let mut workspace_sessions: Vec<SessionInfo> = sessions.values()
+            .filter(|s| s.metadata.workspace_name == name)
+            .map(|s| s.info())
+            .collect();
+        workspace_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        Ok(workspace_sessions)
+    }
+
+    /// Move a session to a different workspace.
+    pub fn move_session_to_workspace(&self, session_name: &str, workspace_name: &str) -> Result<()> {
+        let workspaces = self.workspaces.lock().unwrap();
+        if !workspaces.contains_key(workspace_name) {
+            bail!("Workspace '{}' not found", workspace_name);
+        }
+        drop(workspaces);
+
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_name) {
+            session.move_to_workspace(workspace_name.to_string());
+            Ok(())
+        } else {
+            bail!("Session '{}' not found", session_name)
+        }
+    }
+
+    /// Save view state for a workspace.
+    pub fn save_workspace_state(&self, workspace_name: &str, last_selected_session: Option<String>, last_focused_pane: String, sidebar_scroll_offset: usize) -> Result<()> {
+        let mut workspaces = self.workspaces.lock().unwrap();
+        if let Some(ws) = workspaces.get_mut(workspace_name) {
+            ws.last_selected_session = last_selected_session;
+            ws.last_focused_pane = last_focused_pane;
+            ws.sidebar_scroll_offset = sidebar_scroll_offset;
+        } else {
+            bail!("Workspace '{}' not found", workspace_name);
+        }
+        let list: Vec<WorkspaceMetadata> = workspaces.values().cloned().collect();
+        drop(workspaces);
+        WorkspaceMetadata::save_all(&list)?;
+        Ok(())
     }
 
     /// Get the socket path for this daemon.
@@ -798,9 +1134,11 @@ impl Daemon {
             match listener.accept() {
                 Ok((stream, _addr)) => {
                     let sessions = Arc::clone(&self.sessions);
+                    let workspaces = Arc::clone(&self.workspaces);
+                    let active_workspace = Arc::clone(&self.active_workspace);
                     let shutdown = Arc::clone(&self.shutdown);
                     thread::spawn(move || {
-                        if let Err(e) = handle_client(stream, sessions, shutdown) {
+                        if let Err(e) = handle_client(stream, sessions, workspaces, active_workspace, shutdown) {
                             eprintln!("Error handling client: {:?}", e);
                         }
                     });
@@ -1008,6 +1346,8 @@ impl Default for Daemon {
 fn handle_client(
     mut stream: UnixStream,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    workspaces: Arc<Mutex<HashMap<String, WorkspaceMetadata>>>,
+    active_workspace: Arc<Mutex<String>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     // The listener is non-blocking, so accepted sockets inherit that.
@@ -1093,7 +1433,7 @@ fn handle_client(
             }
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
         send_response(&mut stream, &response)?;
 
         // Only break on shutdown - client may want to reattach after detach
@@ -1109,6 +1449,8 @@ fn handle_client(
 fn process_message(
     msg: ClientMessage,
     sessions: &Arc<Mutex<HashMap<String, Session>>>,
+    workspaces: &Arc<Mutex<HashMap<String, WorkspaceMetadata>>>,
+    active_workspace: &Arc<Mutex<String>>,
     shutdown: &Arc<AtomicBool>,
     current_session: &mut Option<String>,
 ) -> DaemonResponse {
@@ -1124,7 +1466,8 @@ fn process_message(
 
             // Create new session if it doesn't exist
             if is_new {
-                match Session::new(session_name.clone(), rows, cols, cwd) {
+                let ws_name = active_workspace.lock().unwrap().clone();
+                match Session::new_in_workspace(session_name.clone(), rows, cols, cwd, ws_name) {
                     Ok(mut session) => {
                         session.is_attached = true;
                         sessions_guard.insert(session_name.clone(), session);
@@ -1364,6 +1707,167 @@ fn process_message(
                     message: format!("Session '{}' not found", session_name),
                 }
             }
+        }
+        ClientMessage::ListWorkspaces => {
+            let workspaces_guard = workspaces.lock().unwrap();
+            let active = active_workspace.lock().unwrap().clone();
+            let mut list: Vec<WorkspaceInfo> = workspaces_guard.values()
+                .map(|ws| WorkspaceInfo {
+                    name: ws.name.clone(),
+                    last_selected_session: ws.last_selected_session.clone(),
+                    last_focused_pane: ws.last_focused_pane.clone(),
+                    sidebar_scroll_offset: ws.sidebar_scroll_offset,
+                })
+                .collect();
+            list.sort_by(|a, b| a.name.cmp(&b.name));
+            DaemonResponse::Workspaces { workspaces: list, active_workspace: active }
+        }
+        ClientMessage::CreateWorkspace { name } => {
+            let mut workspaces_guard = workspaces.lock().unwrap();
+            if workspaces_guard.contains_key(&name) {
+                return DaemonResponse::Error {
+                    message: format!("Workspace '{}' already exists", name),
+                };
+            }
+            let ws = WorkspaceMetadata::new(name.clone());
+            workspaces_guard.insert(name.clone(), ws);
+            let list: Vec<WorkspaceMetadata> = workspaces_guard.values().cloned().collect();
+            drop(workspaces_guard);
+            if let Err(e) = WorkspaceMetadata::save_all(&list) {
+                return DaemonResponse::Error { message: format!("Failed to save workspace: {}", e) };
+            }
+            DaemonResponse::WorkspaceCreated { name }
+        }
+        ClientMessage::RenameWorkspace { old_name, new_name } => {
+            let mut workspaces_guard = workspaces.lock().unwrap();
+            if !workspaces_guard.contains_key(&old_name) {
+                return DaemonResponse::Error {
+                    message: format!("Workspace '{}' not found", old_name),
+                };
+            }
+            if workspaces_guard.contains_key(&new_name) {
+                return DaemonResponse::Error {
+                    message: format!("Workspace '{}' already exists", new_name),
+                };
+            }
+            let mut ws = workspaces_guard.remove(&old_name).unwrap();
+            ws.name = new_name.clone();
+            workspaces_guard.insert(new_name.clone(), ws);
+            let list: Vec<WorkspaceMetadata> = workspaces_guard.values().cloned().collect();
+            drop(workspaces_guard);
+            if let Err(e) = WorkspaceMetadata::save_all(&list) {
+                return DaemonResponse::Error { message: format!("Failed to save workspaces: {}", e) };
+            }
+            // Update active workspace if renamed
+            let mut active = active_workspace.lock().unwrap();
+            if *active == old_name {
+                *active = new_name.clone();
+            }
+            // Update all sessions in renamed workspace
+            let mut sessions_guard = sessions.lock().unwrap();
+            for session in sessions_guard.values_mut() {
+                if session.metadata.workspace_name == old_name {
+                    session.move_to_workspace(new_name.clone());
+                }
+            }
+            DaemonResponse::WorkspaceRenamed { old_name, new_name }
+        }
+        ClientMessage::DeleteWorkspace { name } => {
+            // Kill all sessions in this workspace
+            {
+                let mut sessions_guard = sessions.lock().unwrap();
+                let to_kill: Vec<String> = sessions_guard.values()
+                    .filter(|s| s.metadata.workspace_name == name)
+                    .map(|s| s.name.clone())
+                    .collect();
+                for session_name in to_kill {
+                    if let Some(session) = sessions_guard.remove(&session_name) {
+                        let _ = session.delete_metadata();
+                        let _ = PersistedSessionState::delete(&session_name);
+                    }
+                }
+            }
+
+            let mut workspaces_guard = workspaces.lock().unwrap();
+            workspaces_guard.remove(&name);
+
+            // If no workspaces left, create Default
+            if workspaces_guard.is_empty() {
+                let default_ws = WorkspaceMetadata::new("Default".to_string());
+                workspaces_guard.insert("Default".to_string(), default_ws);
+            }
+
+            let list: Vec<WorkspaceMetadata> = workspaces_guard.values().cloned().collect();
+            let remaining_names: Vec<String> = workspaces_guard.keys().cloned().collect();
+            drop(workspaces_guard);
+
+            if let Err(e) = WorkspaceMetadata::save_all(&list) {
+                return DaemonResponse::Error { message: format!("Failed to save workspaces: {}", e) };
+            }
+
+            // Update active workspace if deleted workspace was active
+            let mut active = active_workspace.lock().unwrap();
+            if *active == name {
+                *active = remaining_names.into_iter().next().unwrap_or_else(|| "Default".to_string());
+            }
+
+            DaemonResponse::WorkspaceDeleted { name }
+        }
+        ClientMessage::SwitchWorkspace { name } => {
+            {
+                let workspaces_guard = workspaces.lock().unwrap();
+                if !workspaces_guard.contains_key(&name) {
+                    return DaemonResponse::Error {
+                        message: format!("Workspace '{}' not found", name),
+                    };
+                }
+            }
+            *active_workspace.lock().unwrap() = name.clone();
+
+            let sessions_guard = sessions.lock().unwrap();
+            let mut workspace_sessions: Vec<SessionInfo> = sessions_guard.values()
+                .filter(|s| s.metadata.workspace_name == name)
+                .map(|s| s.info())
+                .collect();
+            workspace_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+            DaemonResponse::WorkspaceSwitched { name, sessions: workspace_sessions }
+        }
+        ClientMessage::MoveSessionToWorkspace { session_name, workspace_name } => {
+            {
+                let workspaces_guard = workspaces.lock().unwrap();
+                if !workspaces_guard.contains_key(&workspace_name) {
+                    return DaemonResponse::Error {
+                        message: format!("Workspace '{}' not found", workspace_name),
+                    };
+                }
+            }
+            let mut sessions_guard = sessions.lock().unwrap();
+            if let Some(session) = sessions_guard.get_mut(&session_name) {
+                session.move_to_workspace(workspace_name.clone());
+                DaemonResponse::SessionMoved { session_name, workspace_name }
+            } else {
+                DaemonResponse::Error {
+                    message: format!("Session '{}' not found", session_name),
+                }
+            }
+        }
+        ClientMessage::SaveWorkspaceState { workspace_name, last_selected_session, last_focused_pane, sidebar_scroll_offset } => {
+            let mut workspaces_guard = workspaces.lock().unwrap();
+            if let Some(ws) = workspaces_guard.get_mut(&workspace_name) {
+                ws.last_selected_session = last_selected_session;
+                ws.last_focused_pane = last_focused_pane;
+                ws.sidebar_scroll_offset = sidebar_scroll_offset;
+            } else {
+                return DaemonResponse::Error {
+                    message: format!("Workspace '{}' not found", workspace_name),
+                };
+            }
+            let list: Vec<WorkspaceMetadata> = workspaces_guard.values().cloned().collect();
+            drop(workspaces_guard);
+            if let Err(e) = WorkspaceMetadata::save_all(&list) {
+                return DaemonResponse::Error { message: format!("Failed to save workspace state: {}", e) };
+            }
+            DaemonResponse::WorkspaceStateSaved
         }
         ClientMessage::Shutdown => {
             shutdown.store(true, Ordering::SeqCst);
@@ -1702,6 +2206,80 @@ impl DaemonClient {
             other => bail!("Unexpected response: {:?}", other),
         }
     }
+
+    /// List all workspaces and the active workspace.
+    pub fn list_workspaces(&mut self) -> Result<(Vec<WorkspaceInfo>, String)> {
+        match self.send(ClientMessage::ListWorkspaces)? {
+            DaemonResponse::Workspaces { workspaces, active_workspace } => Ok((workspaces, active_workspace)),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Create a new workspace.
+    pub fn create_workspace(&mut self, name: &str) -> Result<()> {
+        match self.send(ClientMessage::CreateWorkspace { name: name.to_string() })? {
+            DaemonResponse::WorkspaceCreated { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Rename a workspace.
+    pub fn rename_workspace(&mut self, old_name: &str, new_name: &str) -> Result<()> {
+        match self.send(ClientMessage::RenameWorkspace {
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+        })? {
+            DaemonResponse::WorkspaceRenamed { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Delete a workspace and all its sessions.
+    pub fn delete_workspace(&mut self, name: &str) -> Result<()> {
+        match self.send(ClientMessage::DeleteWorkspace { name: name.to_string() })? {
+            DaemonResponse::WorkspaceDeleted { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Switch to a different workspace. Returns sessions in the new workspace.
+    pub fn switch_workspace(&mut self, name: &str) -> Result<Vec<SessionInfo>> {
+        match self.send(ClientMessage::SwitchWorkspace { name: name.to_string() })? {
+            DaemonResponse::WorkspaceSwitched { sessions, .. } => Ok(sessions),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Move a session to a different workspace.
+    pub fn move_session_to_workspace(&mut self, session_name: &str, workspace_name: &str) -> Result<()> {
+        match self.send(ClientMessage::MoveSessionToWorkspace {
+            session_name: session_name.to_string(),
+            workspace_name: workspace_name.to_string(),
+        })? {
+            DaemonResponse::SessionMoved { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
+
+    /// Save workspace view state.
+    pub fn save_workspace_state(&mut self, workspace_name: &str, last_selected_session: Option<String>, last_focused_pane: String, sidebar_scroll_offset: usize) -> Result<()> {
+        match self.send(ClientMessage::SaveWorkspaceState {
+            workspace_name: workspace_name.to_string(),
+            last_selected_session,
+            last_focused_pane,
+            sidebar_scroll_offset,
+        })? {
+            DaemonResponse::WorkspaceStateSaved => Ok(()),
+            DaemonResponse::Error { message } => bail!("{}", message),
+            other => bail!("Unexpected response: {:?}", other),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1720,6 +2298,184 @@ mod tests {
 
     fn cleanup_socket(path: &Path) {
         let _ = fs::remove_file(path);
+    }
+
+    /// Create default workspaces and active_workspace arcs for testing.
+    fn test_workspaces() -> (Arc<Mutex<HashMap<String, WorkspaceMetadata>>>, Arc<Mutex<String>>) {
+        let mut workspaces = HashMap::new();
+        workspaces.insert("Default".to_string(), WorkspaceMetadata::new("Default".to_string()));
+        (
+            Arc::new(Mutex::new(workspaces)),
+            Arc::new(Mutex::new("Default".to_string())),
+        )
+    }
+
+    /// Helper to call process_message with default workspace args in tests.
+    fn process_msg(
+        msg: ClientMessage,
+        sessions: &Arc<Mutex<HashMap<String, Session>>>,
+        shutdown: &Arc<AtomicBool>,
+        current_session: &mut Option<String>,
+    ) -> DaemonResponse {
+        let (workspaces, active_workspace) = test_workspaces();
+        process_message(msg, sessions, &workspaces, &active_workspace, shutdown, current_session)
+    }
+
+    #[test]
+    fn test_workspace_metadata_new() {
+        let ws = WorkspaceMetadata::new("MyWorkspace".to_string());
+        assert_eq!(ws.name, "MyWorkspace");
+        assert!(ws.last_selected_session.is_none());
+        assert_eq!(ws.last_focused_pane, "terminal");
+        assert_eq!(ws.sidebar_scroll_offset, 0);
+        assert!(ws.created_at > 0);
+    }
+
+    #[test]
+    fn test_session_metadata_has_workspace_name() {
+        let meta = SessionMetadata::new("sess1".to_string(), None, 24, 80);
+        assert_eq!(meta.workspace_name, "Default");
+    }
+
+    #[test]
+    fn test_session_metadata_new_in_workspace() {
+        let meta = SessionMetadata::new_in_workspace(
+            "sess1".to_string(), None, 24, 80, "MyWorkspace".to_string()
+        );
+        assert_eq!(meta.workspace_name, "MyWorkspace");
+    }
+
+    #[test]
+    fn test_create_workspace_message() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::CreateWorkspace { name: "NewWorkspace".to_string() };
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::WorkspaceCreated { name } => {
+                assert_eq!(name, "NewWorkspace");
+            }
+            _ => panic!("Expected WorkspaceCreated response"),
+        }
+        assert!(workspaces.lock().unwrap().contains_key("NewWorkspace"));
+    }
+
+    #[test]
+    fn test_list_workspaces_message() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let response = process_message(ClientMessage::ListWorkspaces, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::Workspaces { workspaces: ws_list, active_workspace: active } => {
+                assert_eq!(ws_list.len(), 1);
+                assert_eq!(ws_list[0].name, "Default");
+                assert_eq!(active, "Default");
+            }
+            _ => panic!("Expected Workspaces response"),
+        }
+    }
+
+    #[test]
+    fn test_rename_workspace_message() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::RenameWorkspace {
+            old_name: "Default".to_string(),
+            new_name: "Renamed".to_string(),
+        };
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::WorkspaceRenamed { old_name, new_name } => {
+                assert_eq!(old_name, "Default");
+                assert_eq!(new_name, "Renamed");
+            }
+            _ => panic!("Expected WorkspaceRenamed response"),
+        }
+        // Active workspace name should be updated
+        assert_eq!(*active_workspace.lock().unwrap(), "Renamed");
+        assert!(workspaces.lock().unwrap().contains_key("Renamed"));
+        assert!(!workspaces.lock().unwrap().contains_key("Default"));
+    }
+
+    #[test]
+    fn test_delete_workspace_auto_creates_default() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::DeleteWorkspace { name: "Default".to_string() };
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::WorkspaceDeleted { name } => {
+                assert_eq!(name, "Default");
+            }
+            _ => panic!("Expected WorkspaceDeleted response"),
+        }
+        // Should have auto-created a new Default workspace
+        assert!(workspaces.lock().unwrap().contains_key("Default"));
+    }
+
+    #[test]
+    fn test_switch_workspace_message() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        // First create a second workspace
+        workspaces.lock().unwrap().insert("Work".to_string(), WorkspaceMetadata::new("Work".to_string()));
+
+        let msg = ClientMessage::SwitchWorkspace { name: "Work".to_string() };
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::WorkspaceSwitched { name, sessions: _ } => {
+                assert_eq!(name, "Work");
+            }
+            _ => panic!("Expected WorkspaceSwitched response"),
+        }
+        assert_eq!(*active_workspace.lock().unwrap(), "Work");
+    }
+
+    #[test]
+    fn test_session_created_in_active_workspace() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (workspaces, active_workspace) = test_workspaces();
+        // Set active workspace to "Work"
+        workspaces.lock().unwrap().insert("Work".to_string(), WorkspaceMetadata::new("Work".to_string()));
+        *active_workspace.lock().unwrap() = "Work".to_string();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut current_session: Option<String> = None;
+
+        let msg = ClientMessage::Attach {
+            session_name: "my-session".to_string(),
+            rows: 24,
+            cols: 80,
+            cwd: None,
+        };
+        let response = process_message(msg, &sessions, &workspaces, &active_workspace, &shutdown, &mut current_session);
+        match response {
+            DaemonResponse::Attached { session_name, is_new, .. } => {
+                assert_eq!(session_name, "my-session");
+                assert!(is_new);
+            }
+            DaemonResponse::Error { message } => panic!("Error: {}", message),
+            _ => panic!("Expected Attached"),
+        }
+        // Session should be in "Work" workspace
+        let sessions_guard = sessions.lock().unwrap();
+        let session = sessions_guard.get("my-session").unwrap();
+        assert_eq!(session.metadata.workspace_name, "Work");
     }
 
     #[test]
@@ -2106,6 +2862,7 @@ mod tests {
                 rows: 24,
                 cols: 80,
                 last_active: 1000,
+                workspace_name: "Default".to_string(),
             },
             SessionInfo {
                 name: "s2".to_string(),
@@ -2113,6 +2870,7 @@ mod tests {
                 rows: 30,
                 cols: 100,
                 last_active: 2000,
+                workspace_name: "Default".to_string(),
             },
         ];
         let msg = DaemonResponse::Sessions { names: sessions };
@@ -2146,7 +2904,7 @@ mod tests {
             cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, .. } => {
@@ -2187,7 +2945,7 @@ mod tests {
             cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, .. } => {
@@ -2211,7 +2969,7 @@ mod tests {
             sessions.insert("s2".to_string(), Session::new("s2".to_string(), 30, 100, None).unwrap());
         }
 
-        let response = process_message(ClientMessage::List, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(ClientMessage::List, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Sessions { names } => {
@@ -2234,7 +2992,7 @@ mod tests {
         }
 
         let msg = ClientMessage::Input { data: b"echo hello\n".to_vec() };
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Output { .. } => {}
@@ -2255,7 +3013,7 @@ mod tests {
         }
 
         let msg = ClientMessage::Resize { rows: 30, cols: 100 };
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Output { .. } => {}
@@ -2285,7 +3043,7 @@ mod tests {
             session_name: "victim".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Killed { session_name } => {
@@ -2309,7 +3067,7 @@ mod tests {
             session_name: "nonexistent".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
     }
@@ -2320,7 +3078,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut current_session: Option<String> = None;
 
-        let response = process_message(ClientMessage::Shutdown, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(ClientMessage::Shutdown, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::ShuttingDown));
         assert!(shutdown.load(Ordering::SeqCst));
@@ -2340,7 +3098,7 @@ mod tests {
             sessions.insert("test".to_string(), session);
         }
 
-        let response = process_message(ClientMessage::Detach, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(ClientMessage::Detach, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Detached));
 
@@ -2570,7 +3328,7 @@ mod tests {
             cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, terminal_state } => {
@@ -2600,7 +3358,7 @@ mod tests {
             cwd: None,
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Attached { session_name, is_new, terminal_state } => {
@@ -2895,7 +3653,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut current_session: Option<String> = None;
 
-        let response = process_message(ClientMessage::ListStale, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(ClientMessage::ListStale, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::StaleSessions { sessions: _ } => {
@@ -2919,7 +3677,7 @@ mod tests {
             session_name: "nonexistent-session-xyz123".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         // Should get an error since the metadata file doesn't exist
         assert!(matches!(response, DaemonResponse::Error { .. }));
@@ -2944,7 +3702,7 @@ mod tests {
             session_name: "existing-session".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         // Should fail since session already exists
         match response {
@@ -3078,7 +3836,7 @@ mod tests {
             new_name: "new_name".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Renamed { old_name, new_name } => {
@@ -3106,7 +3864,7 @@ mod tests {
             new_name: "new_name".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
     }
@@ -3130,7 +3888,7 @@ mod tests {
             new_name: "session2".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
 
@@ -3158,7 +3916,7 @@ mod tests {
             new_name: "".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
 
@@ -3227,7 +3985,7 @@ mod tests {
             session_name: "preview_test".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         match response {
             DaemonResponse::Previewed { session_name, terminal_state } => {
@@ -3252,7 +4010,7 @@ mod tests {
             session_name: "nonexistent".to_string(),
         };
 
-        let response = process_message(msg, &sessions, &shutdown, &mut current_session);
+        let response = process_msg(msg, &sessions, &shutdown, &mut current_session);
 
         assert!(matches!(response, DaemonResponse::Error { .. }));
     }

@@ -26,19 +26,15 @@ use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, Session
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::colors;
 
-/// Build version including git hash
-const VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    " (",
-    env!("GIT_HASH"),
-    ")"
-);
+/// Version from Cargo.toml
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Sidebar TUI - A terminal session manager
 #[derive(Parser, Debug)]
 #[command(name = "sb")]
 #[command(version = VERSION)]
 #[command(about = "A terminal session manager with session persistence", long_about = None)]
+#[command(disable_version_flag = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -46,6 +42,10 @@ struct Cli {
     /// Session name to attach to (if not specified, attaches to most recent or shows welcome state)
     #[arg(short, long)]
     session: Option<String>,
+
+    /// Print version information
+    #[arg(short = 'v', short_alias = 'V', long = "version", action = clap::ArgAction::Version)]
+    version: (),
 }
 
 #[derive(Subcommand, Debug)]
@@ -203,10 +203,10 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
-    // Initialize TUI.
-    // Mouse capture starts DISABLED by default to allow native text selection.
-    // Users can enable mouse scroll mode with Ctrl+M which enables mouse capture.
+    // Initialize TUI with mouse capture enabled for scroll wheel support.
+    // Users can disable with Ctrl+M if they need native text selection.
     let mut ratatui_term = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
 
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
 
@@ -292,6 +292,8 @@ impl DaemonApp {
         if !app_state.sessions.is_empty() {
             app_state.focus = Focus::Terminal;
         }
+        // Mouse mode enabled by default for scroll wheel support
+        app_state.mouse_mode = true;
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: session_name.to_string(),
@@ -304,11 +306,13 @@ impl DaemonApp {
 
     /// Create app in welcome state (no sessions, sidebar focused).
     fn new_welcome_state(rows: u16, cols: u16) -> Self {
-        // Focus stays on Sidebar (default) when no sessions
+        let mut app_state = AppState::default();
+        // Mouse mode enabled by default for scroll wheel support
+        app_state.mouse_mode = true;
         Self {
             term_emulator: Terminal::new(rows, cols),
             session_name: String::new(),
-            app_state: AppState::default(),
+            app_state,
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
@@ -336,6 +340,35 @@ fn send_daemon_message(stream: &mut UnixStream, msg: ClientMessage) -> Result<Da
     let response: DaemonResponse = decode_message(stream)
         .context("Failed to read daemon response")?;
     Ok(response)
+}
+
+/// Helper to send a sync message and wait for the response, skipping any in-flight
+/// async Output messages that arrived before the response.
+///
+/// This solves a race condition where the daemon sends Output messages from the old
+/// session while the client is waiting for an Attached/Killed/etc. response. Without
+/// this, `send_daemon_message` would return an Output message instead of the expected
+/// response, causing session switches to silently fail and session A content to bleed
+/// into session B's terminal.
+fn send_daemon_message_sync(stream: &mut UnixStream, msg: ClientMessage, app: &mut DaemonApp) -> Result<DaemonResponse> {
+    let encoded = encode_message(&msg)?;
+    stream.write_all(&encoded)?;
+    stream.flush()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    loop {
+        let response: DaemonResponse = decode_message(stream)
+            .context("Failed to read daemon response")?;
+        match response {
+            // In-flight output from the old session: apply to the current terminal
+            // (still session A at this point) and keep waiting for the real response.
+            DaemonResponse::Output { data } => {
+                if !data.is_empty() {
+                    app.process_output(&data);
+                }
+            }
+            other => return Ok(other),
+        }
+    }
 }
 
 /// Drain all pending async messages before a synchronous operation.
@@ -525,6 +558,19 @@ fn run_attached(
     // Get current working directory
     let cwd = env::current_dir().ok();
 
+    // Load workspace info from daemon to get the active workspace name
+    let workspace_response = send_daemon_message(stream, ClientMessage::ListWorkspaces)?;
+    let (workspaces_list, active_workspace_name) = match workspace_response {
+        DaemonResponse::Workspaces { workspaces, active_workspace } => (workspaces, active_workspace),
+        DaemonResponse::Error { message } => {
+            bail!("Failed to list workspaces: {}", message);
+        }
+        other => {
+            bail!("Unexpected workspace response: {:?}", other);
+        }
+    };
+    let _ = workspaces_list; // Will be used in workspace overlay later
+
     // Load session list from daemon
     let session_list_response = send_daemon_message(stream, ClientMessage::List)?;
     let mut daemon_sessions = match session_list_response {
@@ -578,9 +624,10 @@ fn run_attached(
         }
     }
 
-    // Convert daemon sessions to AppState sessions
+    // Convert daemon sessions to AppState sessions, filtered to active workspace
     let sessions: Vec<Session> = daemon_sessions
         .iter()
+        .filter(|info| info.workspace_name == active_workspace_name)
         .map(|info| {
             let mut session = Session::new(&info.name);
             session.is_attached = info.is_attached;
@@ -641,6 +688,7 @@ fn run_attached(
 
         // Create app with session list
         let mut app = DaemonApp::new(term_rows, term_cols, &session_name, initial_sessions);
+        app.app_state.workspace_name = active_workspace_name.clone();
 
         // Restore terminal state if reattaching
         if let Some(state_bytes) = terminal_state.1 {
@@ -650,7 +698,9 @@ fn run_attached(
         app
     } else {
         // Welcome state - no sessions to attach to
-        DaemonApp::new_welcome_state(term_rows, term_cols)
+        let mut app = DaemonApp::new_welcome_state(term_rows, term_cols);
+        app.app_state.workspace_name = active_workspace_name.clone();
+        app
     };
 
     let mut last_size = (size.width, size.height);
@@ -696,13 +746,14 @@ fn run_attached(
                             // Drain any pending async messages before sync operation
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
-                            // Create new session via daemon
-                            let create_response = send_daemon_message(stream, ClientMessage::Attach {
+                            // Create new session via daemon (use sync variant to skip any
+                            // remaining in-flight Output messages from the old session)
+                            let create_response = send_daemon_message_sync(stream, ClientMessage::Attach {
                                 session_name: name.clone(),
                                 rows: term_rows,
                                 cols: term_cols,
                                 cwd: cwd.clone(),
-                            })?;
+                            }, &mut app)?;
 
                             match create_response {
                                 DaemonResponse::Attached { session_name: attached_name, is_new: _, terminal_state: new_state } => {
@@ -741,9 +792,9 @@ fn run_attached(
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                             // Kill session via daemon
-                            let kill_response = send_daemon_message(stream, ClientMessage::Kill {
+                            let kill_response = send_daemon_message_sync(stream, ClientMessage::Kill {
                                 session_name: name.clone(),
-                            })?;
+                            }, &mut app)?;
 
                             match kill_response {
                                 DaemonResponse::Killed { .. } => {
@@ -751,12 +802,12 @@ fn run_attached(
                                     if app.session_name == name {
                                         if let Some(session) = app.app_state.sessions.first() {
                                             // Switch to first available session
-                                            let switch_response = send_daemon_message(stream, ClientMessage::Attach {
+                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
                                                 session_name: session.name.clone(),
                                                 rows: term_rows,
                                                 cols: term_cols,
                                                 cwd: cwd.clone(),
-                                            })?;
+                                            }, &mut app)?;
 
                                             if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
                                                 app.session_name = attached_name;
@@ -785,10 +836,10 @@ fn run_attached(
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                             // Rename session via daemon
-                            let rename_response = send_daemon_message(stream, ClientMessage::Rename {
+                            let rename_response = send_daemon_message_sync(stream, ClientMessage::Rename {
                                 old_name: old_name.clone(),
                                 new_name: new_name.clone(),
-                            })?;
+                            }, &mut app)?;
 
                             match rename_response {
                                 DaemonResponse::Renamed { .. } => {
@@ -817,15 +868,15 @@ fn run_attached(
                                 drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                                 // Detach from current session
-                                let _ = send_daemon_message(stream, ClientMessage::Detach);
+                                let _ = send_daemon_message_sync(stream, ClientMessage::Detach, &mut app);
 
                                 // Attach to new session
-                                let switch_response = send_daemon_message(stream, ClientMessage::Attach {
+                                let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
                                     session_name: name.clone(),
                                     rows: term_rows,
                                     cols: term_cols,
                                     cwd: cwd.clone(),
-                                })?;
+                                }, &mut app)?;
 
                                 match switch_response {
                                     DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } => {
@@ -1188,8 +1239,8 @@ mod tests {
         let content = buffer_to_string(buffer);
 
         assert!(
-            content.contains("Sidebar TUI"),
-            "Should contain 'Sidebar TUI', got: {}",
+            content.contains("Default"),
+            "Should contain workspace name 'Default', got: {}",
             content
         );
     }
@@ -1229,8 +1280,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title "Sidebar TUI" starts inside the border + padding (position 2, row 1)
-        // Find the 'S' in "Sidebar TUI" and check its foreground color
+        // Workspace name title starts inside the border + padding (position 2, row 1)
+        // Check the first character's foreground color
         let cell = &buffer[(2, 1)];
         assert_eq!(
             cell.fg,
@@ -1258,10 +1309,10 @@ mod tests {
             title_content.push_str(cell.symbol());
         }
 
-        // The title should start at the beginning (left-aligned after padding)
+        // The workspace name should start at the beginning (left-aligned after padding)
         assert!(
-            title_content.starts_with("Sidebar TUI"),
-            "Title should be left-aligned, got: '{}'",
+            title_content.starts_with("Default"),
+            "Title should be left-aligned workspace name, got: '{}'",
             title_content
         );
     }
@@ -1417,10 +1468,10 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // The sidebar title should still appear
+        // The sidebar workspace name title should still appear
         assert!(
-            content.contains("Sidebar TUI"),
-            "Should contain 'Sidebar TUI', got: {}",
+            content.contains("Default"),
+            "Should contain workspace name 'Default', got: {}",
             content
         );
     }
