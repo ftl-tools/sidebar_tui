@@ -526,6 +526,12 @@ impl AppState {
                     }
                     return EventResult::Consumed;
                 }
+                // Quit - show confirmation prompt (same as sidebar)
+                KeyCode::Char('q') => {
+                    self.mode = AppMode::Normal;
+                    self.request_confirmation(ConfirmAction::Quit);
+                    return EventResult::Consumed;
+                }
                 _ => return EventResult::Consumed,
             }
         }
@@ -1573,5 +1579,37 @@ mod tests {
         };
         let result = state.handle_key(ctrl_key('w'));
         assert_eq!(result, EventResult::OpenWorkspaceOverlay);
+    }
+
+    #[test]
+    fn test_workspace_overlay_q_shows_quit_confirmation() {
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default", "Work"], "Default")),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(result, EventResult::Consumed);
+        // Overlay should be closed and quit confirmation should be shown
+        assert!(matches!(state.mode, AppMode::Confirming(_)), "Mode should be Confirming after 'q'");
+        if let AppMode::Confirming(ref confirm) = state.mode {
+            assert_eq!(confirm.action, ConfirmAction::Quit, "Should be Quit confirmation");
+        }
+    }
+
+    #[test]
+    fn test_workspace_overlay_move_mode_q_shows_quit_confirmation() {
+        use crate::state::WorkspaceOverlayState;
+        let ov = WorkspaceOverlayState::new_move_mode(
+            vec!["Default".to_string(), "Work".to_string()],
+            "Default".to_string(),
+            "mysession".to_string(),
+        );
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(result, EventResult::Consumed);
+        assert!(matches!(state.mode, AppMode::Confirming(_)), "Mode should be Confirming after 'q'");
     }
 }

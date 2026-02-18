@@ -47,6 +47,17 @@ Completed sidebar_tui-mpt: Added E2E test `test_truncation_indicators_when_sessi
 
 Fixed failing `test_vi_editing_workflow` E2E test (stale vim swap file causing ATTENTION dialog). Implemented complete workspace data model in daemon.rs: `WorkspaceMetadata` struct with persistence, `workspace_name` field added to `SessionInfo` and `SessionMetadata`, workspace CRUD operations in `ClientMessage`/`DaemonResponse`, and all process_message handlers for ListWorkspaces, CreateWorkspace, RenameWorkspace, DeleteWorkspace, SwitchWorkspace, MoveSessionToWorkspace, SaveWorkspaceState. Daemon auto-creates "Default" workspace on first run. Added `DaemonClient` workspace methods. Updated sidebar to show active workspace name (not "Sidebar TUI"). Updated AppState with `workspace_name` field. Updated `run_attached` to load workspace info and filter sessions by active workspace. Added 9 new workspace unit tests (369 lib + 41 E2E all pass). Closed sidebar_tui-hka and sidebar_tui-56v.
 
+## 2026-02-18 - Verification Check Found Incomplete Work
+
+Verification check found incomplete work:
+1. **Workspace overlay `q` key not handled**: The spec requires `q` to show a quit confirmation prompt when the workspace overlay is open. Currently in `input_handler.rs` `handle_workspace_overlay_key()`, `q` falls through to the `_ => return EventResult::Consumed` catch-all and is silently ignored. (sidebar_tui-rt3)
+2. **Workspace overlay quit path wrong**: The spec says "When the workspace overlay is open, the right side of the hint bar should show `q Quit` as the quit path (since `q` works directly from the overlay)." But `hint_bar.rs` line 532 returns `"esc → q Quit"` for `AppMode::WorkspaceOverlay`. (sidebar_tui-6ch)
+3. **Workspace overlay missing `q` keybinding in hint bar**: The hint bar bindings for the workspace overlay normal mode don't include `q - Quit`, contrary to the spec. (sidebar_tui-235)
+
+## 2026-02-18 - Fixed Workspace Overlay q Key and Hint Bar Issues
+
+Fixed three related workspace overlay issues (sidebar_tui-rt3, sidebar_tui-6ch, sidebar_tui-235): the `q` key in the workspace overlay now shows a quit confirmation prompt (instead of being silently consumed), the quit path in the hint bar correctly shows `q Quit` (not `esc → q Quit`), and the `q Quit` keybinding is listed in the normal mode overlay bindings. Added 4 unit tests covering these behaviors in `hint_bar.rs` and `input_handler.rs`, and added a new E2E test `test_workspace_overlay_q_shows_quit_confirmation` verifying the full flow. All 384 lib tests pass.
+
 ## 2026-02-18 - Added Missing E2E Tests for Spec Coverage
 
 Audited spec vs E2E test coverage and found 5 bullet-point requirements without dedicated tests. Added 5 new E2E tests: `test_ctrl_n_from_terminal_enters_create_mode` (mod+n from terminal pane enters create mode), `test_ctrl_w_from_terminal_opens_workspace_overlay` (mod+w from terminal opens workspace overlay), `test_delete_session_focus_transitions` (deleting a session moves focus to next/previous session per spec), `test_session_name_character_restrictions` (invalid chars like !, @, # are rejected in session rename), and `test_workspace_name_truncated_in_sidebar_header` (workspace names > 24 chars show ... truncation in sidebar). All 380 lib + all E2E tests pass. Closed sidebar_tui-cze, sidebar_tui-1ub, sidebar_tui-979, sidebar_tui-kze, sidebar_tui-uf6.

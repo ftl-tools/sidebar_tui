@@ -5723,3 +5723,83 @@ fn test_workspace_name_truncated_in_sidebar_header() {
     sb.flush().expect("Failed to flush");
     let _ = sb.get_process_mut().exit(true);
 }
+
+/// Test that pressing 'q' in the workspace overlay shows a quit confirmation prompt.
+/// Per spec: "q - Quit: Show the quit confirmation prompt in the hint bar, same as when on the sidebar pane."
+/// Also verifies:
+/// - The hint bar shows 'q Quit' as the quit path (not 'esc -> q Quit')
+/// - The 'q' keybinding is listed in the hint bar when the overlay is open
+#[test]
+#[serial]
+fn test_workspace_overlay_q_shows_quit_confirmation() {
+    let _timer = TestTimer::new("test_workspace_overlay_q_shows_quit_confirmation");
+    let _env = TestEnv::setup();
+    cleanup_test_sessions();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open the workspace overlay with Ctrl+W
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+
+    // Wait for workspace overlay to appear
+    let mut found_overlay = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Workspaces") {
+            found_overlay = true;
+            eprintln!("Workspace overlay open:\n{}", screen);
+            break;
+        }
+    }
+    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+
+    // Verify hint bar shows 'q' for Quit (not 'esc → q')
+    let screen = session.screen_contents();
+    assert!(
+        screen.contains("q Quit"),
+        "Hint bar should show 'q Quit' when workspace overlay is open. Got:\n{}",
+        screen
+    );
+
+    // Verify the quit path on the right shows just 'q Quit' (not 'esc → q Quit')
+    // The quit path should NOT contain 'esc → q'
+    assert!(
+        !screen.contains("esc → q") && !screen.contains("esc -> q"),
+        "Quit path should not show 'esc → q' when workspace overlay is open. Got:\n{}",
+        screen
+    );
+
+    // Press 'q' to request quit confirmation
+    session.send("q").expect("Failed to send 'q'");
+
+    // Wait for quit confirmation to appear
+    let mut found_confirmation = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Yes") || screen.contains("No") {
+            found_confirmation = true;
+            eprintln!("After 'q' in overlay (quit confirmation):\n{}", screen);
+            break;
+        }
+    }
+
+    let screen = session.screen_contents();
+    assert!(
+        found_confirmation,
+        "Pressing 'q' in workspace overlay should show quit confirmation. Got:\n{}",
+        screen
+    );
+
+    // Cancel the quit with 'n'
+    session.send("n").expect("Failed to send 'n'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}

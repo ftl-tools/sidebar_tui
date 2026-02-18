@@ -513,6 +513,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     KeybindingInfo::new("r", "Rename"),
                     KeybindingInfo::new("d", "Delete"),
                     KeybindingInfo::new("esc", "Close"),
+                    KeybindingInfo::new("q", "Quit"),
                 ]
             }
         }
@@ -529,7 +530,7 @@ pub fn get_quit_path_for_state(state: &AppState) -> String {
         AppMode::CreateMode { .. } => "esc → q Quit".to_string(),
         AppMode::Drafting(_) | AppMode::Renaming(_) => "esc → q Quit".to_string(),
         AppMode::Confirming(_) => "n → q Quit".to_string(),
-        AppMode::WorkspaceOverlay(_) => "esc → q Quit".to_string(),
+        AppMode::WorkspaceOverlay(_) => "q Quit".to_string(),
     }
 }
 
@@ -1288,4 +1289,40 @@ mod tests {
         let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
         assert!(mouse_binding.is_some(), "Sidebar with sessions should have ctrl + s binding");
     }
+
+    // === Workspace Overlay Hint Bar Tests ===
+
+    #[test]
+    fn test_get_bindings_workspace_overlay_includes_q_quit() {
+        use crate::state::WorkspaceOverlayState;
+        let state = AppState {
+            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new(
+                vec!["Default".to_string()],
+                "Default".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let bindings = get_bindings_for_state(&state);
+        assert!(
+            bindings.iter().any(|b| b.key == "q" && b.description == "Quit"),
+            "Workspace overlay bindings should include 'q' for Quit"
+        );
+    }
+
+    #[test]
+    fn test_get_quit_path_workspace_overlay_shows_q_quit() {
+        use crate::state::WorkspaceOverlayState;
+        let state = AppState {
+            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new(
+                vec!["Default".to_string()],
+                "Default".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let quit_path = get_quit_path_for_state(&state);
+        assert_eq!(quit_path, "q Quit", "Workspace overlay quit path should be 'q Quit'");
+    }
+
 }
