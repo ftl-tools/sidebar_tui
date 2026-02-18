@@ -782,6 +782,9 @@ fn run_attached(
     };
 
     let mut last_size = (size.width, size.height);
+    // Track hint bar height separately so we can detect when it changes (e.g., wraps to 2 lines)
+    // and resize the PTY accordingly without a full terminal resize event.
+    let mut last_hint_bar_height: u16 = 1;
 
     // Set stream to non-blocking for the main loop
     stream.set_read_timeout(Some(Duration::from_millis(10)))?;
@@ -803,6 +806,26 @@ fn run_attached(
 
         // Expire timed messages before rendering
         app.tick_timed_message();
+
+        // Dynamically recompute hint bar height before each render.
+        // The hint bar can wrap to 2+ lines depending on the current mode/state, and if so the
+        // terminal pane must shrink to match the smaller available area.
+        {
+            let mut hb = hint_bar_for_state(&app.app_state);
+            if let Some((text, _)) = &app.timed_message {
+                hb.show_message(text);
+            }
+            let current_hint_bar_height = hb.calculate_height(last_size.0);
+            if current_hint_bar_height != last_hint_bar_height {
+                last_hint_bar_height = current_hint_bar_height;
+                term_rows = last_size.1.saturating_sub(2 + last_hint_bar_height);
+                app.resize(term_rows, term_cols);
+                let resize_msg = ClientMessage::Resize { rows: term_rows, cols: term_cols };
+                let encoded = encode_message(&resize_msg)?;
+                stream.write_all(&encoded)?;
+                stream.flush()?;
+            }
+        }
 
         // Render the UI once after processing all available messages
         ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
@@ -1294,8 +1317,15 @@ fn run_attached(
                         last_size = (width, height);
                         // Account for sidebar, horizontal padding (left + right), and terminal border
                         term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
-                        // Account for terminal border (top + bottom), and hint bar height (1)
-                        term_rows = height.saturating_sub(3);
+                        // Account for terminal border (top + bottom), and dynamic hint bar height
+                        {
+                            let mut hb = hint_bar_for_state(&app.app_state);
+                            if let Some((text, _)) = &app.timed_message {
+                                hb.show_message(text);
+                            }
+                            last_hint_bar_height = hb.calculate_height(width);
+                        }
+                        term_rows = height.saturating_sub(2 + last_hint_bar_height);
                         app.resize(term_rows, term_cols);
 
                         // Send resize to daemon
@@ -2318,9 +2348,9 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // When terminal is focused, hint bar should show "ctrl + b" binding
+        // When terminal is focused, hint bar should show "ctrl + b Sidebar" binding
         assert!(
-            content.contains("ctrl + b") || content.contains("Focus on sidebar"),
+            content.contains("ctrl + b"),
             "Hint bar should show 'ctrl + b' binding when terminal is focused, got: {}",
             content
         );

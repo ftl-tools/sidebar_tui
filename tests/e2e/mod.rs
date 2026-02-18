@@ -401,15 +401,15 @@ fn test_layout_matches_spec() {
         );
     }
 
-    // Verify the title text has purple foreground color (ANSI 55)
+    // Verify the title text has purple foreground color (ANSI 99)
     // Note: vt100 uses different color representations
     // Title starts at row 1, column 2 (after border + padding)
     if let Some(title_cell) = session.cell_at(1, 2) {
         let fg_color = title_cell.fgcolor();
-        // Purple is ANSI index 55
+        // Purple is ANSI index 99
         assert!(
-            matches!(fg_color, vt100::Color::Idx(55)),
-            "Title should have purple foreground (55), got: {:?}",
+            matches!(fg_color, vt100::Color::Idx(99)),
+            "Title should have purple foreground (99), got: {:?}",
             fg_color
         );
     }
@@ -1255,7 +1255,7 @@ fn test_focus_switching() {
     session.read_and_parse().expect("Failed to read output");
 
     // Initially terminal is focused (because we have a session)
-    // Sidebar border should be DARK_GREY (238), terminal border should be FOCUSED_BORDER (250)
+    // Sidebar border should be DARK_GREY (238), terminal border should be FOCUSED_BORDER (99)
     // Check sidebar corner color
     if let Some(sidebar_corner) = session.cell_at(0, 0) {
         let sidebar_fg = sidebar_corner.fgcolor();
@@ -1271,7 +1271,7 @@ fn test_focus_switching() {
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
-    // Poll until sidebar is focused (color 250) or timeout
+    // Poll until sidebar is focused (color 99) or timeout
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
@@ -1279,13 +1279,13 @@ fn test_focus_switching() {
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
             eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
-            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+            if matches!(sidebar_fg, vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar border should be focused (250) when sidebar focused");
+    assert!(sidebar_focused, "Sidebar border should be focused (99) when sidebar focused");
 
     // Focus terminal again with Enter (select session)
     session.send_enter().expect("Failed to send enter");
@@ -1325,7 +1325,7 @@ fn test_tab_focuses_terminal() {
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
-    // Poll until sidebar is focused (color 250) or timeout
+    // Poll until sidebar is focused (color 99) or timeout
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
@@ -1333,13 +1333,13 @@ fn test_tab_focuses_terminal() {
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
             eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
-            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+            if matches!(sidebar_fg, vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
 
     // Now send Tab to focus terminal - this should work just like Enter
     session.send_tab().expect("Failed to send tab");
@@ -3222,13 +3222,13 @@ fn test_welcome_state_on_fresh_start() {
             "Should show 'q Quit' in hint bar for welcome state. Got:\n{}",
             screen_contents
         );
-        // Sidebar should be focused (border color 250) in welcome state
+        // Sidebar should be focused (border color 99) in welcome state
         if let Some(sidebar_corner) = parser.screen().cell(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
             eprintln!("Sidebar border color in welcome state: {:?}", sidebar_fg);
             assert!(
-                matches!(sidebar_fg, vt100::Color::Idx(250)),
-                "Sidebar should be focused in welcome state (border 250). Got: {:?}",
+                matches!(sidebar_fg, vt100::Color::Idx(99)),
+                "Sidebar should be focused in welcome state (border 99). Got: {:?}",
                 sidebar_fg
             );
         }
@@ -4324,12 +4324,12 @@ fn test_esc_jump_back() {
     std::thread::sleep(Duration::from_millis(500));
     read_into_parser(&mut session, &mut parser);
 
-    // Verify sidebar is focused (border color should be 250)
+    // Verify sidebar is focused (border color should be 99)
     let sidebar_border_cell = parser.screen().cell(0, 0).cloned();
     if let Some(cell) = &sidebar_border_cell {
         assert!(
-            matches!(cell.fgcolor(), vt100::Color::Idx(250)),
-            "Sidebar border should be focused (250). Got: {:?}",
+            matches!(cell.fgcolor(), vt100::Color::Idx(99)),
+            "Sidebar border should be focused (99). Got: {:?}",
             cell.fgcolor()
         );
     }
@@ -4426,7 +4426,7 @@ fn test_space_focuses_terminal_from_sidebar() {
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
-    // Poll until sidebar is focused (color 250) or timeout
+    // Poll until sidebar is focused (color 99) or timeout
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
@@ -4434,13 +4434,13 @@ fn test_space_focuses_terminal_from_sidebar() {
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
             eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
-            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+            if matches!(sidebar_fg, vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
 
     // Now send Space to focus terminal - this should work just like Enter
     session.send_space().expect("Failed to send space");
@@ -4480,7 +4480,7 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
     session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
-    // Poll until sidebar is focused (color 250) or timeout
+    // Poll until sidebar is focused (color 99) or timeout
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
@@ -4488,13 +4488,13 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
             eprintln!("Polling Ctrl+B - sidebar border color: {:?}", sidebar_fg);
-            if matches!(sidebar_fg, vt100::Color::Idx(250)) {
+            if matches!(sidebar_fg, vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
 
     // Now send Right Arrow to focus terminal - this should work just like Enter
     session.send_right_arrow().expect("Failed to send right arrow");
@@ -5359,6 +5359,58 @@ fn test_ctrl_w_from_terminal_opens_workspace_overlay() {
         found_overlay,
         "Ctrl+W from terminal pane should open workspace overlay showing 'Workspaces'. Got:\n{}",
         screen
+    );
+
+    // Close the overlay with Esc
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that bare 'w' key from the sidebar opens the workspace overlay.
+/// Per spec: "'w' or 'mod + w' - Workspaces: Open the workspace overlay.
+/// ('w' works from the sidebar pane; 'mod + w' works from any pane.)"
+#[test]
+fn test_w_from_sidebar_opens_workspace_overlay() {
+    let _timer = TestTimer::new("test_w_from_sidebar_opens_workspace_overlay");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Ensure sidebar is focused (it is by default on startup/welcome state)
+    let screen = session.screen_contents();
+    // In welcome state, sidebar is focused. If a session was already created, we need to focus sidebar.
+    if screen.contains("ctrl + b") || screen.contains("ctrl+b") {
+        // Terminal is focused - move to sidebar
+        session.send_ctrl_b().expect("Failed to send Ctrl+B");
+        std::thread::sleep(Duration::from_millis(300));
+        session.read_and_parse().expect("Failed to read output");
+    }
+
+    // Send bare 'w' from sidebar
+    session.send("w").expect("Failed to send 'w'");
+
+    // Wait for workspace overlay to appear
+    let mut found_overlay = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Workspaces") {
+            found_overlay = true;
+            eprintln!("After 'w' from sidebar (workspace overlay):\n{}", screen);
+            break;
+        }
+    }
+
+    assert!(
+        found_overlay,
+        "Bare 'w' from sidebar should open workspace overlay. Got:\n{}",
+        session.screen_contents()
     );
 
     // Close the overlay with Esc
@@ -6247,7 +6299,7 @@ fn test_ctrl_t_from_terminal_focuses_sidebar() {
     let terminal_border_col = 28u16;
     let terminal_border_focused = (0..height).any(|row| {
         if let Some(cell) = session.parser.screen().cell(row, terminal_border_col) {
-            matches!(cell.fgcolor(), vt100::Color::Idx(250))
+            matches!(cell.fgcolor(), vt100::Color::Idx(99))
         } else {
             false
         }
@@ -6426,6 +6478,87 @@ fn test_hint_bar_wraps_when_keybindings_too_long() {
     );
 
     let _ = session.quit();
+}
+
+/// Test that when the hint bar wraps to 2 lines, the terminal content is NOT cut off.
+/// This verifies the fix for sidebar_tui-xac: the PTY is resized to account for the hint
+/// bar's actual height so that the bottom rows of terminal output remain visible.
+#[test]
+fn test_hint_bar_2lines_does_not_cut_off_terminal() {
+    let _timer = TestTimer::new("test_hint_bar_2lines_does_not_cut_off_terminal");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let (height, _width) = session.parser.screen().size();
+
+    // Fill the terminal with output (many lines, guaranteed to reach the bottom)
+    // Use the terminal which should be focused by default after session creation
+    session.send("seq 1 50\n").expect("Failed to send seq command");
+    std::thread::sleep(Duration::from_millis(600));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_with_terminal_focused = session.screen_contents();
+    eprintln!("Screen with terminal focused:\n{}", screen_with_terminal_focused);
+
+    // Find the bottom row of the terminal border (should be at height-2, since hint bar is 1 line)
+    // The terminal bottom border should appear near row height-2
+    // When terminal is focused, hint bar is 1 line
+
+    // Now focus sidebar - this will cause the hint bar to expand to 2 lines
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(c) = session.cell_at(0, 0) {
+            if matches!(c.fgcolor(), vt100::Color::Idx(99)) {
+                break;
+            }
+        }
+    }
+
+    // Count hint bar rows from the bottom
+    let mut hint_bar_rows = 0u16;
+    for row in (0..height).rev() {
+        let row_has_hint_bg = (0.._width).any(|col| {
+            session.parser.screen().cell(row, col)
+                .map(|c| matches!(c.bgcolor(), vt100::Color::Idx(238)))
+                .unwrap_or(false)
+        });
+        if row_has_hint_bg {
+            hint_bar_rows += 1;
+        } else {
+            break;
+        }
+    }
+
+    eprintln!("Hint bar spans {} rows with sidebar focused", hint_bar_rows);
+
+    // The hint bar should now be 2 lines
+    assert!(
+        hint_bar_rows >= 2,
+        "Hint bar should wrap to at least 2 rows when sidebar is focused. Got {} rows.",
+        hint_bar_rows
+    );
+
+    // With the fix, the terminal bottom border should now be at row (height - 1 - hint_bar_rows)
+    // (the hint bar took hint_bar_rows rows, and one row above is the terminal border)
+    let expected_terminal_bottom_border_row = height - 1 - hint_bar_rows;
+
+    // Check that there's a border character at that position (not hint bar background)
+    // The row just above the hint bar should NOT be a hint bar row
+    if let Some(cell) = session.parser.screen().cell(expected_terminal_bottom_border_row, 0) {
+        assert!(
+            !matches!(cell.bgcolor(), vt100::Color::Idx(238)),
+            "Row {} should be the terminal border, not hint bar. Got bgcolor: {:?}",
+            expected_terminal_bottom_border_row,
+            cell.bgcolor()
+        );
+    }
+
+    session.quit().expect("Failed to quit");
 }
 
 /// Test that the terminal pane is non-interactive during create mode.
@@ -6629,8 +6762,8 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
 
 /// Test that 'b' key focuses terminal from sidebar (per spec: "enter, space, →, b, mod+b, or mod+t - Select")
 #[test]
-fn test_b_focuses_terminal_from_sidebar() {
-    let _timer = TestTimer::new("test_b_focuses_terminal_from_sidebar");
+fn test_b_jump_back_from_sidebar() {
+    let _timer = TestTimer::new("test_b_jump_back_from_sidebar");
     let env = TestEnv::setup();
 
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
@@ -6642,21 +6775,21 @@ fn test_b_focuses_terminal_from_sidebar() {
     // Focus sidebar with Ctrl+B
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
 
-    // Poll until sidebar is focused (color 250) or timeout
+    // Poll until sidebar is focused (color 99, purple) or timeout
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
         session.read_and_parse().expect("Failed to read output");
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
-            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(250)) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+    assert!(sidebar_focused, "Sidebar should become focused (99, purple) after Ctrl+B");
 
-    // Send 'b' to focus terminal - should work just like Enter
+    // Send 'b' to jump back - should focus terminal (like Esc)
     session.session.write_all(&[b'b']).expect("Failed to send 'b'");
     session.session.flush().expect("Failed to flush");
 
@@ -6672,15 +6805,15 @@ fn test_b_focuses_terminal_from_sidebar() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing 'b'");
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing 'b' (jump back)");
 
     session.quit().expect("Failed to quit");
 }
 
-/// Test that Ctrl+B from sidebar focuses terminal (per spec: "mod+b - Select: Focus on terminal pane")
+/// Test that Ctrl+B from sidebar jumps back (per spec: "b, mod+b, mod+t - Jump Back")
 #[test]
-fn test_ctrl_b_from_sidebar_focuses_terminal() {
-    let _timer = TestTimer::new("test_ctrl_b_from_sidebar_focuses_terminal");
+fn test_ctrl_b_from_sidebar_jump_back() {
+    let _timer = TestTimer::new("test_ctrl_b_from_sidebar_jump_back");
     let env = TestEnv::setup();
 
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
@@ -6692,21 +6825,21 @@ fn test_ctrl_b_from_sidebar_focuses_terminal() {
     // Focus sidebar with Ctrl+B
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
 
-    // Poll until sidebar is focused (color 250)
+    // Poll until sidebar is focused (color 99, purple)
     let mut sidebar_focused = false;
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(200));
         session.read_and_parse().expect("Failed to read output");
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
-            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(250)) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(99)) {
                 sidebar_focused = true;
                 break;
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+    assert!(sidebar_focused, "Sidebar should become focused (99, purple) after Ctrl+B");
 
-    // Send Ctrl+B again to focus the terminal - should work like Enter, not be a no-op
+    // Send Ctrl+B again to jump back - should focus terminal (like Esc)
     session.send_ctrl_b().expect("Failed to send second Ctrl+B");
 
     // Poll until terminal is focused (sidebar color 238)
@@ -6721,7 +6854,7 @@ fn test_ctrl_b_from_sidebar_focuses_terminal() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Ctrl+B from sidebar");
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Ctrl+B (jump back) from sidebar");
 
     session.quit().expect("Failed to quit");
 }

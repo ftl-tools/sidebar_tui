@@ -47,19 +47,9 @@ impl AppState {
         // Handle modifier keys - all terminal mod+* commands should work from sidebar
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                // Focus terminal (mod+b / mod+t) - same as Enter when in sidebar
+                // Jump back (mod+b / mod+t) - same as Esc when in sidebar
                 KeyCode::Char('b') | KeyCode::Char('t') => {
-                    if !self.sessions.is_empty() {
-                        let name = self.sessions.get(self.selected_index)
-                            .map(|s| s.name.clone())
-                            .unwrap_or_default();
-                        self.focus_terminal();
-                        if !name.is_empty() {
-                            return EventResult::SwitchSession { name };
-                        }
-                    } else {
-                        self.focus_terminal();
-                    }
+                    self.jump_back();
                     EventResult::Consumed
                 }
                 // Toggle mouse mode (for text selection vs scroll wheel)
@@ -165,19 +155,12 @@ impl AppState {
                 EventResult::Consumed
             }
 
-            // Focus terminal (b) - same as Enter when in sidebar
+            // Open workspace overlay (w) - same as mod+w from sidebar
+            KeyCode::Char('w') => EventResult::OpenWorkspaceOverlay,
+
+            // Jump back (b) - same as Esc when in sidebar
             KeyCode::Char('b') => {
-                if !self.sessions.is_empty() {
-                    let name = self.sessions.get(self.selected_index)
-                        .map(|s| s.name.clone())
-                        .unwrap_or_default();
-                    self.focus_terminal();
-                    if !name.is_empty() {
-                        return EventResult::SwitchSession { name };
-                    }
-                } else {
-                    self.focus_terminal();
-                }
+                self.jump_back();
                 EventResult::Consumed
             }
 
@@ -822,70 +805,59 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_ctrl_b_focuses_terminal() {
+    fn test_sidebar_ctrl_b_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("test")],
+            sessions: vec![Session::new("a"), Session::new("b")],
             focus: Focus::Sidebar,
+            selected_index: 0,
             ..Default::default()
         };
+        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_sidebar();
+        state.select_next(); // Now at 1
 
-        // Ctrl+B from sidebar should focus the terminal (like Enter)
-        let result = state.handle_key(ctrl_key('b'));
-        assert!(matches!(result, EventResult::SwitchSession { .. }));
-        assert_eq!(state.focus, Focus::Terminal);
-    }
-
-    #[test]
-    fn test_sidebar_ctrl_b_focuses_terminal_when_empty() {
-        let mut state = AppState {
-            focus: Focus::Sidebar,
-            ..Default::default()
-        };
-
-        // Ctrl+B from sidebar with no sessions still focuses terminal (welcome state)
+        // Ctrl+B from sidebar should jump back (like Esc)
         let result = state.handle_key(ctrl_key('b'));
         assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.selected_index, 0); // Jumped back
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
-    fn test_sidebar_ctrl_t_focuses_terminal() {
+    fn test_sidebar_ctrl_t_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("test")],
+            sessions: vec![Session::new("a"), Session::new("b")],
             focus: Focus::Sidebar,
+            selected_index: 0,
             ..Default::default()
         };
+        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_sidebar();
+        state.select_next(); // Now at 1
 
-        // Ctrl+T from sidebar should focus the terminal (like Enter)
+        // Ctrl+T from sidebar should jump back (like Esc)
         let result = state.handle_key(ctrl_key('t'));
-        assert!(matches!(result, EventResult::SwitchSession { .. }));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.selected_index, 0); // Jumped back
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
-    fn test_sidebar_b_focuses_terminal() {
+    fn test_sidebar_b_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("test")],
+            sessions: vec![Session::new("a"), Session::new("b")],
             focus: Focus::Sidebar,
+            selected_index: 0,
             ..Default::default()
         };
+        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_sidebar();
+        state.select_next(); // Now at 1
 
-        // 'b' from sidebar should focus the terminal (like Enter)
-        let result = state.handle_key(key(KeyCode::Char('b')));
-        assert!(matches!(result, EventResult::SwitchSession { .. }));
-        assert_eq!(state.focus, Focus::Terminal);
-    }
-
-    #[test]
-    fn test_sidebar_b_focuses_terminal_when_empty() {
-        let mut state = AppState {
-            focus: Focus::Sidebar,
-            ..Default::default()
-        };
-
-        // 'b' from sidebar with no sessions still focuses terminal (welcome state)
+        // 'b' from sidebar should jump back (like Esc)
         let result = state.handle_key(key(KeyCode::Char('b')));
         assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.selected_index, 0); // Jumped back
         assert_eq!(state.focus, Focus::Terminal);
     }
 
@@ -1662,6 +1634,30 @@ mod tests {
         };
         let result = state.handle_key(ctrl_key('w'));
         assert_eq!(result, EventResult::OpenWorkspaceOverlay);
+    }
+
+    #[test]
+    fn test_w_opens_workspace_overlay_from_sidebar() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            workspaces: vec!["Default".to_string()],
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(result, EventResult::OpenWorkspaceOverlay);
+    }
+
+    #[test]
+    fn test_w_does_not_open_workspace_overlay_from_terminal() {
+        // bare 'w' should NOT open overlay from terminal (only ctrl+w)
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            workspaces: vec!["Default".to_string()],
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('w')));
+        // 'w' from terminal should be passed through, not consumed
+        assert_eq!(result, EventResult::NotConsumed);
     }
 
     #[test]

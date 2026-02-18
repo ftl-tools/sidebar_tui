@@ -5,8 +5,10 @@
 
 use ratatui::style::Color;
 
-/// Purple (ANSI 55) - Used for title text, keybindings in hint bar.
-pub const PURPLE: Color = Color::Indexed(55);
+/// Purple (ANSI 99) - Used for title text, keybindings in hint bar.
+/// Changed from 55 (#5f00af, dark purple) to 99 (#875fff) to match the focused border color
+/// and try a brighter, more violet tone across all purple text elements.
+pub const PURPLE: Color = Color::Indexed(99);
 
 /// White (ANSI 255) - Used for session names, terminal text.
 pub const WHITE: Color = Color::Indexed(255);
@@ -21,9 +23,10 @@ pub const DARK_PURPLE: Color = Color::Indexed(54);
 /// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
 pub const DARK_RED: Color = Color::Indexed(88);
 
-/// Focused border (ANSI 55) - Used for focused pane outlines.
-/// Purple to visually distinguish the active pane.
-pub const FOCUSED_BORDER: Color = Color::Indexed(55);
+/// Focused border (ANSI 99) - Used for focused pane outlines.
+/// Changed from 93 (#5f00ff, blue-violet) to 99 (#875fff) which is a softer violet-purple
+/// that sits between blue and purple, offering better contrast against dark backgrounds as thin lines.
+pub const FOCUSED_BORDER: Color = Color::Indexed(99);
 
 /// Separator (ANSI 242) - Used for the separator in the hint bar.
 /// More gray than white for visual distinction.
@@ -34,9 +37,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_purple_is_indexed_55() {
+    fn test_purple_is_indexed_99() {
         match PURPLE {
-            Color::Indexed(n) => assert_eq!(n, 55),
+            Color::Indexed(n) => assert_eq!(n, 99),
             _ => panic!("PURPLE should be Color::Indexed"),
         }
     }
@@ -74,9 +77,9 @@ mod tests {
     }
 
     #[test]
-    fn test_focused_border_is_indexed_55() {
+    fn test_focused_border_is_indexed_99() {
         match FOCUSED_BORDER {
-            Color::Indexed(n) => assert_eq!(n, 55),
+            Color::Indexed(n) => assert_eq!(n, 99),
             _ => panic!("FOCUSED_BORDER should be Color::Indexed"),
         }
     }
@@ -91,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_all_colors_are_distinct() {
-        // FOCUSED_BORDER == PURPLE (both are ANSI 55) so excluded from this check
+        // FOCUSED_BORDER == PURPLE (both are ANSI 99) so excluded from this check
         let colors = [PURPLE, WHITE, DARK_GREY, DARK_PURPLE, DARK_RED, SEPARATOR];
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {

@@ -452,13 +452,14 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     ]
                 } else {
                     vec![
-                        KeybindingInfo::new("enter/b/tab", "Select"),
+                        KeybindingInfo::new("enter/tab", "Select"),
+                        KeybindingInfo::new("b/ctrl + b", "Jump back"),
                         KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
                         KeybindingInfo::new("d", "Delete"),
                         KeybindingInfo::new("m", "Move to workspace"),
-                        KeybindingInfo::new("ctrl + w", "Workspaces"),
+                        KeybindingInfo::new("w", "Workspaces"),
                         KeybindingInfo::new("ctrl + s", mouse_desc),
                         KeybindingInfo::new("q", "Quit"),
                     ]
@@ -466,7 +467,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             }
             Focus::Terminal => vec![
                 KeybindingInfo::new("ctrl + n", "New"),
-                KeybindingInfo::new("ctrl + b", "Focus on sidebar"),
+                KeybindingInfo::new("ctrl + b", "Sidebar"),
                 KeybindingInfo::new("ctrl + w", "Workspaces"),
                 KeybindingInfo::new("ctrl + s", mouse_desc),
                 KeybindingInfo::new("ctrl + q", "Quit"),
@@ -1057,7 +1058,8 @@ mod tests {
 
         let bindings = get_bindings_for_state(&state);
 
-        assert!(bindings.iter().any(|b| b.key == "enter/b/tab"), "Should have 'enter/b/tab' binding");
+        assert!(bindings.iter().any(|b| b.key == "enter/tab"), "Should have 'enter/tab' (select) binding");
+        assert!(bindings.iter().any(|b| b.key == "b/ctrl + b"), "Should have 'b/ctrl + b' (jump back) binding");
         assert!(bindings.iter().any(|b| b.key == "↑/↓/j/k"), "Should have vim navigation binding");
         assert!(bindings.iter().any(|b| b.key == "r"), "Should have 'r' (rename) binding");
         assert!(bindings.iter().any(|b| b.key == "d"), "Should have 'd' (delete) binding");

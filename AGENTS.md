@@ -3,6 +3,7 @@ Build and re-install the cli after every functioning batch of work so that users
 ## Running Tests
 
 **Unit tests** (fast, ~1s):
+
 ```bash
 cargo test --lib
 ```
@@ -10,11 +11,13 @@ cargo test --lib
 **E2E tests** — the full suite takes ~170s with 4 threads. **You MUST set `timeout: 600000` on the Bash tool call**, or the tool will kill the process at 120s and you'll see truncated output that looks like "1 passed; 68 filtered out" — a false signal that makes it look like a filter argument problem. It is not. It is a timeout kill.
 
 Full suite:
+
 ```bash
 cargo test --test e2e -- --test-threads=4 2>&1 | tee /tmp/e2e_out.txt; grep -E "test result|FAILED|error\[" /tmp/e2e_out.txt
 ```
 
 Single test:
+
 ```bash
 cargo test --test e2e "test_name_here" -- --nocapture 2>&1 | tee /tmp/e2e_out.txt; tail -20 /tmp/e2e_out.txt
 ```
@@ -49,3 +52,47 @@ std::thread::sleep(Duration::from_millis(300));
 ```
 
 Remember to call `iso.cleanup()` manually at the end of the test (since you're not using `TestEnv` which does it in `Drop`).
+
+<!-- mulch:start -->
+
+## Project Expertise (Mulch)
+
+This project uses [Mulch](https://github.com/jayminwest/mulch) for structured expertise management.
+
+**At the start of every session**, run:
+
+```bash
+mulch prime
+```
+
+This injects project-specific conventions, patterns, decisions, and other learnings into your context.
+Use `mulch prime --files src/foo.ts` to load only records relevant to specific files.
+
+**Before completing your task**, review your work for insights worth preserving — conventions discovered,
+patterns applied, failures encountered, or decisions made — and record them:
+
+```bash
+mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
+```
+
+Link evidence when available: `--evidence-commit <sha>`, `--evidence-bead <id>`
+
+Run `mulch status` to check domain health and entry counts.
+Run `mulch --help` for full usage.
+Mulch write commands use file locking and atomic writes — multiple agents can safely record to the same domain concurrently.
+
+### Before You Finish
+
+1. Discover what to record:
+   ```bash
+   mulch learn
+   ```
+2. Store insights from this work session:
+   ```bash
+   mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
+   ```
+3. Validate and commit:
+   ```bash
+   mulch sync
+   ```
+   <!-- mulch:end -->
