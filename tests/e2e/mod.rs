@@ -310,6 +310,48 @@ impl SbSession {
     fn cell_at(&self, row: u16, col: u16) -> Option<vt100::Cell> {
         self.parser.screen().cell(row, col).cloned()
     }
+
+    /// Send Ctrl+W to open workspace overlay
+    fn send_ctrl_w(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Ctrl+W is ASCII 23
+        self.session.write_all(&[23])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Send Esc key
+    fn send_esc(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.session.write_all(&[0x1b])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Send Down Arrow key
+    fn send_down_arrow(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.session.write_all(&[0x1b, b'[', b'B'])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Send Up Arrow key
+    fn send_up_arrow(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.session.write_all(&[0x1b, b'[', b'A'])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Send Ctrl+B to focus sidebar
+    fn send_ctrl_b(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Ctrl+B is ASCII 2
+        self.session.write_all(&[2])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
+    /// Get full screen contents
+    fn screen_contents(&self) -> String {
+        self.parser.screen().contents()
+    }
 }
 
 impl Drop for SbSession {
@@ -4852,4 +4894,374 @@ fn test_truncation_indicators_when_session_list_overflows() {
     session.write_all(&[17]).expect("Failed to send Ctrl+Q");
     session.flush().expect("Failed to flush");
     let _ = session.get_process_mut().exit(true);
+}
+
+/// Test that on a fresh start, the 'Default' workspace is auto-created.
+#[test]
+#[serial]
+fn test_workspace_auto_create_default() {
+    let _timer = TestTimer::new("test_workspace_auto_create_default");
+    let _env = TestEnv::setup();
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Sidebar title row should show "Default"
+    let second_row = session.row_contents(1);
+    assert!(
+        second_row.contains("Default"),
+        "Sidebar should show 'Default' workspace on fresh start. Got: '{}'",
+        second_row
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test create workspace via ctrl+w -> n.
+#[test]
+#[serial]
+fn test_create_workspace() {
+    let _timer = TestTimer::new("test_create_workspace");
+    let _env = TestEnv::setup();
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After Ctrl+W:\n{}", screen);
+    assert!(
+        screen.contains("Workspace") || screen.contains("Default"),
+        "Workspace overlay should be open. Got:\n{}", screen
+    );
+
+    // Press 'n' to start creating a new workspace
+    session.send("n").expect("Failed to send 'n'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Type the workspace name
+    session.send("MyWork").expect("Failed to type workspace name");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Confirm creation
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Re-open the overlay to verify the new workspace appears
+    session.send_ctrl_w().expect("Failed to re-open Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After re-opening overlay:\n{}", screen);
+    assert!(
+        screen.contains("MyWork"),
+        "New workspace 'MyWork' should appear in overlay. Got:\n{}", screen
+    );
+
+    session.send_esc().expect("Failed to send Esc");
+    session.quit().expect("Failed to quit");
+}
+
+/// Test switching between workspaces and verifying session isolation.
+#[test]
+#[serial]
+fn test_switch_workspace() {
+    let _timer = TestTimer::new("test_switch_workspace");
+    let _env = TestEnv::setup();
+
+    // Create a second workspace first using CLI
+    let binary_path = get_binary_path();
+    let _: std::process::Output = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", "Work"])
+        .output()
+        .expect("Failed to create workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Sidebar should show "Default" workspace
+    let second_row = session.row_contents(1);
+    assert!(
+        second_row.contains("Default"),
+        "Should start in Default workspace. Got: '{}'", second_row
+    );
+
+    // Focus sidebar and open workspace overlay
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay:\n{}", screen);
+
+    // Navigate to "Work" (navigate down to select it, Default is first)
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching to Work workspace:\n{}", screen);
+    assert!(
+        screen.contains("Work"),
+        "Sidebar should show 'Work' workspace after switching. Got:\n{}", screen
+    );
+
+    // Session isolation: session from Default should not be in Work
+    let session_visible = screen.contains(&session.session_name);
+    assert!(
+        !session_visible,
+        "Session '{}' from Default workspace should not be visible in Work workspace. Got:\n{}",
+        session.session_name, screen
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test rename workspace via ctrl+w -> r.
+#[test]
+#[serial]
+fn test_rename_workspace() {
+    let _timer = TestTimer::new("test_rename_workspace");
+    let _env = TestEnv::setup();
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar and open workspace overlay
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Press 'r' to rename the selected workspace (Default)
+    session.send("r").expect("Failed to send 'r'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Clear the current name and type new name
+    // "Default" is 7 chars - send 7 backspaces
+    for _ in 0..7 {
+        session.send_backspace().expect("Failed to send backspace");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    session.send("Renamed").expect("Failed to type new name");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.send_enter().expect("Failed to confirm rename");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After renaming workspace:\n{}", screen);
+    assert!(
+        screen.contains("Renamed"),
+        "Sidebar should show renamed workspace 'Renamed'. Got:\n{}", screen
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test delete workspace via ctrl+w -> d.
+#[test]
+#[serial]
+fn test_delete_workspace() {
+    let _timer = TestTimer::new("test_delete_workspace");
+    let _env = TestEnv::setup();
+
+    // Create a second workspace to delete
+    let binary_path = get_binary_path();
+    let _: std::process::Output = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", "ToDelete"])
+        .output()
+        .expect("Failed to create workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar and open workspace overlay
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay:\n{}", screen);
+
+    // Navigate to "ToDelete" (comes after "Default" alphabetically)
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Press 'd' to delete
+    session.send("d").expect("Failed to send 'd'");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Re-open overlay to verify it's gone
+    session.send_ctrl_w().expect("Failed to re-open overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After re-opening overlay:\n{}", screen);
+    assert!(
+        !screen.contains("ToDelete"),
+        "Deleted workspace 'ToDelete' should not appear. Got:\n{}", screen
+    );
+
+    session.send_esc().expect("Failed to send Esc");
+    session.quit().expect("Failed to quit");
+}
+
+/// Test move session between workspaces.
+#[test]
+#[serial]
+fn test_move_session_between_workspaces() {
+    let _timer = TestTimer::new("test_move_session_between_workspaces");
+    let _env = TestEnv::setup();
+
+    // Create a destination workspace
+    let binary_path = get_binary_path();
+    let _: std::process::Output = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", "Destination"])
+        .output()
+        .expect("Failed to create workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let session_name = session.session_name.clone();
+
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify we're in Default workspace and can see our session
+    let screen = session.screen_contents();
+    assert!(
+        screen.contains(&session_name),
+        "Session '{}' should be visible in Default. Got:\n{}", session_name, screen
+    );
+
+    // Focus sidebar and press 'm' to move session
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send("m").expect("Failed to send 'm'");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After 'm' (move mode overlay):\n{}", screen);
+    assert!(
+        screen.contains("Move") || screen.contains("Workspace"),
+        "Move-to-workspace overlay should be open. Got:\n{}", screen
+    );
+
+    // Navigate to "Destination" (comes after "Default" alphabetically)
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to confirm move");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Now switch to Destination workspace and verify session is there
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Navigate to Destination
+    session.send_down_arrow().expect("Failed to send Down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch workspace");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching to Destination workspace:\n{}", screen);
+    assert!(
+        screen.contains("Destination"),
+        "Should be in Destination workspace. Got:\n{}", screen
+    );
+    assert!(
+        screen.contains(&session_name),
+        "Session '{}' should be visible in Destination workspace after move. Got:\n{}",
+        session_name, screen
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test workspace persists across daemon restart.
+/// Writes workspaces.json directly to simulate a previous state and verifies
+/// the daemon loads it on startup.
+#[test]
+#[serial]
+fn test_workspace_persists_across_restart() {
+    let _timer = TestTimer::new("test_workspace_persists_across_restart");
+    let _env = TestEnv::setup();
+
+    let binary_path = get_binary_path();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let data_dir = std::path::PathBuf::from(home).join(".local/share/sidebar-tui");
+    let workspaces_file = data_dir.join("workspaces.json");
+
+    // Shut down daemon so we can safely write workspaces.json
+    let _ = std::process::Command::new(&binary_path).args(["shutdown"]).output();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Write workspaces with "Persistent" workspace
+    let ws_json = r#"[{"name":"Default","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0},{"name":"Persistent","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0}]"#;
+    std::fs::write(&workspaces_file, ws_json).expect("Failed to write workspaces.json");
+
+    // Restart daemon by listing
+    let _ = std::process::Command::new(&binary_path).args(["list"]).output();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Spawn sb and verify it loads the persisted workspaces
+    let mut session = SbSession::new().expect("Failed to spawn sb after restart");
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay and verify the workspace is there
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay after restart:\n{}", screen);
+    assert!(
+        screen.contains("Persistent"),
+        "Workspace 'Persistent' should persist across daemon restart. Got:\n{}", screen
+    );
+
+    session.send_esc().expect("Failed to send Esc");
+    session.quit().expect("Failed to quit");
 }

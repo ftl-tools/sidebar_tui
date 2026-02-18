@@ -80,6 +80,32 @@ enum Commands {
     },
     /// Shutdown the daemon and kill all sessions
     Shutdown,
+    /// Manage workspaces
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkspaceAction {
+    /// List all workspaces
+    List,
+    /// Create a new workspace
+    Create {
+        /// Workspace name
+        name: String,
+    },
+    /// Delete a workspace
+    Delete {
+        /// Workspace name
+        name: String,
+    },
+    /// Switch active workspace
+    Switch {
+        /// Workspace name
+        name: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -95,6 +121,7 @@ fn main() -> Result<()> {
         Some(Commands::Restore { session }) => cmd_restore(&session),
         Some(Commands::Forget { session }) => cmd_forget(&session),
         Some(Commands::Shutdown) => cmd_shutdown(),
+        Some(Commands::Workspace { action }) => cmd_workspace(action),
         None => cmd_attach(cli.session.as_deref()),
     }
 }
@@ -179,6 +206,37 @@ fn cmd_shutdown() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Manage workspaces via CLI.
+fn cmd_workspace(action: WorkspaceAction) -> Result<()> {
+    let mut client = connect_to_daemon()?;
+    match action {
+        WorkspaceAction::List => {
+            let (workspaces, active) = client.list_workspaces()?;
+            if workspaces.is_empty() {
+                println!("No workspaces found.");
+            } else {
+                for ws in &workspaces {
+                    let marker = if ws.name == active { "* " } else { "  " };
+                    println!("{}{}", marker, ws.name);
+                }
+            }
+        }
+        WorkspaceAction::Create { name } => {
+            client.create_workspace(&name)?;
+            println!("Created workspace '{}'", name);
+        }
+        WorkspaceAction::Delete { name } => {
+            client.delete_workspace(&name)?;
+            println!("Deleted workspace '{}'", name);
+        }
+        WorkspaceAction::Switch { name } => {
+            client.switch_workspace(&name)?;
+            println!("Switched to workspace '{}'", name);
+        }
+    }
+    Ok(())
 }
 
 /// Start the daemon process (runs in foreground).
@@ -918,20 +976,37 @@ fn run_attached(
                             }
                         }
                         EventResult::OpenWorkspaceOverlay => {
-                            // Open workspace overlay with current workspace list
-                            let workspaces = app.app_state.workspaces.clone();
-                            let active = app.app_state.workspace_name.clone();
+                            // Fetch fresh workspace list from daemon before opening overlay
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let ws_response = send_daemon_message_sync(stream, ClientMessage::ListWorkspaces, &mut app)?;
+                            let (workspaces, active) = if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
+                                let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+                                (names, active_workspace)
+                            } else {
+                                (app.app_state.workspaces.clone(), app.app_state.workspace_name.clone())
+                            };
+                            app.app_state.workspaces = workspaces.clone();
+                            app.app_state.workspace_name = active.clone();
                             app.app_state.mode = AppMode::WorkspaceOverlay(
                                 WorkspaceOverlayState::new(workspaces, active)
                             );
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::OpenMoveToWorkspaceOverlay { session_name } => {
-                            // Open workspace overlay in move-session mode
-                            let workspaces = app.app_state.workspaces.clone();
-                            let active = app.app_state.workspace_name.clone();
+                            // Fetch fresh workspace list from daemon before opening move overlay
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let ws_response = send_daemon_message_sync(stream, ClientMessage::ListWorkspaces, &mut app)?;
+                            let (workspaces, active) = if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
+                                let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+                                (names, active_workspace)
+                            } else {
+                                (app.app_state.workspaces.clone(), app.app_state.workspace_name.clone())
+                            };
+                            app.app_state.workspaces = workspaces.clone();
                             app.app_state.mode = AppMode::WorkspaceOverlay(
                                 WorkspaceOverlayState::new_move_mode(workspaces, active, session_name)
                             );
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::SwitchWorkspace { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
