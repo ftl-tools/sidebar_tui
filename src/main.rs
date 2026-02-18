@@ -1181,12 +1181,20 @@ fn run_attached(
                                 name: name.clone(),
                             }, &mut app)?;
                             match response {
-                                DaemonResponse::WorkspaceDeleted { name: deleted } => {
-                                    app.app_state.workspaces.retain(|w| w != &deleted);
-                                    // Update overlay state if still open
-                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
-                                        ov.workspaces = app.app_state.workspaces.clone();
-                                        ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                DaemonResponse::WorkspaceDeleted { .. } => {
+                                    // Refresh workspace list from daemon (handles auto-created Default)
+                                    let ws_response = send_daemon_message_sync(stream,
+                                        ClientMessage::ListWorkspaces, &mut app)?;
+                                    if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
+                                        let names: Vec<String> = workspaces.into_iter().map(|w| w.name).collect();
+                                        app.app_state.workspaces = names.clone();
+                                        app.app_state.workspace_name = active_workspace.clone();
+                                        // Update overlay state if still open
+                                        if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                            ov.workspaces = names;
+                                            ov.active_workspace = active_workspace;
+                                            ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                        }
                                     }
                                 }
                                 DaemonResponse::Error { message } => {

@@ -6667,3 +6667,97 @@ fn test_ctrl_b_from_sidebar_focuses_terminal() {
 
     session.quit().expect("Failed to quit");
 }
+
+/// Test that deleting the last workspace auto-creates a new "Default" workspace (spec line 33).
+/// "If deleting a workspace would leave none, a new 'Default' workspace is auto-created."
+#[test]
+fn test_delete_last_workspace_auto_creates_default() {
+    let _timer = TestTimer::new("test_delete_last_workspace_auto_creates_default");
+    let env = TestEnv::setup();
+
+    // Create a workspace "LastOne" to switch to, so we can then delete "Default"
+    let _: std::process::Output = env.iso_command()
+        .args(["workspace", "create", "LastOne"])
+        .output()
+        .expect("Failed to create 'LastOne' workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay and switch to "LastOne" (it's after "Default" alphabetically)
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay (initial):\n{}", screen);
+
+    // Navigate down to "LastOne" and switch to it
+    session.send_down_arrow().expect("Failed to navigate down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch to LastOne");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching to LastOne:\n{}", screen);
+    assert!(screen.contains("LastOne"), "Should now be in 'LastOne' workspace. Got:\n{}", screen);
+
+    // Open workspace overlay. Selection starts at active workspace "LastOne" (index 1).
+    // Navigate UP to "Default" (index 0) and delete it.
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Overlay before deleting Default:\n{}", screen);
+    assert!(screen.contains("Default"), "Default workspace should still exist. Got:\n{}", screen);
+
+    session.send_up_arrow().expect("Failed to navigate up to Default");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send("d").expect("Failed to press 'd' to delete Default");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Confirm deletion of "Default"
+    session.send("y").expect("Failed to confirm deletion of Default");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify only "LastOne" remains
+    session.send_ctrl_w().expect("Failed to re-open overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After deleting Default (only LastOne should remain):\n{}", screen);
+    assert!(!screen.contains("Default"), "Default workspace should be gone. Got:\n{}", screen);
+    assert!(screen.contains("LastOne"), "LastOne workspace should still exist. Got:\n{}", screen);
+
+    // Now delete "LastOne" - it's the last workspace, so "Default" should be auto-created.
+    // Selection starts at "LastOne" (the only/active workspace).
+    session.send("d").expect("Failed to press 'd' to delete LastOne");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Delete confirmation for LastOne:\n{}", screen);
+
+    session.send("y").expect("Failed to confirm deletion of LastOne");
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // The sidebar/overlay should now show "Default" - the auto-created workspace
+    let screen = session.screen_contents();
+    eprintln!("After deleting last workspace (Default should be auto-created):\n{}", screen);
+    assert!(
+        screen.contains("Default"),
+        "A new 'Default' workspace should be auto-created after deleting the last workspace. Got:\n{}", screen
+    );
+
+    session.quit().expect("Failed to quit");
+}

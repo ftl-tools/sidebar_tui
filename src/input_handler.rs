@@ -552,8 +552,8 @@ impl AppState {
                             return EventResult::Consumed;
                         };
                         let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
-                        // Don't delete the last workspace or the active workspace
-                        if workspace_name.is_empty() || workspaces.len() <= 1 {
+                        // Don't try to delete an empty workspace name
+                        if workspace_name.is_empty() {
                             return EventResult::Consumed;
                         }
                         // Close overlay and show confirmation
