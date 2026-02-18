@@ -11,8 +11,8 @@ use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
 use crossterm::event::{self, Event, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
@@ -1449,33 +1449,33 @@ fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     let main_area = vertical_chunks[0];
     let hint_bar_area = vertical_chunks[1];
 
-    // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
-    let horizontal_chunks = Layout::horizontal([
-        Constraint::Length(SIDEBAR_WIDTH),
-        Constraint::Fill(1),
-    ])
-    .split(main_area);
+    if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
+        // Full-screen workspace overlay replaces sidebar and terminal panes.
+        render_workspace_overlay(frame, main_area, overlay);
+    } else {
+        // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
+        let horizontal_chunks = Layout::horizontal([
+            Constraint::Length(SIDEBAR_WIDTH),
+            Constraint::Fill(1),
+        ])
+        .split(main_area);
 
-    let sidebar_area = horizontal_chunks[0];
-    render_sidebar_with_state(frame, sidebar_area, &app.app_state);
+        let sidebar_area = horizontal_chunks[0];
+        render_sidebar_with_state(frame, sidebar_area, &app.app_state);
 
-    // Render terminal at full area - padding is applied inside the border by render function
-    let terminal_area = horizontal_chunks[1];
-    render_terminal_emulator_with_state(frame, terminal_area, &mut app.term_emulator, &app.app_state);
+        // Render terminal at full area - padding is applied inside the border by render function
+        let terminal_area = horizontal_chunks[1];
+        render_terminal_emulator_with_state(frame, terminal_area, &mut app.term_emulator, &app.app_state);
+
+        // Set cursor position: if in drafting/renaming mode, show cursor in sidebar
+        // Otherwise, the terminal emulator handles its own cursor
+        if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(&app.app_state, sidebar_area) {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
 
     // Render hint bar
     frame.render_widget(hint_bar, hint_bar_area);
-
-    // Set cursor position: if in drafting/renaming mode, show cursor in sidebar
-    // Otherwise, the terminal emulator handles its own cursor
-    if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(&app.app_state, sidebar_area) {
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
-
-    // Render workspace overlay on top if active
-    if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
-        render_workspace_overlay(frame, frame.area(), overlay);
-    }
 }
 
 /// Render the static UI layout (for tests without PTY).
@@ -1501,27 +1501,32 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
     let main_area = vertical_chunks[0];
     let hint_bar_area = vertical_chunks[1];
 
-    // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
-    let horizontal_chunks = Layout::horizontal([
-        Constraint::Length(SIDEBAR_WIDTH),
-        Constraint::Fill(1),
-    ])
-    .split(main_area);
+    if let AppMode::WorkspaceOverlay(ref overlay) = state.mode {
+        // Full-screen workspace overlay replaces sidebar and terminal panes.
+        render_workspace_overlay(frame, main_area, overlay);
+    } else {
+        // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
+        let horizontal_chunks = Layout::horizontal([
+            Constraint::Length(SIDEBAR_WIDTH),
+            Constraint::Fill(1),
+        ])
+        .split(main_area);
 
-    let sidebar_area = horizontal_chunks[0];
-    render_sidebar_with_state(frame, sidebar_area, state);
+        let sidebar_area = horizontal_chunks[0];
+        render_sidebar_with_state(frame, sidebar_area, state);
 
-    // Render terminal at full area - padding is applied inside the border by render function
-    let terminal_area = horizontal_chunks[1];
-    render_terminal_view_with_state(frame, terminal_area, state);
+        // Render terminal at full area - padding is applied inside the border by render function
+        let terminal_area = horizontal_chunks[1];
+        render_terminal_view_with_state(frame, terminal_area, state);
+
+        // Set cursor position for drafting/renaming modes
+        if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(state, sidebar_area) {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
 
     // Render hint bar
     frame.render_widget(hint_bar, hint_bar_area);
-
-    // Set cursor position for drafting/renaming modes
-    if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(state, sidebar_area) {
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
 }
 
 /// Shrink a rect by horizontal padding only (left and right sides)
@@ -1607,44 +1612,42 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &mut
 
 /// Render the workspace overlay as a floating window centered on screen.
 fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOverlayState) {
-    // Overlay dimensions: 40 wide, up to 20 tall (capped by screen height)
-    let overlay_width = 40u16.min(area.width.saturating_sub(4));
-    let max_visible = 10usize;
-    let list_height = (overlay.workspaces.len().min(max_visible) + 2) as u16; // +2 for borders
-    let input_height = if overlay.renaming.is_some() || overlay.drafting_workspace.is_some() { 3u16 } else { 0 };
-    let overlay_height = (list_height + input_height + 2).min(area.height.saturating_sub(4)); // +2 for title/hint
-
-    // Center the overlay
-    let overlay_x = area.x + area.width.saturating_sub(overlay_width) / 2;
-    let overlay_y = area.y + area.height.saturating_sub(overlay_height) / 2;
-    let overlay_area = Rect::new(overlay_x, overlay_y, overlay_width, overlay_height);
+    // Full-screen overlay: clear the area and fill it.
+    frame.render_widget(Clear, area);
 
     // Determine title based on mode
-    let title = match &overlay.mode {
-        WorkspaceOverlayMode::Normal => " Workspaces ",
-        WorkspaceOverlayMode::MoveSession { .. } => " Move Session to Workspace ",
+    let title_text = match &overlay.mode {
+        WorkspaceOverlayMode::Normal => "Workspaces",
+        WorkspaceOverlayMode::MoveSession { .. } => "Move to Workspace",
     };
 
-    // Clear the area and draw border
-    frame.render_widget(Clear, overlay_area);
-    let block = Block::default()
-        .title(title)
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(colors::PURPLE));
-    let inner = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
+    // Layout: title row (1) + list (rest) + optional input area at bottom (3 if active)
+    let input_height = if overlay.renaming.is_some() || overlay.drafting_workspace.is_some() { 3u16 } else { 0 };
 
-    // Split inner into list area and (optionally) input area
-    let (list_area, input_area_opt) = if input_height > 0 && inner.height > input_height {
+    let (title_area, list_area, input_area_opt) = if input_height > 0 && area.height > 1 + input_height {
         let chunks = Layout::vertical([
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(input_height),
-        ]).split(inner);
-        (chunks[0], Some(chunks[1]))
+        ]).split(area);
+        (chunks[0], chunks[1], Some(chunks[2]))
     } else {
-        (inner, None)
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ]).split(area);
+        (chunks[0], chunks[1], None)
     };
+
+    // Render title: "Workspaces" in purple, left aligned with 1 char of left padding
+    let title_para = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", title_text),
+        Style::default().fg(colors::PURPLE),
+    )));
+    frame.render_widget(title_para, title_area);
+
+    // Calculate max visible rows (fill the available list area)
+    let max_visible = list_area.height as usize;
 
     // Render workspace list
     let visible_start = overlay.scroll_offset;
@@ -1658,10 +1661,10 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
             let is_selected = actual_index == overlay.selected_index;
 
             let prefix = if is_active { "* " } else { "  " };
-            let display = format!("{}{}", prefix, name);
+            let display = format!(" {}{}", prefix, name);
 
             let style = if is_selected {
-                Style::default().fg(Color::White).bg(Color::Indexed(238)).add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::White).bg(Color::Indexed(238))
             } else if is_active {
                 Style::default().fg(colors::PURPLE)
             } else {
@@ -1684,16 +1687,16 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
         let indicator_style = Style::default().fg(Color::Indexed(238));
         if visible_start > 0 && list_area.height > 0 {
             let top_line = Line::from(Span::styled("...", indicator_style));
-            frame.render_widget(Paragraph::new(top_line), Rect::new(list_area.x, list_area.y, list_area.width, 1));
+            frame.render_widget(Paragraph::new(top_line), Rect::new(list_area.x + 1, list_area.y, list_area.width.saturating_sub(1), 1));
         }
         if visible_end < overlay.workspaces.len() && list_area.height > 0 {
             let bot_y = list_area.y + list_area.height.saturating_sub(1);
             let bot_line = Line::from(Span::styled("...", indicator_style));
-            frame.render_widget(Paragraph::new(bot_line), Rect::new(list_area.x, bot_y, list_area.width, 1));
+            frame.render_widget(Paragraph::new(bot_line), Rect::new(list_area.x + 1, bot_y, list_area.width.saturating_sub(1), 1));
         }
     }
 
-    // Render input area (renaming or drafting)
+    // Render input area (renaming or drafting) at the bottom
     if let Some(input_area) = input_area_opt {
         let (label, text, cursor_pos) = if let Some(ref rename) = overlay.renaming {
             ("Rename: ", rename.new_name.as_str(), rename.cursor_position)

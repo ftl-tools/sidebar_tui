@@ -155,12 +155,12 @@ On the very first launch (no workspaces or sessions exist), a workspace named "D
 
 #### Workspace Overlay
 
-The workspace overlay is a full-screen layer that appears on top of the normal TUI layout when `mod + w` is pressed from any pane. It is used to view, switch, create, rename, and delete workspaces.
+The workspace overlay is a full-screen view that replaces the sidebar and terminal panes when `mod + w` is pressed from any pane. It is used to view, switch, create, rename, and delete workspaces. The hint bar remains visible at the bottom.
 
 **Layout:**
 
-The overlay covers the entire terminal window. It shows:
-- A title row at the top: "Workspaces" in purple text (color 99), left aligned.
+The overlay covers the entire main area (sidebar + terminal panes area). It shows:
+- A title row at the top: "Workspaces" in purple text (color 99), left aligned with one char of left padding.
 - A list of all workspaces below the title, one per row, in white (color 255). The currently active workspace is marked with a `*` indicator to the left of its name.
 - The selected/highlighted workspace row has a dark grey background (color 238), same as selected sessions in the sidebar.
 - If the list is too long to fit, truncation indicators (`...`) appear at the top and/or bottom, same as in the sidebar session list.
