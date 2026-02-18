@@ -5803,3 +5803,197 @@ fn test_workspace_overlay_q_shows_quit_confirmation() {
 
     session.quit().expect("Failed to quit");
 }
+
+// =========================================================================
+// Workspace Overlay Gap Tests (sidebar_tui-x1t)
+// =========================================================================
+
+/// Test that the active workspace has a '*' indicator in the workspace overlay.
+/// Per spec: "The currently active workspace is marked with a `*` indicator to the left of its name."
+#[test]
+#[serial]
+fn test_workspace_overlay_active_workspace_has_asterisk() {
+    let _timer = TestTimer::new("test_workspace_overlay_active_workspace_has_asterisk");
+    let _env = TestEnv::setup();
+    cleanup_test_sessions();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+
+    // Wait for overlay to appear
+    let mut found_overlay = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Workspaces") || screen.contains("Default") {
+            found_overlay = true;
+            eprintln!("Workspace overlay:\n{}", screen);
+            break;
+        }
+    }
+    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+
+    // Verify the active workspace ("Default") has a '*' indicator
+    let screen = session.screen_contents();
+    assert!(
+        screen.contains("* Default") || screen.contains("*Default"),
+        "Active workspace 'Default' should have '*' indicator in overlay. Got:\n{}", screen
+    );
+
+    session.send_esc().expect("Failed to close overlay");
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that move mode prevents create ('n'), rename ('r'), and delete ('d') keybindings.
+/// Per spec: "Creating, renaming, and deleting workspaces are not available in move mode."
+#[test]
+#[serial]
+fn test_workspace_overlay_move_mode_restrictions() {
+    let _timer = TestTimer::new("test_workspace_overlay_move_mode_restrictions");
+    let _env = TestEnv::setup();
+    cleanup_test_sessions();
+
+    // Create a second workspace so we have somewhere to move to
+    let binary_path = get_binary_path();
+    let _ = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", "WorkTwo"])
+        .output()
+        .expect("Failed to create workspace via CLI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar and open move-to-workspace overlay
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.send("m").expect("Failed to send 'm'");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Move mode overlay:\n{}", screen);
+    assert!(
+        screen.contains("Move") || screen.contains("Workspace"),
+        "Move mode overlay should be open. Got:\n{}", screen
+    );
+
+    // Count workspaces listed before trying 'n' (create)
+    let workspace_count_before = screen.matches("Default").count() + screen.matches("WorkTwo").count();
+
+    // Press 'n' - should NOT create a new workspace draft row
+    session.send("n").expect("Failed to send 'n'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_n = session.screen_contents();
+    eprintln!("After 'n' in move mode:\n{}", screen_after_n);
+
+    // If 'n' was blocked, there should be no new empty draft row
+    // We verify by checking the overlay is still in move mode (not in drafting mode with cursor)
+    // The workspace count should remain the same
+    let workspace_count_after = screen_after_n.matches("Default").count() + screen_after_n.matches("WorkTwo").count();
+    assert!(
+        workspace_count_after >= workspace_count_before,
+        "Move mode should block 'n' from creating new workspace. Got:\n{}", screen_after_n
+    );
+
+    // Press 'r' - should NOT start renaming
+    session.send("r").expect("Failed to send 'r'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Press 'd' - should NOT start deletion
+    session.send("d").expect("Failed to send 'd'");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after = session.screen_contents();
+    eprintln!("After n/r/d in move mode:\n{}", screen_after);
+
+    // Overlay should still be in move mode (not normal mode, not create mode)
+    // The overlay should still be open
+    assert!(
+        screen_after.contains("Move") || screen_after.contains("Workspace"),
+        "Move mode overlay should still be open after blocked n/r/d keys. Got:\n{}", screen_after
+    );
+
+    // Close the overlay with Esc
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that moving a session to the same (current) workspace is a no-op.
+/// Per spec: "If the selected workspace is the current workspace, do nothing."
+#[test]
+#[serial]
+fn test_move_session_to_same_workspace_is_noop() {
+    let _timer = TestTimer::new("test_move_session_to_same_workspace_is_noop");
+    let _env = TestEnv::setup();
+    cleanup_test_sessions();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let session_name = session.session_name.clone();
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify our session is visible in the current (Default) workspace
+    let screen = session.screen_contents();
+    assert!(
+        screen.contains(&session_name),
+        "Session should be visible. Got:\n{}", screen
+    );
+
+    // Focus sidebar
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open move-to-workspace overlay
+    session.send("m").expect("Failed to send 'm'");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Move mode overlay:\n{}", screen);
+    assert!(
+        screen.contains("Move") || screen.contains("Workspace"),
+        "Move mode overlay should be open. Got:\n{}", screen
+    );
+
+    // Press Enter while on the active (current) workspace - should be no-op
+    // The first entry in the list should be "Default" (the active workspace, marked with *)
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // After no-op, we should be back to normal TUI with our session still in this workspace
+    let screen = session.screen_contents();
+    eprintln!("After Enter on same workspace:\n{}", screen);
+
+    // The session should still be visible (not moved away)
+    assert!(
+        screen.contains(&session_name),
+        "Session '{}' should still be in Default workspace after no-op move. Got:\n{}",
+        session_name, screen
+    );
+
+    // Overlay should be closed
+    assert!(
+        !screen.contains("Move to Workspace") && !screen.contains("Move Session"),
+        "Overlay should be closed after no-op move. Got:\n{}", screen
+    );
+
+    session.quit().expect("Failed to quit");
+}

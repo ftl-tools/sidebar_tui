@@ -454,8 +454,8 @@ impl AppState {
                 }
                 // Select (switch to workspace) or move session to workspace
                 KeyCode::Enter => {
-                    let (mode, selected, workspaces) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
-                        (ov.mode.clone(), ov.selected_index, ov.workspaces.clone())
+                    let (mode, selected, workspaces, active_workspace) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                        (ov.mode.clone(), ov.selected_index, ov.workspaces.clone(), ov.active_workspace.clone())
                     } else {
                         return EventResult::Consumed;
                     };
@@ -464,7 +464,12 @@ impl AppState {
                     return match mode {
                         WorkspaceOverlayMode::Normal => EventResult::SwitchWorkspace { name: workspace_name },
                         WorkspaceOverlayMode::MoveSession { session_name } => {
-                            EventResult::MoveSessionToWorkspace { session_name, workspace_name }
+                            // Spec: "If the selected workspace is the current workspace, do nothing."
+                            if workspace_name == active_workspace {
+                                EventResult::Consumed
+                            } else {
+                                EventResult::MoveSessionToWorkspace { session_name, workspace_name }
+                            }
                         }
                     };
                 }
@@ -1611,5 +1616,55 @@ mod tests {
         let result = state.handle_key(key(KeyCode::Char('q')));
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_)), "Mode should be Confirming after 'q'");
+    }
+
+    #[test]
+    fn test_move_to_same_workspace_is_noop() {
+        // Spec: "If the selected workspace is the current workspace, do nothing."
+        use crate::state::WorkspaceOverlayState;
+        let ov = WorkspaceOverlayState::new_move_mode(
+            vec!["Default".to_string(), "Work".to_string()],
+            "Default".to_string(), // active workspace
+            "mysession".to_string(),
+        );
+        // selected_index is 0, which is "Default" (same as active)
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Enter));
+        // Should be Consumed (no-op), not MoveSessionToWorkspace
+        assert_eq!(
+            result,
+            EventResult::Consumed,
+            "Moving to same workspace should be a no-op (Consumed), got {:?}",
+            result
+        );
+        // Overlay should be closed
+        assert!(matches!(state.mode, AppMode::Normal), "Overlay should close after no-op move");
+    }
+
+    #[test]
+    fn test_move_to_different_workspace_works() {
+        use crate::state::WorkspaceOverlayState;
+        let mut ov = WorkspaceOverlayState::new_move_mode(
+            vec!["Default".to_string(), "Work".to_string()],
+            "Default".to_string(), // active workspace
+            "mysession".to_string(),
+        );
+        // Select "Work" (index 1)
+        ov.selected_index = 1;
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, EventResult::MoveSessionToWorkspace {
+                ref session_name, ref workspace_name
+            } if session_name == "mysession" && workspace_name == "Work"),
+            "Moving to different workspace should emit MoveSessionToWorkspace, got {:?}",
+            result
+        );
     }
 }
