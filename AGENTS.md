@@ -7,13 +7,14 @@ Build and re-install the cli after every functioning batch of work so that users
 cargo test --lib
 ```
 
-**E2E tests** (slow, ~165s — always set an explicit timeout):
+**E2E tests** (always redirect to a file — never pipe):
 ```bash
-cargo test --test e2e -- --test-threads=4 2>/tmp/e2e_out.txt; cat /tmp/e2e_out.txt | tail -5
+cargo test --test e2e -- --test-threads=4 2>/tmp/e2e_out.txt; cat /tmp/e2e_out.txt
 ```
 
-The E2E suite takes ~165 seconds. The Bash tool's default timeout is 120 seconds, so without redirecting output to a file the process gets killed silently before finishing. Redirect to a file, then read the file afterward. A single specific test runs in ~6s and can be piped normally:
-
+Single test:
 ```bash
-cargo test --test e2e "test_name_here" -- --nocapture 2>&1 | tail -20
+cargo test --test e2e "test_name_here" -- --nocapture 2>/tmp/e2e_out.txt; cat /tmp/e2e_out.txt
 ```
+
+The Bash tool's default timeout is 120 seconds. E2E tests — even individual ones — can exceed this. Piping gives you nothing if the process is killed by timeout. Always redirect to a file and read it afterward.
