@@ -6568,3 +6568,102 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
 
     let _ = session.quit();
 }
+
+/// Test that 'b' key focuses terminal from sidebar (per spec: "enter, space, →, b, mod+b, or mod+t - Select")
+#[test]
+fn test_b_focuses_terminal_from_sidebar() {
+    let _timer = TestTimer::new("test_b_focuses_terminal_from_sidebar");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar with Ctrl+B
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+
+    // Poll until sidebar is focused (color 250) or timeout
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+
+    // Send 'b' to focus terminal - should work just like Enter
+    session.session.write_all(&[b'b']).expect("Failed to send 'b'");
+    session.session.flush().expect("Failed to flush");
+
+    // Poll until terminal is focused (sidebar color 238) or timeout
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing 'b'");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that Ctrl+B from sidebar focuses terminal (per spec: "mod+b - Select: Focus on terminal pane")
+#[test]
+fn test_ctrl_b_from_sidebar_focuses_terminal() {
+    let _timer = TestTimer::new("test_ctrl_b_from_sidebar_focuses_terminal");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to fully initialize
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar with Ctrl+B
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+
+    // Poll until sidebar is focused (color 250)
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(250)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(sidebar_focused, "Sidebar should become focused (250) after Ctrl+B");
+
+    // Send Ctrl+B again to focus the terminal - should work like Enter, not be a no-op
+    session.send_ctrl_b().expect("Failed to send second Ctrl+B");
+
+    // Poll until terminal is focused (sidebar color 238)
+    let mut terminal_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            if matches!(sidebar_corner.fgcolor(), vt100::Color::Idx(238)) {
+                terminal_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Ctrl+B from sidebar");
+
+    session.quit().expect("Failed to quit");
+}

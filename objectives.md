@@ -83,7 +83,7 @@ Key properties of workspaces:
 - The truncation indicator should be colored slightly darker (color 238) than the session names.
 - When the sidebar is focused it's outline should be lighter (color 250) and when it's not focused it should be darker (color 238).
 - The following keybindings should work when the sidebar pane is focused:
-  - `enter`, `space`, or `→` - Select: Focus on the terminal pane.
+  - `enter`, `space`, `→`, `b`, `mod + b`, or `mod + t` - Select: Focus on the terminal pane.
   - `↑` or `k` - Up: Move the selection up one session in the list. If the next row above is the truncation indicator scroll up one and move the selection. If already at the top, do nothing.
   - `↓` or `j` - Down: Move the selection down one session in the list. If the next row below is the truncation indicator scroll down one and move the selection. If already at the bottom, do nothing.
   - `esc` - Jump Back: Select whatever session was selected before the sidebar was focused, and focus on the terminal pane.

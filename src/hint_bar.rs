@@ -452,7 +452,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     ]
                 } else {
                     vec![
-                        KeybindingInfo::new("enter/tab", "Select"),
+                        KeybindingInfo::new("enter/b/tab", "Select"),
                         KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
@@ -1057,7 +1057,7 @@ mod tests {
 
         let bindings = get_bindings_for_state(&state);
 
-        assert!(bindings.iter().any(|b| b.key == "enter/tab"), "Should have 'enter/tab' binding");
+        assert!(bindings.iter().any(|b| b.key == "enter/b/tab"), "Should have 'enter/b/tab' binding");
         assert!(bindings.iter().any(|b| b.key == "↑/↓/j/k"), "Should have vim navigation binding");
         assert!(bindings.iter().any(|b| b.key == "r"), "Should have 'r' (rename) binding");
         assert!(bindings.iter().any(|b| b.key == "d"), "Should have 'd' (delete) binding");

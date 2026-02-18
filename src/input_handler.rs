@@ -47,8 +47,21 @@ impl AppState {
         // Handle modifier keys - all terminal mod+* commands should work from sidebar
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                // Focus sidebar - no-op when already on sidebar, but consume the key
-                KeyCode::Char('b') | KeyCode::Char('t') => EventResult::Consumed,
+                // Focus terminal (mod+b / mod+t) - same as Enter when in sidebar
+                KeyCode::Char('b') | KeyCode::Char('t') => {
+                    if !self.sessions.is_empty() {
+                        let name = self.sessions.get(self.selected_index)
+                            .map(|s| s.name.clone())
+                            .unwrap_or_default();
+                        self.focus_terminal();
+                        if !name.is_empty() {
+                            return EventResult::SwitchSession { name };
+                        }
+                    } else {
+                        self.focus_terminal();
+                    }
+                    EventResult::Consumed
+                }
                 // Toggle mouse mode (for text selection vs scroll wheel)
                 KeyCode::Char('s') => {
                     self.mouse_mode = !self.mouse_mode;
@@ -148,6 +161,22 @@ impl AppState {
                 if let Some(session) = self.sessions.get(self.selected_index) {
                     let session_name = session.name.clone();
                     return EventResult::OpenMoveToWorkspaceOverlay { session_name };
+                }
+                EventResult::Consumed
+            }
+
+            // Focus terminal (b) - same as Enter when in sidebar
+            KeyCode::Char('b') => {
+                if !self.sessions.is_empty() {
+                    let name = self.sessions.get(self.selected_index)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    self.focus_terminal();
+                    if !name.is_empty() {
+                        return EventResult::SwitchSession { name };
+                    }
+                } else {
+                    self.focus_terminal();
                 }
                 EventResult::Consumed
             }
@@ -793,29 +822,71 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_ctrl_b_is_noop() {
+    fn test_sidebar_ctrl_b_focuses_terminal() {
         let mut state = AppState {
+            sessions: vec![Session::new("test")],
             focus: Focus::Sidebar,
             ..Default::default()
         };
 
-        // Ctrl+B from sidebar should be consumed (no-op, already on sidebar)
+        // Ctrl+B from sidebar should focus the terminal (like Enter)
         let result = state.handle_key(ctrl_key('b'));
-        assert_eq!(result, EventResult::Consumed);
-        assert_eq!(state.focus, Focus::Sidebar); // Still on sidebar
+        assert!(matches!(result, EventResult::SwitchSession { .. }));
+        assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
-    fn test_sidebar_ctrl_t_is_noop() {
+    fn test_sidebar_ctrl_b_focuses_terminal_when_empty() {
         let mut state = AppState {
             focus: Focus::Sidebar,
             ..Default::default()
         };
 
-        // Ctrl+T from sidebar should be consumed (no-op, already on sidebar)
-        let result = state.handle_key(ctrl_key('t'));
+        // Ctrl+B from sidebar with no sessions still focuses terminal (welcome state)
+        let result = state.handle_key(ctrl_key('b'));
         assert_eq!(result, EventResult::Consumed);
-        assert_eq!(state.focus, Focus::Sidebar); // Still on sidebar
+        assert_eq!(state.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn test_sidebar_ctrl_t_focuses_terminal() {
+        let mut state = AppState {
+            sessions: vec![Session::new("test")],
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        // Ctrl+T from sidebar should focus the terminal (like Enter)
+        let result = state.handle_key(ctrl_key('t'));
+        assert!(matches!(result, EventResult::SwitchSession { .. }));
+        assert_eq!(state.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn test_sidebar_b_focuses_terminal() {
+        let mut state = AppState {
+            sessions: vec![Session::new("test")],
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        // 'b' from sidebar should focus the terminal (like Enter)
+        let result = state.handle_key(key(KeyCode::Char('b')));
+        assert!(matches!(result, EventResult::SwitchSession { .. }));
+        assert_eq!(state.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn test_sidebar_b_focuses_terminal_when_empty() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            ..Default::default()
+        };
+
+        // 'b' from sidebar with no sessions still focuses terminal (welcome state)
+        let result = state.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
