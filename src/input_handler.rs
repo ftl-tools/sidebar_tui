@@ -101,6 +101,10 @@ impl AppState {
                     if !name.is_empty() {
                         return EventResult::SwitchSession { name };
                     }
+                } else {
+                    // In welcome state (no sessions), still allow focusing the terminal
+                    // so the welcome text keybinding updates dynamically (shows ctrl+n instead of n).
+                    self.focus_terminal();
                 }
                 EventResult::Consumed
             }
@@ -733,14 +737,17 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_enter_does_nothing_when_empty() {
+    fn test_sidebar_enter_focuses_terminal_in_welcome_state() {
+        // In welcome state (no sessions), Enter should still focus the terminal so the
+        // welcome text keybinding updates dynamically (shows ctrl+n instead of n).
         let mut state = AppState {
             focus: Focus::Sidebar,
             ..Default::default()
         };
 
-        state.handle_key(key(KeyCode::Enter));
-        assert_eq!(state.focus, Focus::Sidebar); // Should stay on sidebar
+        let result = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.focus, Focus::Terminal); // Should switch to terminal even with no sessions
     }
 
     #[test]

@@ -3,15 +3,14 @@
 //! These tests spawn the actual `sb` binary in a PTY and verify its behavior.
 //! Uses expectrl for PTY management and vt100 for terminal emulation.
 //!
-//! NOTE: These tests MUST run serially because they share a daemon process.
-//! They use the `serial_test` crate to enforce this.
+//! Each test gets its own isolated daemon instance running in a unique temp directory,
+//! so tests are fully independent and can run in parallel.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use expectrl::spawn;
-use serial_test::serial;
+use expectrl::Session;
 
 /// RAII test timer — logs the test name and elapsed time when dropped.
 struct TestTimer {
@@ -33,56 +32,82 @@ impl Drop for TestTimer {
     }
 }
 
-/// RAII environment guard — kills all sessions on creation (before test) and on drop (after test).
-/// This ensures every test starts and ends with a clean daemon state.
-struct TestEnv;
+/// Atomic counter to generate unique temp dirs for each test.
+static TEST_ENV_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Per-test isolation context: each test runs its own daemon in a private temp dir.
+#[derive(Clone)]
+struct TestIsolation {
+    data_dir: std::path::PathBuf,
+    runtime_dir: std::path::PathBuf,
+}
+
+impl TestIsolation {
+    fn new() -> Self {
+        let pid = std::process::id();
+        let id  = TEST_ENV_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let base = std::path::PathBuf::from(format!("/tmp/sb-test-{}-{}", pid, id));
+        let data_dir    = base.join("data");
+        let runtime_dir = base.join("runtime");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        Self { data_dir, runtime_dir }
+    }
+
+    /// Apply isolation env vars to a Command so it targets our private daemon.
+    fn apply<'a>(&self, cmd: &'a mut std::process::Command) -> &'a mut std::process::Command {
+        cmd.env("XDG_DATA_HOME",   &self.data_dir)
+           .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+    }
+
+    /// Shut down our private daemon and remove the temp dir.
+    fn cleanup(&self) {
+        let binary = get_binary_path();
+        let mut cmd = std::process::Command::new(&binary);
+        self.apply(&mut cmd);
+        cmd.arg("shutdown").output().ok();
+        std::thread::sleep(Duration::from_millis(150));
+        std::fs::remove_dir_all(self.data_dir.parent().unwrap()).ok();
+    }
+}
+
+/// RAII environment guard — spins up a private daemon on creation and tears it down on drop.
+struct TestEnv {
+    iso: TestIsolation,
+}
 
 impl TestEnv {
     fn setup() -> Self {
-        eprintln!("[ENV] reset (before)");
-        reset_environment();
-        Self
+        eprintln!("[ENV] setting up isolated daemon");
+        let iso = TestIsolation::new();
+        // Poke the daemon into existence for this isolation context
+        let binary = get_binary_path();
+        let mut cmd = std::process::Command::new(&binary);
+        iso.apply(&mut cmd);
+        cmd.arg("list").output().ok();
+        std::thread::sleep(Duration::from_millis(300));
+        Self { iso }
+    }
+
+    /// Build a `Command` for the sb binary pre-loaded with our isolation env vars.
+    fn iso_command(&self) -> std::process::Command {
+        let binary = get_binary_path();
+        let mut cmd = std::process::Command::new(&binary);
+        self.iso.apply(&mut cmd);
+        cmd
+    }
+
+    /// Path to the private data directory (workspaces.json, session metadata, etc.).
+    fn data_dir(&self) -> &std::path::PathBuf {
+        &self.iso.data_dir
     }
 }
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        eprintln!("[ENV] reset (after)");
-        reset_environment();
+        eprintln!("[ENV] tearing down isolated daemon");
+        self.iso.cleanup();
     }
-}
-
-/// Kill all sessions and wait for the daemon to be ready.
-/// Called before and after every test via TestEnv.
-fn reset_environment() {
-    cleanup_test_sessions();
-    reset_workspaces();
-    ensure_daemon_ready();
-}
-
-/// Reset workspaces to just the "Default" workspace.
-/// This prevents leftover workspace state from affecting tests.
-fn reset_workspaces() {
-    let binary_path = get_binary_path();
-    // Shut down daemon so we can reset workspace state on disk
-    // Then restart by listing (which auto-starts the daemon)
-    let _ = std::process::Command::new(&binary_path)
-        .args(["shutdown"])
-        .output();
-    std::thread::sleep(Duration::from_millis(200));
-
-    // Reset workspaces.json to just Default
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let data_dir = std::path::PathBuf::from(home).join(".local/share/sidebar-tui");
-    let workspaces_file = data_dir.join("workspaces.json");
-    let default_workspace = r#"[{"name":"Default","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0}]"#;
-    let _ = std::fs::write(&workspaces_file, default_workspace);
-
-    // Restart daemon
-    let _ = std::process::Command::new(&binary_path)
-        .args(["list"])
-        .output();
-    std::thread::sleep(Duration::from_millis(300));
 }
 
 /// Atomic counter to generate unique session names for each test
@@ -100,79 +125,16 @@ fn get_binary_path() -> String {
     format!("{}/target/debug/sb", manifest_dir)
 }
 
-/// Ensure the daemon is ready to accept connections.
-/// This helps with test isolation when previous tests leave daemon in transitional state.
-fn ensure_daemon_ready() {
-    let binary_path = get_binary_path();
-    for attempt in 0..5 {
-        let list_output = std::process::Command::new(&binary_path)
-            .arg("list")
-            .output();
-
-        if let Ok(output) = list_output {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.contains("Error") && !stderr.contains("failed") {
-                return;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-        if attempt >= 2 {
-            eprintln!("Waiting for daemon to be ready (attempt {})", attempt + 1);
-        }
+/// Spawn an sb session in the isolated daemon environment.
+fn spawn_sb(env: &TestEnv, session_name: &str) -> expectrl::session::OsSession {
+    let mut cmd = std::process::Command::new(get_binary_path());
+    env.iso.apply(&mut cmd);
+    if !session_name.is_empty() {
+        cmd.arg("-s").arg(session_name);
     }
-    // Continue anyway - daemon should auto-start when test spawns sb
-}
-
-/// Clean up ALL test sessions to prevent test isolation issues.
-/// When too many sessions exist, the sidebar fills up and can cause rendering/parsing issues.
-fn cleanup_test_sessions() {
-    let binary_path = get_binary_path();
-
-    // `sb kill` is synchronous — the session is gone when the command returns.
-    // We retry a few times only to handle transient listing races.
-    for _attempt in 0..3 {
-        let list_output = std::process::Command::new(&binary_path)
-            .args(["list"])
-            .output();
-
-        let list_str = match list_output {
-            Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
-            Err(_) => return,
-        };
-
-        if list_str.contains("No active sessions") {
-            return;
-        }
-
-        let mut killed_any = false;
-        for line in list_str.lines().skip(1) {
-            if line.len() >= 20 {
-                let display_name = line[..20].trim().to_string();
-                if display_name.is_empty() || display_name == "No" || display_name.starts_with("NAME") {
-                    continue;
-                }
-                let _ = std::process::Command::new(&binary_path)
-                    .args(["kill", &display_name])
-                    .output();
-                killed_any = true;
-            }
-        }
-
-        if !killed_any {
-            return; // Nothing parseable to kill — stop retrying
-        }
-
-        // Brief pause so the daemon can settle before we re-list
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// Spawn an sb session with daemon readiness check.
-/// Use this instead of `spawn(&cmd)` directly to ensure daemon is ready.
-fn spawn_sb(cmd: &str) -> expectrl::session::OsSession {
-    ensure_daemon_ready();
-    std::thread::sleep(Duration::from_millis(500));
-    spawn(cmd).expect("Failed to spawn sb")
+    let mut session = Session::spawn(cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(10)));
+    session
 }
 
 /// Helper to spawn sb and get its output parsed through vt100
@@ -180,28 +142,23 @@ struct SbSession {
     session: expectrl::session::OsSession,
     parser: vt100::Parser,
     session_name: String,
+    iso: TestIsolation,
 }
 
 impl SbSession {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // TestEnv::setup() already called reset_environment(); just confirm daemon is up.
-        ensure_daemon_ready();
-
-        let binary_path = get_binary_path();
+    fn new(env: &TestEnv) -> Result<Self, Box<dyn std::error::Error>> {
         let session_name = get_unique_session_name();
 
-        // Spawn sb with a unique session name to avoid state from other tests
-        let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn(&cmd)?;
+        // Build Command with isolation env vars, then spawn in PTY
+        let mut cmd = env.iso_command();
+        cmd.arg("-s").arg(&session_name);
 
-        // Set a reasonable timeout
+        let mut session = Session::spawn(cmd)?;
         session.set_expect_timeout(Some(Duration::from_secs(5)));
 
-        // Create a vt100 parser to interpret the terminal output
-        // Use 80x24 as the standard terminal size
         let parser = vt100::Parser::new(24, 80, 0);
 
-        Ok(Self { session, parser, session_name })
+        Ok(Self { session, parser, session_name, iso: env.iso.clone() })
     }
 
     /// Read all available output and process it through vt100.
@@ -360,14 +317,12 @@ impl Drop for SbSession {
         let _ = self.quit();
         let _ = self.session.get_process_mut().exit(true);
 
-        // Kill the session to clean up daemon resources
+        // Kill the named session in our isolated daemon
         let binary_path = get_binary_path();
-        let _ = std::process::Command::new(&binary_path)
-            .args(["kill", &self.session_name])
-            .output();
-
-        // Full environment reset so the next test starts clean
-        reset_environment();
+        let mut cmd = std::process::Command::new(&binary_path);
+        self.iso.apply(&mut cmd);
+        cmd.args(["kill", &self.session_name]).output().ok();
+        // No full reset here — TestEnv::drop() handles daemon shutdown
     }
 }
 
@@ -376,11 +331,10 @@ impl Drop for SbSession {
 /// - Workspace name title is purple and left-aligned (default: "Default")
 /// - Both sidebar and terminal have borders (terminal border is lighter)
 #[test]
-#[serial]
 fn test_layout_matches_spec() {
     let _timer = TestTimer::new("test_layout_matches_spec");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Give time for initial render
     std::thread::sleep(Duration::from_millis(1000));
@@ -451,10 +405,9 @@ fn test_layout_matches_spec() {
 /// so "On branch" may scroll off screen with long git status output.
 /// We verify git status output by checking for common git status text.
 #[test]
-#[serial]
 fn test_git_status_output_matches() {
     let _timer = TestTimer::new("test_git_status_output_matches");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     // First, verify git status works normally
     let expected_output = std::process::Command::new("git")
         .arg("status")
@@ -470,7 +423,7 @@ fn test_git_status_output_matches() {
     );
 
     // Now run git status in the TUI
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for shell prompt
     std::thread::sleep(Duration::from_millis(1000));
@@ -510,10 +463,9 @@ fn test_git_status_output_matches() {
 /// This verifies that the terminal properly handles vi's escape sequences
 /// and that keyboard input is correctly forwarded.
 #[test]
-#[serial]
 fn test_vi_editing_workflow() {
     let _timer = TestTimer::new("test_vi_editing_workflow");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     use std::fs;
 
     // Create a test file with known content
@@ -537,7 +489,7 @@ fn test_vi_editing_workflow() {
     }
     let _cleanup = Cleanup { test_file: test_file.clone(), swap_file: swap_file.clone() };
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for shell to be ready
     std::thread::sleep(Duration::from_millis(1000));
@@ -613,11 +565,10 @@ fn test_vi_editing_workflow() {
 /// Per objectives: "type `git status`, backspace before you send it, type `echo "hello world"`,
 /// send that, and see the expected output"
 #[test]
-#[serial]
 fn test_backspace_input_handling() {
     let _timer = TestTimer::new("test_backspace_input_handling");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for shell to be ready
     std::thread::sleep(Duration::from_millis(1000));
@@ -676,10 +627,9 @@ fn test_backspace_input_handling() {
 /// 4. Verify vi is still open with the same content
 /// 5. Verify can save and exit vi normally
 #[test]
-#[serial]
 fn test_session_persistence_across_restart() {
     let _timer = TestTimer::new("test_session_persistence_across_restart");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     use std::fs;
 
     // Create a test file with known content
@@ -721,8 +671,7 @@ fn test_session_persistence_across_restart() {
 
     // ============ PHASE 1: Start TUI, open vi, type text, detach ============
     {
-        let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn_sb(&cmd);
+                let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -787,8 +736,7 @@ fn test_session_persistence_across_restart() {
 
     // ============ PHASE 2: Reattach and verify vi is still running ============
     {
-        let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn_sb(&cmd);
+                let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -928,10 +876,9 @@ fn wait_for_text(
 /// 3. We simulate reboot by killing the session but keeping the metadata file
 /// 4. The stale session can be listed via `sb stale` and restored via `sb restore`
 #[test]
-#[serial]
 fn test_stale_session_persistence() {
     let _timer = TestTimer::new("test_stale_session_persistence");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     use std::fs;
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -963,8 +910,7 @@ fn test_stale_session_persistence() {
 
     // ============ PHASE 1: Create a session via proper PTY using expectrl ============
     {
-        let cmd = format!("{} -s {}", binary_path, session_name);
-        let mut session = spawn_sb(&cmd);
+                let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(5)));
 
         // Wait for TUI to initialize and shell to be ready
@@ -986,7 +932,7 @@ fn test_stale_session_persistence() {
     std::thread::sleep(Duration::from_millis(500));
 
     // Verify the session is listed as active
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -1000,15 +946,7 @@ fn test_stale_session_persistence() {
     );
 
     // ============ PHASE 2: Verify metadata file was created ============
-    let data_dir = if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
-        std::path::PathBuf::from(dir).join("sidebar-tui")
-    } else {
-        dirs::home_dir()
-            .unwrap()
-            .join(".local")
-            .join("share")
-            .join("sidebar-tui")
-    };
+    let data_dir = env.data_dir().join("sidebar-tui");
     let sessions_dir = data_dir.join("sessions");
     let metadata_file = sessions_dir.join(format!("{}.json", session_name));
 
@@ -1026,7 +964,7 @@ fn test_stale_session_persistence() {
 
     // ============ PHASE 3: Kill session and restore metadata to simulate reboot ============
     // Kill the session (this will delete the metadata file)
-    let kill_output = std::process::Command::new(&binary_path)
+    let kill_output = env.iso_command()
         .args(["kill", &session_name])
         .output()
         .expect("Failed to run sb kill");
@@ -1038,7 +976,7 @@ fn test_stale_session_persistence() {
     fs::write(&metadata_file, &metadata_content).expect("Failed to restore metadata");
 
     // Verify session is no longer listed as active
-    let list_output2 = std::process::Command::new(&binary_path)
+    let list_output2 = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -1052,7 +990,7 @@ fn test_stale_session_persistence() {
     );
 
     // ============ PHASE 4: Verify stale session appears ============
-    let stale_output = std::process::Command::new(&binary_path)
+    let stale_output = env.iso_command()
         .arg("stale")
         .output()
         .expect("Failed to run sb stale");
@@ -1066,7 +1004,7 @@ fn test_stale_session_persistence() {
     );
 
     // ============ PHASE 5: Restore the stale session ============
-    let restore_output = std::process::Command::new(&binary_path)
+    let restore_output = env.iso_command()
         .args(["restore", &session_name])
         .output()
         .expect("Failed to run sb restore");
@@ -1080,7 +1018,7 @@ fn test_stale_session_persistence() {
     );
 
     // Verify session is now active again
-    let list_output3 = std::process::Command::new(&binary_path)
+    let list_output3 = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -1095,7 +1033,7 @@ fn test_stale_session_persistence() {
 
     // ============ PHASE 6: Clean up ============
     // Kill the restored session
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .args(["kill", &session_name])
         .output();
 }
@@ -1103,11 +1041,10 @@ fn test_stale_session_persistence() {
 /// Test that the sidebar is exactly 28 characters wide.
 /// This test verifies the sidebar border ends at column 27 (0-indexed).
 #[test]
-#[serial]
 fn test_sidebar_is_28_chars_wide() {
     let _timer = TestTimer::new("test_sidebar_is_28_chars_wide");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize.
     std::thread::sleep(Duration::from_millis(1000));
@@ -1171,11 +1108,10 @@ fn test_sidebar_is_28_chars_wide() {
 /// Test that the sidebar shows the session list with selection highlighting.
 /// When a session is attached, it should appear in the sidebar with proper selection.
 #[test]
-#[serial]
 fn test_sidebar_session_list() {
     let _timer = TestTimer::new("test_sidebar_session_list");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -1225,14 +1161,12 @@ fn test_sidebar_session_list() {
 /// Test that the hint bar shows correct context-dependent keybindings.
 /// Different modes should show different available actions.
 #[test]
-#[serial]
 fn test_hint_bar_context() {
     let _timer = TestTimer::new("test_hint_bar_context");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     // Clean up test sessions to prevent sidebar overflow which can cause rendering issues
-    cleanup_test_sessions();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize and hint bar to appear.
     // Poll up to 10 times (200ms each = 2 seconds total) for the hint bar to show.
@@ -1291,13 +1225,11 @@ fn test_hint_bar_context() {
 /// Test that Ctrl+B switches focus between terminal and sidebar.
 /// Border colors should change based on focus.
 #[test]
-#[serial]
 fn test_focus_switching() {
     let _timer = TestTimer::new("test_focus_switching");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -1360,13 +1292,11 @@ fn test_focus_switching() {
 
 /// Test that Tab focuses the terminal from sidebar just like Enter does.
 #[test]
-#[serial]
 fn test_tab_focuses_terminal() {
     let _timer = TestTimer::new("test_tab_focuses_terminal");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -1416,10 +1346,9 @@ fn test_tab_focuses_terminal() {
 
 /// Test the create mode flow: n enters create mode, t directly creates terminal session with auto-generated name.
 #[test]
-#[serial]
 fn test_create_mode_flow() {
     let _timer = TestTimer::new("test_create_mode_flow");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("create-test-{}-{}", pid, unique_id);
@@ -1455,8 +1384,7 @@ fn test_create_mode_flow() {
         created_sessions: cleanup_sessions,
     };
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1546,10 +1474,9 @@ fn test_create_mode_flow() {
 
 /// Test the rename flow: r enters rename mode, enter confirms.
 #[test]
-#[serial]
 fn test_rename_flow() {
     let _timer = TestTimer::new("test_rename_flow");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("ren-{}-{}", pid, unique_id);
@@ -1575,8 +1502,7 @@ fn test_rename_flow() {
         session_names: vec![session_name.clone(), new_name.clone()],
     };
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1645,10 +1571,9 @@ fn test_rename_flow() {
 /// Test that rename keeps focus where it was before rename started.
 /// If rename started from sidebar, focus should stay on sidebar after Enter.
 #[test]
-#[serial]
 fn test_rename_keeps_focus() {
     let _timer = TestTimer::new("test_rename_keeps_focus");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("rf-{}-{}", pid, unique_id);
@@ -1674,8 +1599,7 @@ fn test_rename_keeps_focus() {
         session_names: vec![session_name.clone(), new_name.clone()],
     };
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1740,10 +1664,9 @@ fn test_rename_keeps_focus() {
 
 /// Test delete confirmation: d shows prompt, y deletes, n cancels.
 #[test]
-#[serial]
 fn test_delete_confirmation() {
     let _timer = TestTimer::new("test_delete_confirmation");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("delete-test-{}-{}", pid, unique_id);
@@ -1765,8 +1688,7 @@ fn test_delete_confirmation() {
         session_name: session_name.clone(),
     };
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1851,14 +1773,12 @@ fn test_delete_confirmation() {
 
 /// Test quit confirmation: q shows prompt, y quits, n cancels.
 #[test]
-#[serial]
 fn test_quit_confirmation() {
     let _timer = TestTimer::new("test_quit_confirmation");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     // Clean up ALL sessions to prevent sidebar overflow which affects quit confirmation
-    cleanup_test_sessions();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -1922,10 +1842,9 @@ fn test_quit_confirmation() {
 
 /// Test navigation: ↑/↓ moves selection in the session list.
 #[test]
-#[serial]
 fn test_navigation() {
     let _timer = TestTimer::new("test_navigation");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("nav-test-{}-{}", pid, unique_id);
@@ -1952,8 +1871,7 @@ fn test_navigation() {
     };
 
     // First create session1
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2040,10 +1958,9 @@ fn test_navigation() {
 
 /// Test welcome state: when no sessions exist, show welcome message.
 #[test]
-#[serial]
 fn test_welcome_state() {
     let _timer = TestTimer::new("test_welcome_state");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     // Use a unique socket for this test to ensure no sessions
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -2073,8 +1990,7 @@ fn test_welcome_state() {
     // Let's verify that the session list rendering works
     // by creating, deleting, and checking the state.
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2138,10 +2054,9 @@ fn test_welcome_state() {
 /// The bug was that the daemon closed the connection after Detach, but the client
 /// tried to reuse the connection for Attach.
 #[test]
-#[serial]
 fn test_session_selection_no_crash() {
     let _timer = TestTimer::new("test_session_selection_no_crash");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("sel-test-{}-{}", pid, unique_id);
@@ -2166,8 +2081,7 @@ fn test_session_selection_no_crash() {
         session_names: vec![session_name.clone(), session2_name.clone()],
     };
 
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2279,10 +2193,9 @@ fn test_session_selection_no_crash() {
 /// Sometimes depending on how we mess with the session logic it shows the error
 /// about nested Claude Code sessions."
 #[test]
-#[serial]
 fn test_agent_session_no_nested_error() {
     let _timer = TestTimer::new("test_agent_session_no_nested_error");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("agent-test-{}-{}", pid, unique_id);
@@ -2308,8 +2221,7 @@ fn test_agent_session_no_nested_error() {
     };
 
     // First create a regular session so we have a TUI
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2398,10 +2310,9 @@ fn test_agent_session_no_nested_error() {
 /// session content in the terminal pane without having to press Enter.
 /// This tests the core PreviewSession functionality.
 #[test]
-#[serial]
 fn test_live_preview_basic() {
     let _timer = TestTimer::new("test_live_preview_basic");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("preview1-{}-{}", pid, unique_id);
@@ -2427,8 +2338,7 @@ fn test_live_preview_basic() {
     };
 
     // Create first session and run a command that produces unique output
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2542,10 +2452,9 @@ fn test_live_preview_basic() {
 /// Test rapid navigation: rapidly pressing up/down keys should not cause
 /// crashes, corruption, or message interleaving issues.
 #[test]
-#[serial]
 fn test_live_preview_rapid_navigation() {
     let _timer = TestTimer::new("test_live_preview_rapid_navigation");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("rapid1-{}-{}", pid, unique_id);
@@ -2572,8 +2481,7 @@ fn test_live_preview_rapid_navigation() {
     };
 
     // Create first session
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2672,10 +2580,9 @@ fn test_live_preview_rapid_navigation() {
 /// Test preview then select: preview a session, then press Enter to attach.
 /// The correct session should be attached (the one that was previewed).
 #[test]
-#[serial]
 fn test_live_preview_then_select() {
     let _timer = TestTimer::new("test_live_preview_then_select");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("prvsel1-{}-{}", pid, unique_id);
@@ -2701,8 +2608,7 @@ fn test_live_preview_then_select() {
     };
 
     // Create first session with unique marker
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2804,10 +2710,9 @@ fn test_live_preview_then_select() {
 /// This tests that drain_async_messages() properly clears preview messages
 /// before the synchronous create operation.
 #[test]
-#[serial]
 fn test_live_preview_then_create() {
     let _timer = TestTimer::new("test_live_preview_then_create");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("prvcr1-{}-{}", pid, unique_id);
@@ -2838,8 +2743,7 @@ fn test_live_preview_then_create() {
     };
 
     // Create two sessions
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2942,10 +2846,9 @@ fn test_live_preview_then_create() {
 /// Test that Ctrl+Q opens quit confirmation from terminal pane.
 /// Per spec: "mod + q should open quit confirmation, and should work even when the terminal pane has focus."
 #[test]
-#[serial]
 fn test_ctrl_q_quit_from_terminal() {
     let _timer = TestTimer::new("test_ctrl_q_quit_from_terminal");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("ctrlq-{}-{}", pid, unique_id);
@@ -2969,8 +2872,7 @@ fn test_ctrl_q_quit_from_terminal() {
     };
 
     // Spawn sb
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3038,10 +2940,9 @@ fn test_ctrl_q_quit_from_terminal() {
 /// Per spec: "Make sure all terminal mod + * commands also work when the sidebar pane has focus."
 /// Terminal mod+* commands: ctrl+b (focus sidebar), ctrl+t (focus sidebar), ctrl+n (new), ctrl+q (quit)
 #[test]
-#[serial]
 fn test_mod_keys_work_from_sidebar() {
     let _timer = TestTimer::new("test_mod_keys_work_from_sidebar");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("modkeys-{}-{}", pid, unique_id);
@@ -3065,8 +2966,7 @@ fn test_mod_keys_work_from_sidebar() {
     };
 
     // Spawn sb
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3173,11 +3073,10 @@ fn test_mod_keys_work_from_sidebar() {
 /// Test that starting sb without arguments and with no existing sessions shows welcome state.
 /// This is the core test for the welcome state feature (sidebar_tui-c5c).
 #[test]
-#[serial]
 fn test_welcome_state_on_fresh_start() {
     let _timer = TestTimer::new("test_welcome_state_on_fresh_start");
-    let _env = TestEnv::setup();
-    let binary_path = get_binary_path();
+    let env = TestEnv::setup();
+    let _binary_path = get_binary_path();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
 
@@ -3186,12 +3085,12 @@ fn test_welcome_state_on_fresh_start() {
     let cleanup_session = format!("cleanup-{}-{}", pid, unique_id);
 
     // Kill any leftover sessions from previous test runs
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .args(["kill", &cleanup_session])
         .output();
 
     // List current sessions - we need to kill them all for this test
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list");
@@ -3201,7 +3100,7 @@ fn test_welcome_state_on_fresh_start() {
     // Kill all existing sessions repeatedly until none remain.
     // We keep trying because the list output truncates names at 20 chars.
     for attempt in 0..10 {
-        let list_output = std::process::Command::new(&binary_path)
+        let list_output = env.iso_command()
             .args(["list"])
             .output()
             .expect("Failed to run sb list");
@@ -3227,7 +3126,7 @@ fn test_welcome_state_on_fresh_start() {
 
                 // Kill using the display name
                 eprintln!("  Killing: {}", display_name);
-                let _ = std::process::Command::new(&binary_path)
+                let _ = env.iso_command()
                     .args(["kill", &display_name])
                     .output();
             }
@@ -3237,7 +3136,7 @@ fn test_welcome_state_on_fresh_start() {
     }
 
     // Final verification
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list after kill");
@@ -3248,34 +3147,16 @@ fn test_welcome_state_on_fresh_start() {
     let mut clean_state = list_str.contains("No active sessions");
 
     // Also need to clear the metadata directory to prevent auto-restoration of stale sessions.
-    // Sessions are persisted in ~/.local/share/sidebar-tui/sessions/ (or XDG_DATA_HOME/sidebar-tui/sessions/).
-    // When the TUI starts with no active sessions, it auto-restores from metadata files.
+    // With per-daemon isolation, the isolated daemon starts with an empty data dir.
+    // The sessions directory will be empty/nonexistent, so clean_state is guaranteed.
     if clean_state {
-        let sessions_dir = if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
-            std::path::PathBuf::from(data_home).join("sidebar-tui").join("sessions")
-        } else if let Some(home) = dirs::home_dir() {
-            home.join(".local").join("share").join("sidebar-tui").join("sessions")
-        } else {
-            std::path::PathBuf::from("/tmp/sidebar-tui-data/sessions")
-        };
-
+        let sessions_dir = env.data_dir().join("sidebar-tui").join("sessions");
         if sessions_dir.exists() {
-            eprintln!("Clearing metadata directory: {:?}", sessions_dir);
-            if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map_or(false, |ext| ext == "json" || ext == "state") {
-                        eprintln!("  Deleting: {:?}", path);
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-            // Verify metadata is cleared
             let remaining = std::fs::read_dir(&sessions_dir)
                 .map(|entries| entries.flatten().count())
                 .unwrap_or(0);
             if remaining > 0 {
-                eprintln!("WARNING: {} files remain in metadata directory", remaining);
+                eprintln!("WARNING: {} stale files in isolated sessions dir", remaining);
                 clean_state = false;
             }
         }
@@ -3286,7 +3167,7 @@ fn test_welcome_state_on_fresh_start() {
     }
 
     // Now start sb without -s argument to test welcome state
-    let mut session = spawn(&binary_path).expect("Failed to spawn sb without args");
+    let mut session = spawn_sb(&env, "");
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3401,7 +3282,7 @@ fn test_welcome_state_on_fresh_start() {
     let _ = session.get_process_mut().exit(true);
 
     // Clean up all sessions by listing and killing them
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .args(["list"])
         .output();
     if let Ok(output) = list_output {
@@ -3409,7 +3290,7 @@ fn test_welcome_state_on_fresh_start() {
         for line in stdout.lines() {
             let name = line.split_whitespace().next().unwrap_or("");
             if !name.is_empty() && name != "NAME" && !name.contains("No") {
-                let _ = std::process::Command::new(&binary_path)
+                let _ = env.iso_command()
                     .args(["kill", name])
                     .output();
             }
@@ -3420,10 +3301,9 @@ fn test_welcome_state_on_fresh_start() {
 /// Test that terminal sessions are ordered by most recently used.
 /// When input is sent to a session, it should move to the top of the sidebar.
 #[test]
-#[serial]
 fn test_session_ordering_by_last_used() {
     let _timer = TestTimer::new("test_session_ordering_by_last_used");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("order1-{}-{}", pid, unique_id);
@@ -3457,8 +3337,7 @@ fn test_session_ordering_by_last_used() {
     };
 
     // Create first session with specific name via CLI
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3573,10 +3452,9 @@ fn test_session_ordering_by_last_used() {
 /// Test that terminal session order is preserved when TUI is closed and re-opened.
 /// This verifies that the most recently used session remains at the top after restart.
 #[test]
-#[serial]
 fn test_session_order_preserved_across_restart() {
     let _timer = TestTimer::new("test_session_order_preserved_across_restart");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("persist1-{}-{}", pid, unique_id);
@@ -3612,8 +3490,7 @@ fn test_session_order_preserved_across_restart() {
     // === PHASE 1: Create two sessions and establish order ===
 
     // Create first session with specific name via CLI
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3712,8 +3589,7 @@ fn test_session_order_preserved_across_restart() {
     std::thread::sleep(Duration::from_millis(500));
 
     // === PHASE 3: Restart TUI (no session specified, should attach to first/most-recent) ===
-    let cmd2 = format!("{}", binary_path);
-    let mut session2 = spawn(&cmd2).expect("Failed to spawn sb second time");
+    let mut session2 = spawn_sb(&env, "");
     session2.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser2 = vt100::Parser::new(24, 80, 0);
 
@@ -3748,11 +3624,10 @@ fn test_session_order_preserved_across_restart() {
 /// Color::Reset, which ensures visibility in all terminal emulators including
 /// Apple Terminal where Reset can render as black.
 #[test]
-#[serial]
 fn test_terminal_text_color_is_white() {
     let _timer = TestTimer::new("test_terminal_text_color_is_white");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for initial render
     std::thread::sleep(Duration::from_millis(300));
@@ -3838,10 +3713,9 @@ fn test_terminal_text_color_is_white() {
 /// This is a simpler integration test that verifies the echo output appears
 /// with some non-Default foreground color in our vt100 parser.
 #[test]
-#[serial]
 fn test_terminal_default_fg_color_conversion() {
     let _timer = TestTimer::new("test_terminal_default_fg_color_conversion");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     use crate::SbSession;
 
     // This test verifies our color conversion at the unit level
@@ -3868,7 +3742,7 @@ fn test_terminal_default_fg_color_conversion() {
     );
 
     // Also run a quick session test to make sure echoing works
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for shell
     std::thread::sleep(Duration::from_millis(300));
@@ -3904,30 +3778,27 @@ fn test_terminal_default_fg_color_conversion() {
 /// 2. The daemon should no longer be accepting connections
 /// 3. Running `sb list` should start a new daemon (showing no sessions)
 #[test]
-#[serial]
 fn test_shutdown_kills_all_sessions() {
     let _timer = TestTimer::new("test_shutdown_kills_all_sessions");
-    let _env = TestEnv::setup();
-    let binary_path = get_binary_path();
+    let env = TestEnv::setup();
+    let _binary_path = get_binary_path();
 
     // Create a session first to ensure daemon is running
     let session_name1 = get_unique_session_name();
     let session_name2 = get_unique_session_name();
 
     // Spawn first session and wait for it to initialize
-    let cmd1 = format!("{} -s {}", binary_path, session_name1);
-    let mut session1 = spawn(&cmd1).expect("Failed to spawn sb session 1");
+    let mut session1 = spawn_sb(&env, &session_name1);
     session1.set_expect_timeout(Some(Duration::from_secs(5)));
     std::thread::sleep(Duration::from_millis(1500));
 
     // Spawn second session
-    let cmd2 = format!("{} -s {}", binary_path, session_name2);
-    let mut session2 = spawn(&cmd2).expect("Failed to spawn sb session 2");
+    let mut session2 = spawn_sb(&env, &session_name2);
     session2.set_expect_timeout(Some(Duration::from_secs(5)));
     std::thread::sleep(Duration::from_millis(1500));
 
     // Verify sessions are listed
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -3946,7 +3817,7 @@ fn test_shutdown_kills_all_sessions() {
     );
 
     // Run shutdown
-    let shutdown_output = std::process::Command::new(&binary_path)
+    let shutdown_output = env.iso_command()
         .arg("shutdown")
         .output()
         .expect("Failed to run sb shutdown");
@@ -3969,7 +3840,7 @@ fn test_shutdown_kills_all_sessions() {
     let _ = session2.get_process_mut().exit(true);
 
     // After shutdown, running list should show no sessions (new daemon starts)
-    let list_output2 = std::process::Command::new(&binary_path)
+    let list_output2 = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list after shutdown");
@@ -3991,14 +3862,13 @@ fn test_shutdown_kills_all_sessions() {
 
 /// Test that `sb shutdown` reports "No daemon running" when no daemon exists.
 #[test]
-#[serial]
 fn test_shutdown_no_daemon_running() {
     let _timer = TestTimer::new("test_shutdown_no_daemon_running");
-    let _env = TestEnv::setup();
-    let binary_path = get_binary_path();
+    let env = TestEnv::setup();
+    let _binary_path = get_binary_path();
 
     // First, ensure no daemon is running by calling shutdown
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .arg("shutdown")
         .output();
 
@@ -4006,7 +3876,7 @@ fn test_shutdown_no_daemon_running() {
     std::thread::sleep(Duration::from_millis(500));
 
     // Now call shutdown again - should report no daemon
-    let shutdown_output = std::process::Command::new(&binary_path)
+    let shutdown_output = env.iso_command()
         .arg("shutdown")
         .output()
         .expect("Failed to run sb shutdown");
@@ -4023,22 +3893,20 @@ fn test_shutdown_no_daemon_running() {
 /// Test that sessions can be recreated after shutdown.
 /// This verifies the daemon properly restarts and accepts new connections.
 #[test]
-#[serial]
 fn test_sessions_work_after_shutdown() {
     let _timer = TestTimer::new("test_sessions_work_after_shutdown");
-    let _env = TestEnv::setup();
-    let binary_path = get_binary_path();
+    let env = TestEnv::setup();
+    let _binary_path = get_binary_path();
 
     // Ensure clean state by shutting down any existing daemon
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .arg("shutdown")
         .output();
     std::thread::sleep(Duration::from_millis(500));
 
     // Create a new session - this should start a new daemon
     let session_name = get_unique_session_name();
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
 
     // Wait for initialization
@@ -4067,7 +3935,7 @@ fn test_sessions_work_after_shutdown() {
     );
 
     // Verify session is listed
-    let list_output = std::process::Command::new(&binary_path)
+    let list_output = env.iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -4082,7 +3950,7 @@ fn test_sessions_work_after_shutdown() {
     // Clean up
     let _ = session.write_all(&[17]); // Ctrl+Q
     let _ = session.get_process_mut().exit(true);
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .args(["kill", &session_name])
         .output();
 }
@@ -4091,10 +3959,9 @@ fn test_sessions_work_after_shutdown() {
 /// By default mouse_mode is false, showing "Text select" in the hint bar.
 /// After pressing Ctrl+S, it should show "Mouse scroll".
 #[test]
-#[serial]
 fn test_ctrl_s_toggles_mouse_mode() {
     let _timer = TestTimer::new("test_ctrl_s_toggles_mouse_mode");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("mousemode-{}-{}", pid, unique_id);
@@ -4118,8 +3985,7 @@ fn test_ctrl_s_toggles_mouse_mode() {
     };
 
     // Spawn sb
-    let cmd = format!("{} -s {}", binary_path, session_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4179,11 +4045,9 @@ fn test_ctrl_s_toggles_mouse_mode() {
 /// Per spec: `↑` or `k` - Up, `↓` or `j` - Down
 /// This tests that j moves selection down and k moves selection up.
 #[test]
-#[serial]
 fn test_vim_jk_navigation() {
     let _timer = TestTimer::new("test_vim_jk_navigation");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -4210,8 +4074,7 @@ fn test_vim_jk_navigation() {
     };
 
     // Create first session
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4319,11 +4182,9 @@ fn test_vim_jk_navigation() {
 /// Per spec: `esc` - Jump Back: Select whatever session was selected before the sidebar was
 /// focused, and focus on the terminal pane.
 #[test]
-#[serial]
 fn test_esc_jump_back() {
     let _timer = TestTimer::new("test_esc_jump_back");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -4341,8 +4202,7 @@ fn test_esc_jump_back() {
                     .args(["kill", name])
                     .output();
             }
-            // Also clean up any auto-generated sessions from this test
-            let _ = cleanup_test_sessions();
+            // Isolated daemon handles session cleanup on drop
         }
     }
     let _cleanup = Cleanup {
@@ -4351,8 +4211,7 @@ fn test_esc_jump_back() {
     };
 
     // Start with first session (named via CLI)
-    let cmd = format!("{} -s {}", binary_path, session1_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4476,13 +4335,11 @@ fn test_esc_jump_back() {
 
 /// Test that Space key focuses terminal from sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane")
 #[test]
-#[serial]
 fn test_space_focuses_terminal_from_sidebar() {
     let _timer = TestTimer::new("test_space_focuses_terminal_from_sidebar");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -4532,13 +4389,11 @@ fn test_space_focuses_terminal_from_sidebar() {
 
 /// Test that Right Arrow key focuses terminal from sidebar (per spec: "enter, space, or → - Select: Focus on the terminal pane")
 #[test]
-#[serial]
 fn test_right_arrow_focuses_terminal_from_sidebar() {
     let _timer = TestTimer::new("test_right_arrow_focuses_terminal_from_sidebar");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
     std::thread::sleep(Duration::from_millis(300));
@@ -4589,14 +4444,12 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
 /// Test that long session names wrap with continuation indicators (│ and └)
 /// Per spec: "If a session name is too long to fit in the sidebar it should be wrapped with │(s) and └ characters"
 #[test]
-#[serial]
 fn test_session_name_wrapping_with_continuation_indicators() {
     let _timer = TestTimer::new("test_session_name_wrapping_with_continuation_indicators");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     // Clean up ALL sessions to ensure we're testing with only our specific long-named session
-    cleanup_test_sessions();
 
-    let binary_path = get_binary_path();
+    let _binary_path = get_binary_path();
 
     // Content width is 24 chars (sidebar 28 - 2 borders - 2 padding)
     // Create a session name that's longer than 24 chars to force wrapping
@@ -4604,8 +4457,7 @@ fn test_session_name_wrapping_with_continuation_indicators() {
     let long_name = "VeryLongSessionNameThatShouldWrapToMultipleLines12";
 
     // Create a session with this long name via CLI (no quotes needed for alphanumeric names)
-    let cmd = format!("{} -s {}", binary_path, long_name);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &long_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4694,7 +4546,7 @@ fn test_session_name_wrapping_with_continuation_indicators() {
     let _ = session.get_process_mut().exit(true);
 
     // Kill the session
-    let _ = std::process::Command::new(&binary_path)
+    let _ = env.iso_command()
         .args(["kill", long_name])
         .output();
 }
@@ -4706,11 +4558,9 @@ fn test_session_name_wrapping_with_continuation_indicators() {
 ///   at the top and/or bottom of the list
 /// - The truncation indicator should be colored slightly darker (color 238) than session names
 #[test]
-#[serial]
 fn test_truncation_indicators_when_session_list_overflows() {
     let _timer = TestTimer::new("test_truncation_indicators_when_session_list_overflows");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
     let binary_path = get_binary_path();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -4749,8 +4599,7 @@ fn test_truncation_indicators_when_session_list_overflows() {
         session_names.push(name.clone());
 
         // Spawn sb briefly to create the session
-        let cmd = format!("{} -s {}", binary_path, name);
-        let mut temp_session = spawn_sb(&cmd);
+                let mut temp_session = spawn_sb(&env, &name);
         temp_session.set_expect_timeout(Some(Duration::from_millis(1000)));
 
         // Wait briefly for session to be created
@@ -4774,8 +4623,7 @@ fn test_truncation_indicators_when_session_list_overflows() {
 
     // Now launch the TUI to view all the sessions
     let first_session = &session_names[0];
-    let cmd = format!("{} -s {}", binary_path, first_session);
-    let mut session = spawn_sb(&cmd);
+        let mut session = spawn_sb(&env, &first_session);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4898,11 +4746,10 @@ fn test_truncation_indicators_when_session_list_overflows() {
 
 /// Test that on a fresh start, the 'Default' workspace is auto-created.
 #[test]
-#[serial]
 fn test_workspace_auto_create_default() {
     let _timer = TestTimer::new("test_workspace_auto_create_default");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
@@ -4920,11 +4767,10 @@ fn test_workspace_auto_create_default() {
 
 /// Test create workspace via ctrl+w -> n.
 #[test]
-#[serial]
 fn test_create_workspace() {
     let _timer = TestTimer::new("test_create_workspace");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
@@ -4979,20 +4825,19 @@ fn test_create_workspace() {
 
 /// Test switching between workspaces and verifying session isolation.
 #[test]
-#[serial]
 fn test_switch_workspace() {
     let _timer = TestTimer::new("test_switch_workspace");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
     // Create a second workspace first using CLI
-    let binary_path = get_binary_path();
-    let _: std::process::Output = std::process::Command::new(&binary_path)
+    let _binary_path = get_binary_path();
+    let _: std::process::Output = env.iso_command()
         .args(["workspace", "create", "Work"])
         .output()
         .expect("Failed to create workspace via CLI");
     std::thread::sleep(Duration::from_millis(300));
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
@@ -5041,11 +4886,10 @@ fn test_switch_workspace() {
 
 /// Test rename workspace via ctrl+w -> r.
 #[test]
-#[serial]
 fn test_rename_workspace() {
     let _timer = TestTimer::new("test_rename_workspace");
-    let _env = TestEnv::setup();
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
@@ -5088,20 +4932,19 @@ fn test_rename_workspace() {
 
 /// Test delete workspace via ctrl+w -> d.
 #[test]
-#[serial]
 fn test_delete_workspace() {
     let _timer = TestTimer::new("test_delete_workspace");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
     // Create a second workspace to delete
-    let binary_path = get_binary_path();
-    let _: std::process::Output = std::process::Command::new(&binary_path)
+    let _binary_path = get_binary_path();
+    let _: std::process::Output = env.iso_command()
         .args(["workspace", "create", "ToDelete"])
         .output()
         .expect("Failed to create workspace via CLI");
     std::thread::sleep(Duration::from_millis(300));
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
@@ -5151,20 +4994,19 @@ fn test_delete_workspace() {
 
 /// Test move session between workspaces.
 #[test]
-#[serial]
 fn test_move_session_between_workspaces() {
     let _timer = TestTimer::new("test_move_session_between_workspaces");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
     // Create a destination workspace
-    let binary_path = get_binary_path();
-    let _: std::process::Output = std::process::Command::new(&binary_path)
+    let _binary_path = get_binary_path();
+    let _: std::process::Output = env.iso_command()
         .args(["workspace", "create", "Destination"])
         .output()
         .expect("Failed to create workspace via CLI");
     std::thread::sleep(Duration::from_millis(300));
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     let session_name = session.session_name.clone();
 
     std::thread::sleep(Duration::from_millis(1000));
@@ -5229,30 +5071,29 @@ fn test_move_session_between_workspaces() {
 /// Writes workspaces.json directly to simulate a previous state and verifies
 /// the daemon loads it on startup.
 #[test]
-#[serial]
 fn test_workspace_persists_across_restart() {
     let _timer = TestTimer::new("test_workspace_persists_across_restart");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
-    let binary_path = get_binary_path();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let data_dir = std::path::PathBuf::from(home).join(".local/share/sidebar-tui");
+    // Use the isolated data dir (XDG_DATA_HOME/sidebar-tui/)
+    let data_dir = env.data_dir().join("sidebar-tui");
     let workspaces_file = data_dir.join("workspaces.json");
 
     // Shut down daemon so we can safely write workspaces.json
-    let _ = std::process::Command::new(&binary_path).args(["shutdown"]).output();
+    let _ = env.iso_command().args(["shutdown"]).output();
     std::thread::sleep(Duration::from_millis(300));
 
     // Write workspaces with "Persistent" workspace
     let ws_json = r#"[{"name":"Default","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0},{"name":"Persistent","created_at":0,"last_selected_session":null,"last_focused_pane":"terminal","sidebar_scroll_offset":0}]"#;
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
     std::fs::write(&workspaces_file, ws_json).expect("Failed to write workspaces.json");
 
     // Restart daemon by listing
-    let _ = std::process::Command::new(&binary_path).args(["list"]).output();
+    let _ = env.iso_command().args(["list"]).output();
     std::thread::sleep(Duration::from_millis(500));
 
     // Spawn sb and verify it loads the persisted workspaces
-    let mut session = SbSession::new().expect("Failed to spawn sb after restart");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb after restart");
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5276,20 +5117,19 @@ fn test_workspace_persists_across_restart() {
 
 /// Test that workspace state (last selected session, focus) is restored when switching back.
 #[test]
-#[serial]
 fn test_workspace_state_restored_on_switch_back() {
     let _timer = TestTimer::new("test_workspace_state_restored_on_switch_back");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
     // Create a second workspace
-    let binary_path = get_binary_path();
-    let _: std::process::Output = std::process::Command::new(&binary_path)
+    let _binary_path = get_binary_path();
+    let _: std::process::Output = env.iso_command()
         .args(["workspace", "create", "Other"])
         .output()
         .expect("Failed to create workspace");
     std::thread::sleep(Duration::from_millis(300));
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     let session_name = session.session_name.clone();
 
     std::thread::sleep(Duration::from_millis(1000));
@@ -5351,12 +5191,11 @@ fn test_workspace_state_restored_on_switch_back() {
 /// Test that mod+n (Ctrl+N) from the terminal pane enters create mode.
 /// Per spec: "mod + n - New: Enter create mode" (terminal pane keybindings).
 #[test]
-#[serial]
 fn test_ctrl_n_from_terminal_enters_create_mode() {
     let _timer = TestTimer::new("test_ctrl_n_from_terminal_enters_create_mode");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5404,12 +5243,11 @@ fn test_ctrl_n_from_terminal_enters_create_mode() {
 /// Test that mod+w (Ctrl+W) from the terminal pane opens the workspace overlay.
 /// Per spec: "mod + w - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)"
 #[test]
-#[serial]
 fn test_ctrl_w_from_terminal_opens_workspace_overlay() {
     let _timer = TestTimer::new("test_ctrl_w_from_terminal_opens_workspace_overlay");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5458,10 +5296,9 @@ fn test_ctrl_w_from_terminal_opens_workspace_overlay() {
 /// Per spec: "y - Yes: Delete the session and all its data permanently.
 /// Focus on the next session in the list. If there is no next session, focus on the previous one."
 #[test]
-#[serial]
 fn test_delete_session_focus_transitions() {
     let _timer = TestTimer::new("test_delete_session_focus_transitions");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let binary_path = get_binary_path();
     let pid = std::process::id();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -5490,8 +5327,7 @@ fn test_delete_session_focus_transitions() {
 
     // Create 3 sessions by briefly spawning the TUI for each one
     for name in &[&session1, &session2, &session3] {
-        let cmd = format!("{} -s {}", binary_path, name);
-        let mut temp = spawn_sb(&cmd);
+                let mut temp = spawn_sb(&env, &name);
         temp.set_expect_timeout(Some(Duration::from_millis(1000)));
         std::thread::sleep(Duration::from_millis(400));
         let _ = temp.write_all(&[17]); // Ctrl+Q
@@ -5503,8 +5339,7 @@ fn test_delete_session_focus_transitions() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Attach to TUI (session3 is most recently created/used)
-    let cmd = format!("{} -s {}", binary_path, session3);
-    let mut sb = spawn_sb(&cmd);
+        let mut sb = spawn_sb(&env, &session3);
     sb.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -5572,12 +5407,11 @@ fn test_delete_session_focus_transitions() {
 /// spaces, and the following special characters: -, _, and .. Any other characters should
 /// be ignored."
 #[test]
-#[serial]
 fn test_session_name_character_restrictions() {
     let _timer = TestTimer::new("test_session_name_character_restrictions");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5647,10 +5481,9 @@ fn test_session_name_character_restrictions() {
 /// Test that a very long workspace name gets truncated with "..." in the sidebar header.
 /// Per spec: "If the workspace name is too long to fit, it should be truncated with `...` at the end."
 #[test]
-#[serial]
 fn test_workspace_name_truncated_in_sidebar_header() {
     let _timer = TestTimer::new("test_workspace_name_truncated_in_sidebar_header");
-    let _env = TestEnv::setup();
+    let env = TestEnv::setup();
     let binary_path = get_binary_path();
     let pid = std::process::id();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -5678,13 +5511,13 @@ fn test_workspace_name_truncated_in_sidebar_header() {
     };
 
     // Create and switch to the long-named workspace via CLI
-    let create_output = std::process::Command::new(&binary_path)
+    let create_output = env.iso_command()
         .args(["workspace", "create", &long_ws_name])
         .output()
         .expect("Failed to create workspace");
     eprintln!("Create workspace output: {}", String::from_utf8_lossy(&create_output.stdout));
 
-    let switch_output = std::process::Command::new(&binary_path)
+    let switch_output = env.iso_command()
         .args(["workspace", "switch", &long_ws_name])
         .output()
         .expect("Failed to switch workspace");
@@ -5692,7 +5525,7 @@ fn test_workspace_name_truncated_in_sidebar_header() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Spawn TUI and verify the workspace name is truncated in the sidebar header
-    let mut sb = spawn_sb(&binary_path);
+    let mut sb = spawn_sb(&env, &get_unique_session_name());
     sb.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -5730,13 +5563,11 @@ fn test_workspace_name_truncated_in_sidebar_header() {
 /// - The hint bar shows 'q Quit' as the quit path (not 'esc -> q Quit')
 /// - The 'q' keybinding is listed in the hint bar when the overlay is open
 #[test]
-#[serial]
 fn test_workspace_overlay_q_shows_quit_confirmation() {
     let _timer = TestTimer::new("test_workspace_overlay_q_shows_quit_confirmation");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5811,13 +5642,11 @@ fn test_workspace_overlay_q_shows_quit_confirmation() {
 /// Test that the active workspace has a '*' indicator in the workspace overlay.
 /// Per spec: "The currently active workspace is marked with a `*` indicator to the left of its name."
 #[test]
-#[serial]
 fn test_workspace_overlay_active_workspace_has_asterisk() {
     let _timer = TestTimer::new("test_workspace_overlay_active_workspace_has_asterisk");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5852,21 +5681,19 @@ fn test_workspace_overlay_active_workspace_has_asterisk() {
 /// Test that move mode prevents create ('n'), rename ('r'), and delete ('d') keybindings.
 /// Per spec: "Creating, renaming, and deleting workspaces are not available in move mode."
 #[test]
-#[serial]
 fn test_workspace_overlay_move_mode_restrictions() {
     let _timer = TestTimer::new("test_workspace_overlay_move_mode_restrictions");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
     // Create a second workspace so we have somewhere to move to
-    let binary_path = get_binary_path();
-    let _ = std::process::Command::new(&binary_path)
+    let _binary_path = get_binary_path();
+    let _ = env.iso_command()
         .args(["workspace", "create", "WorkTwo"])
         .output()
         .expect("Failed to create workspace via CLI");
     std::thread::sleep(Duration::from_millis(300));
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5937,13 +5764,11 @@ fn test_workspace_overlay_move_mode_restrictions() {
 /// Test that moving a session to the same (current) workspace is a no-op.
 /// Per spec: "If the selected workspace is the current workspace, do nothing."
 #[test]
-#[serial]
 fn test_move_session_to_same_workspace_is_noop() {
     let _timer = TestTimer::new("test_move_session_to_same_workspace_is_noop");
-    let _env = TestEnv::setup();
-    cleanup_test_sessions();
+    let env = TestEnv::setup();
 
-    let mut session = SbSession::new().expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     let session_name = session.session_name.clone();
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
@@ -5996,4 +5821,88 @@ fn test_move_session_to_same_workspace_is_noop() {
     );
 
     session.quit().expect("Failed to quit");
+}
+
+/// Test that the welcome text keybinding updates dynamically based on focus.
+/// When sidebar is focused, welcome text shows "n". When terminal is focused, it shows "ctrl+n".
+/// Spec: "should change dynamically if the user changes focus to the empty terminal pane
+/// before creating their first session."
+#[test]
+fn test_welcome_text_dynamic_keybinding() {
+    let _timer = TestTimer::new("test_welcome_text_dynamic_keybinding");
+    let env = TestEnv::setup();
+
+    // Spawn without -s so we start in welcome state (no sessions)
+    let mut session = spawn_sb(&env, "");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("Initial welcome state screen:\n{}", screen);
+
+    // Initial state: sidebar is focused, welcome text should show "n"
+    assert!(
+        screen.contains("Welcome"),
+        "Should show welcome message. Got:\n{}", screen
+    );
+    assert!(
+        screen.contains("Press"),
+        "Should show 'Press' in welcome text. Got:\n{}", screen
+    );
+    // In sidebar-focused welcome state, the keybinding shown should NOT be "ctrl+n"
+    assert!(
+        !screen.contains("ctrl+n"),
+        "Welcome text should NOT show 'ctrl+n' when sidebar is focused. Got:\n{}", screen
+    );
+
+    // Press Enter to focus the terminal pane (allowed even in welcome state)
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("After Enter (terminal focused) screen:\n{}", screen);
+
+    // Now terminal is focused, welcome text should show "ctrl+n"
+    assert!(
+        screen.contains("Welcome"),
+        "Should still show welcome message after Enter. Got:\n{}", screen
+    );
+    assert!(
+        screen.contains("ctrl+n"),
+        "Welcome text should show 'ctrl+n' when terminal is focused. Got:\n{}", screen
+    );
+
+    // Press Ctrl+B to go back to sidebar
+    session.write_all(&[2]).expect("Failed to send Ctrl+B"); // Ctrl+B = ASCII 2
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("After Ctrl+B (sidebar focused again) screen:\n{}", screen);
+
+    // Back to sidebar focus — keybinding should be "n" again, not "ctrl+n"
+    assert!(
+        screen.contains("Welcome"),
+        "Should still show welcome message after returning to sidebar. Got:\n{}", screen
+    );
+    assert!(
+        !screen.contains("ctrl+n"),
+        "Welcome text should NOT show 'ctrl+n' after returning to sidebar. Got:\n{}", screen
+    );
+
+    // Clean up
+    session.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    session.write_all(b"y").expect("Failed to send 'y'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = session.get_process_mut().exit(true);
 }
