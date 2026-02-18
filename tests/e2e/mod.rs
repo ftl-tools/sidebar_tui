@@ -7,11 +7,57 @@
 //! They use the `serial_test` crate to enforce this.
 
 use std::io::Write;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use expectrl::spawn;
 use serial_test::serial;
+
+/// RAII test timer — logs the test name and elapsed time when dropped.
+struct TestTimer {
+    name: &'static str,
+    start: Instant,
+}
+
+impl TestTimer {
+    fn new(name: &'static str) -> Self {
+        eprintln!("\n[TIMER] ▶ START  {}", name);
+        Self { name, start: Instant::now() }
+    }
+}
+
+impl Drop for TestTimer {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        eprintln!("[TIMER] ■ FINISH {} — {:.2}s", self.name, elapsed.as_secs_f64());
+    }
+}
+
+/// RAII environment guard — kills all sessions on creation (before test) and on drop (after test).
+/// This ensures every test starts and ends with a clean daemon state.
+struct TestEnv;
+
+impl TestEnv {
+    fn setup() -> Self {
+        eprintln!("[ENV] reset (before)");
+        reset_environment();
+        Self
+    }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        eprintln!("[ENV] reset (after)");
+        reset_environment();
+    }
+}
+
+/// Kill all sessions and wait for the daemon to be ready.
+/// Called before and after every test via TestEnv.
+fn reset_environment() {
+    cleanup_test_sessions();
+    ensure_daemon_ready();
+}
 
 /// Atomic counter to generate unique session names for each test
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -56,8 +102,9 @@ fn ensure_daemon_ready() {
 fn cleanup_test_sessions() {
     let binary_path = get_binary_path();
 
-    // Try multiple times to clean up all sessions
-    for _attempt in 0..5 {
+    // `sb kill` is synchronous — the session is gone when the command returns.
+    // We retry a few times only to handle transient listing races.
+    for _attempt in 0..3 {
         let list_output = std::process::Command::new(&binary_path)
             .args(["list"])
             .output();
@@ -71,21 +118,26 @@ fn cleanup_test_sessions() {
             return;
         }
 
-        // Parse and kill each session
+        let mut killed_any = false;
         for line in list_str.lines().skip(1) {
             if line.len() >= 20 {
                 let display_name = line[..20].trim().to_string();
                 if display_name.is_empty() || display_name == "No" || display_name.starts_with("NAME") {
                     continue;
                 }
-                // Kill ALL sessions to ensure clean state
                 let _ = std::process::Command::new(&binary_path)
                     .args(["kill", &display_name])
                     .output();
+                killed_any = true;
             }
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        if !killed_any {
+            return; // Nothing parseable to kill — stop retrying
+        }
+
+        // Brief pause so the daemon can settle before we re-list
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -93,7 +145,7 @@ fn cleanup_test_sessions() {
 /// Use this instead of `spawn(&cmd)` directly to ensure daemon is ready.
 fn spawn_sb(cmd: &str) -> expectrl::session::OsSession {
     ensure_daemon_ready();
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(500));
     spawn(cmd).expect("Failed to spawn sb")
 }
 
@@ -106,12 +158,8 @@ struct SbSession {
 
 impl SbSession {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // Ensure daemon is ready before spawning TUI.
-        // This helps with test isolation when previous tests leave daemon in transitional state.
+        // TestEnv::setup() already called reset_environment(); just confirm daemon is up.
         ensure_daemon_ready();
-
-        // Small delay after daemon check to ensure it's fully stable.
-        std::thread::sleep(Duration::from_millis(200));
 
         let binary_path = get_binary_path();
         let session_name = get_unique_session_name();
@@ -130,24 +178,40 @@ impl SbSession {
         Ok(Self { session, parser, session_name })
     }
 
-    /// Read all available output and process it through vt100
+    /// Read all available output and process it through vt100.
+    /// Polls until output has been quiet for 100ms or 800ms have elapsed total,
+    /// whichever comes first — no fixed pre-sleep needed.
     fn read_and_parse(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Give the TUI time to render
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Try to read what's available
         let mut buf = [0u8; 8192];
+        let deadline = std::time::Instant::now() + Duration::from_millis(800);
+        let mut last_data = std::time::Instant::now();
+        let mut got_any = false;
 
-        // Use non-blocking reads by checking what's available
         loop {
-            match self.session.try_read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    self.parser.process(&buf[..n]);
+            let mut got_data = false;
+            loop {
+                match self.session.try_read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        self.parser.process(&buf[..n]);
+                        got_data = true;
+                        got_any = true;
+                        last_data = std::time::Instant::now();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
             }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            // Once we've seen data, stop when it's been quiet for 100ms
+            if got_any && !got_data && now.duration_since(last_data) >= Duration::from_millis(100) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
 
         Ok(())
@@ -233,6 +297,9 @@ impl Drop for SbSession {
         let _ = std::process::Command::new(&binary_path)
             .args(["kill", &self.session_name])
             .output();
+
+        // Full environment reset so the next test starts clean
+        reset_environment();
     }
 }
 
@@ -243,6 +310,8 @@ impl Drop for SbSession {
 #[test]
 #[serial]
 fn test_layout_matches_spec() {
+    let _timer = TestTimer::new("test_layout_matches_spec");
+    let _env = TestEnv::setup();
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Give time for initial render
@@ -315,6 +384,8 @@ fn test_layout_matches_spec() {
 #[test]
 #[serial]
 fn test_git_status_output_matches() {
+    let _timer = TestTimer::new("test_git_status_output_matches");
+    let _env = TestEnv::setup();
     // First, verify git status works normally
     let expected_output = std::process::Command::new("git")
         .arg("status")
@@ -333,7 +404,7 @@ fn test_git_status_output_matches() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for shell prompt
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Type "git status" and press Enter
@@ -372,26 +443,35 @@ fn test_git_status_output_matches() {
 #[test]
 #[serial]
 fn test_vi_editing_workflow() {
+    let _timer = TestTimer::new("test_vi_editing_workflow");
+    let _env = TestEnv::setup();
     use std::fs;
 
     // Create a test file with known content
     let test_file = format!("{}/test_vi_edit.txt", env!("CARGO_MANIFEST_DIR"));
+    let swap_file = format!("{}/.test_vi_edit.txt.swp", env!("CARGO_MANIFEST_DIR"));
+    // Remove stale swap file that would cause vim to show an "ATTENTION" prompt
+    let _ = fs::remove_file(&swap_file);
     let original_content = "original line\n";
     fs::write(&test_file, original_content).expect("Failed to create test file");
 
     // Ensure cleanup even if test fails
-    struct Cleanup<'a>(&'a str);
-    impl Drop for Cleanup<'_> {
+    struct Cleanup {
+        test_file: String,
+        swap_file: String,
+    }
+    impl Drop for Cleanup {
         fn drop(&mut self) {
-            let _ = fs::remove_file(self.0);
+            let _ = fs::remove_file(&self.test_file);
+            let _ = fs::remove_file(&self.swap_file);
         }
     }
-    let _cleanup = Cleanup(&test_file);
+    let _cleanup = Cleanup { test_file: test_file.clone(), swap_file: swap_file.clone() };
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for shell to be ready
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Open the file in vi
@@ -401,7 +481,7 @@ fn test_vi_editing_workflow() {
     session.send_enter().expect("Failed to send enter");
 
     // Wait for vi to load - vi takes time to initialize
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Verify vi has started by checking screen contents
@@ -440,7 +520,7 @@ fn test_vi_editing_workflow() {
     session.send_enter().expect("Failed to send enter");
 
     // Wait for vi to exit
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Read the file and verify it was modified
@@ -466,10 +546,12 @@ fn test_vi_editing_workflow() {
 #[test]
 #[serial]
 fn test_backspace_input_handling() {
+    let _timer = TestTimer::new("test_backspace_input_handling");
+    let _env = TestEnv::setup();
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for shell to be ready
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Type "git status"
@@ -497,7 +579,7 @@ fn test_backspace_input_handling() {
     session.send_enter().expect("Failed to send enter");
 
     // Wait for command to execute
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Get screen contents and verify "hello world" appears
@@ -527,6 +609,8 @@ fn test_backspace_input_handling() {
 #[test]
 #[serial]
 fn test_session_persistence_across_restart() {
+    let _timer = TestTimer::new("test_session_persistence_across_restart");
+    let _env = TestEnv::setup();
     use std::fs;
 
     // Create a test file with known content
@@ -661,7 +745,7 @@ fn test_session_persistence_across_restart() {
             eprintln!("Swap file dialog detected, sending 'r' to recover");
             session.write_all(b"r").expect("Failed to send 'r' for recover");
             session.flush().expect("Failed to flush");
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(300));
             read_into_parser(&mut session, &mut parser);
 
             let after_recover = parser.screen().contents();
@@ -680,7 +764,7 @@ fn test_session_persistence_across_restart() {
 
         session.write_all(&[0x0d]).expect("Failed to send Enter");
         session.flush().expect("Failed to flush");
-        std::thread::sleep(Duration::from_millis(2000));
+        std::thread::sleep(Duration::from_millis(1000));
         read_into_parser(&mut session, &mut parser);
 
         let screen_after_save = parser.screen().contents();
@@ -713,12 +797,15 @@ fn test_session_persistence_across_restart() {
     );
 }
 
-/// Helper to read available output into a vt100 parser
-/// Reads repeatedly until no more data is available
+/// Helper to read available output into a vt100 parser.
+/// Polls until output has been quiet for 100ms or 800ms have elapsed total.
 fn read_into_parser(session: &mut expectrl::session::OsSession, parser: &mut vt100::Parser) {
     let mut buf = [0u8; 8192];
-    // Try reading multiple times with small delays to ensure we get all data
-    for _ in 0..10 {
+    let deadline = std::time::Instant::now() + Duration::from_millis(800);
+    let mut last_data = std::time::Instant::now();
+    let mut got_any = false;
+
+    loop {
         let mut got_data = false;
         loop {
             match session.try_read(&mut buf) {
@@ -726,15 +813,22 @@ fn read_into_parser(session: &mut expectrl::session::OsSession, parser: &mut vt1
                 Ok(n) => {
                     parser.process(&buf[..n]);
                     got_data = true;
+                    got_any = true;
+                    last_data = std::time::Instant::now();
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
             }
         }
-        if !got_data {
-            // Small delay then try again
-            std::thread::sleep(Duration::from_millis(50));
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
         }
+        if got_any && !got_data && now.duration_since(last_data) >= Duration::from_millis(100) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -767,6 +861,8 @@ fn wait_for_text(
 #[test]
 #[serial]
 fn test_stale_session_persistence() {
+    let _timer = TestTimer::new("test_stale_session_persistence");
+    let _env = TestEnv::setup();
     use std::fs;
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -940,10 +1036,12 @@ fn test_stale_session_persistence() {
 #[test]
 #[serial]
 fn test_sidebar_is_28_chars_wide() {
+    let _timer = TestTimer::new("test_sidebar_is_28_chars_wide");
+    let _env = TestEnv::setup();
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize.
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // Check screen content for errors - if we see error text, the daemon startup failed
@@ -1006,10 +1104,12 @@ fn test_sidebar_is_28_chars_wide() {
 #[test]
 #[serial]
 fn test_sidebar_session_list() {
+    let _timer = TestTimer::new("test_sidebar_session_list");
+    let _env = TestEnv::setup();
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // The session should appear in the sidebar (using the session name from SbSession)
@@ -1058,6 +1158,8 @@ fn test_sidebar_session_list() {
 #[test]
 #[serial]
 fn test_hint_bar_context() {
+    let _timer = TestTimer::new("test_hint_bar_context");
+    let _env = TestEnv::setup();
     // Clean up test sessions to prevent sidebar overflow which can cause rendering issues
     cleanup_test_sessions();
 
@@ -1122,12 +1224,14 @@ fn test_hint_bar_context() {
 #[test]
 #[serial]
 fn test_focus_switching() {
+    let _timer = TestTimer::new("test_focus_switching");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Initially terminal is focused (because we have a session)
@@ -1189,12 +1293,14 @@ fn test_focus_switching() {
 #[test]
 #[serial]
 fn test_tab_focuses_terminal() {
+    let _timer = TestTimer::new("test_tab_focuses_terminal");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
@@ -1243,6 +1349,8 @@ fn test_tab_focuses_terminal() {
 #[test]
 #[serial]
 fn test_create_mode_flow() {
+    let _timer = TestTimer::new("test_create_mode_flow");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("create-test-{}-{}", pid, unique_id);
@@ -1284,7 +1392,7 @@ fn test_create_mode_flow() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -1371,6 +1479,8 @@ fn test_create_mode_flow() {
 #[test]
 #[serial]
 fn test_rename_flow() {
+    let _timer = TestTimer::new("test_rename_flow");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("ren-{}-{}", pid, unique_id);
@@ -1402,7 +1512,7 @@ fn test_rename_flow() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -1468,6 +1578,8 @@ fn test_rename_flow() {
 #[test]
 #[serial]
 fn test_rename_keeps_focus() {
+    let _timer = TestTimer::new("test_rename_keeps_focus");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("rf-{}-{}", pid, unique_id);
@@ -1499,7 +1611,7 @@ fn test_rename_keeps_focus() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -1561,6 +1673,8 @@ fn test_rename_keeps_focus() {
 #[test]
 #[serial]
 fn test_delete_confirmation() {
+    let _timer = TestTimer::new("test_delete_confirmation");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("delete-test-{}-{}", pid, unique_id);
@@ -1588,7 +1702,7 @@ fn test_delete_confirmation() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -1670,13 +1784,15 @@ fn test_delete_confirmation() {
 #[test]
 #[serial]
 fn test_quit_confirmation() {
+    let _timer = TestTimer::new("test_quit_confirmation");
+    let _env = TestEnv::setup();
     // Clean up ALL sessions to prevent sidebar overflow which affects quit confirmation
     cleanup_test_sessions();
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
@@ -1739,6 +1855,8 @@ fn test_quit_confirmation() {
 #[test]
 #[serial]
 fn test_navigation() {
+    let _timer = TestTimer::new("test_navigation");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("nav-test-{}-{}", pid, unique_id);
@@ -1770,7 +1888,7 @@ fn test_navigation() {
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar
@@ -1855,6 +1973,8 @@ fn test_navigation() {
 #[test]
 #[serial]
 fn test_welcome_state() {
+    let _timer = TestTimer::new("test_welcome_state");
+    let _env = TestEnv::setup();
     // Use a unique socket for this test to ensure no sessions
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -1889,7 +2009,7 @@ fn test_welcome_state() {
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar
@@ -1951,6 +2071,8 @@ fn test_welcome_state() {
 #[test]
 #[serial]
 fn test_session_selection_no_crash() {
+    let _timer = TestTimer::new("test_session_selection_no_crash");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("sel-test-{}-{}", pid, unique_id);
@@ -1981,7 +2103,7 @@ fn test_session_selection_no_crash() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -2090,6 +2212,8 @@ fn test_session_selection_no_crash() {
 #[test]
 #[serial]
 fn test_agent_session_no_nested_error() {
+    let _timer = TestTimer::new("test_agent_session_no_nested_error");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("agent-test-{}-{}", pid, unique_id);
@@ -2121,7 +2245,7 @@ fn test_agent_session_no_nested_error() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -2174,7 +2298,7 @@ fn test_agent_session_no_nested_error() {
     );
 
     // Wait a bit more and check again in case the error appears delayed
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -2207,6 +2331,8 @@ fn test_agent_session_no_nested_error() {
 #[test]
 #[serial]
 fn test_live_preview_basic() {
+    let _timer = TestTimer::new("test_live_preview_basic");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("preview1-{}-{}", pid, unique_id);
@@ -2238,7 +2364,7 @@ fn test_live_preview_basic() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI and shell to initialize
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     // Run a unique command in session 1 (use short marker to fit in terminal)
@@ -2278,7 +2404,7 @@ fn test_live_preview_basic() {
 
     session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Run a unique command in session 2 (use short marker to fit in terminal)
@@ -2349,6 +2475,8 @@ fn test_live_preview_basic() {
 #[test]
 #[serial]
 fn test_live_preview_rapid_navigation() {
+    let _timer = TestTimer::new("test_live_preview_rapid_navigation");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("rapid1-{}-{}", pid, unique_id);
@@ -2380,7 +2508,7 @@ fn test_live_preview_rapid_navigation() {
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     // Create two more sessions quickly
@@ -2477,6 +2605,8 @@ fn test_live_preview_rapid_navigation() {
 #[test]
 #[serial]
 fn test_live_preview_then_select() {
+    let _timer = TestTimer::new("test_live_preview_then_select");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("prvsel1-{}-{}", pid, unique_id);
@@ -2507,7 +2637,7 @@ fn test_live_preview_then_select() {
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     // Run unique command in session 1 (short marker)
@@ -2534,7 +2664,7 @@ fn test_live_preview_then_select() {
 
     session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Run unique command in session 2 (short marker)
@@ -2607,6 +2737,8 @@ fn test_live_preview_then_select() {
 #[test]
 #[serial]
 fn test_live_preview_then_create() {
+    let _timer = TestTimer::new("test_live_preview_then_create");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("prvcr1-{}-{}", pid, unique_id);
@@ -2642,7 +2774,7 @@ fn test_live_preview_then_create() {
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     // Create session 2
@@ -2664,7 +2796,7 @@ fn test_live_preview_then_create() {
 
     session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar
@@ -2707,7 +2839,7 @@ fn test_live_preview_then_create() {
 
     session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -2743,6 +2875,8 @@ fn test_live_preview_then_create() {
 #[test]
 #[serial]
 fn test_ctrl_q_quit_from_terminal() {
+    let _timer = TestTimer::new("test_ctrl_q_quit_from_terminal");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("ctrlq-{}-{}", pid, unique_id);
@@ -2772,7 +2906,7 @@ fn test_ctrl_q_quit_from_terminal() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for initial render
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Terminal is initially focused after session creation
@@ -2837,6 +2971,8 @@ fn test_ctrl_q_quit_from_terminal() {
 #[test]
 #[serial]
 fn test_mod_keys_work_from_sidebar() {
+    let _timer = TestTimer::new("test_mod_keys_work_from_sidebar");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("modkeys-{}-{}", pid, unique_id);
@@ -2866,7 +3002,7 @@ fn test_mod_keys_work_from_sidebar() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for initial render
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Terminal is initially focused
@@ -2970,6 +3106,8 @@ fn test_mod_keys_work_from_sidebar() {
 #[test]
 #[serial]
 fn test_welcome_state_on_fresh_start() {
+    let _timer = TestTimer::new("test_welcome_state_on_fresh_start");
+    let _env = TestEnv::setup();
     let binary_path = get_binary_path();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
@@ -3084,7 +3222,7 @@ fn test_welcome_state_on_fresh_start() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -3215,6 +3353,8 @@ fn test_welcome_state_on_fresh_start() {
 #[test]
 #[serial]
 fn test_session_ordering_by_last_used() {
+    let _timer = TestTimer::new("test_session_ordering_by_last_used");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("order1-{}-{}", pid, unique_id);
@@ -3254,7 +3394,7 @@ fn test_session_ordering_by_last_used() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -3280,7 +3420,7 @@ fn test_session_ordering_by_last_used() {
     // Select terminal type - now immediately creates session with auto-generated name
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -3366,6 +3506,8 @@ fn test_session_ordering_by_last_used() {
 #[test]
 #[serial]
 fn test_session_order_preserved_across_restart() {
+    let _timer = TestTimer::new("test_session_order_preserved_across_restart");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("persist1-{}-{}", pid, unique_id);
@@ -3407,7 +3549,7 @@ fn test_session_order_preserved_across_restart() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Session 1 should be at row 2 initially
@@ -3424,7 +3566,7 @@ fn test_session_order_preserved_across_restart() {
     // Select terminal type - now immediately creates with auto-generated name
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Session 2 (auto-named) should now be at the top
@@ -3507,7 +3649,7 @@ fn test_session_order_preserved_across_restart() {
     let mut parser2 = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session2, &mut parser2);
 
     let screen_contents2 = parser2.screen().contents();
@@ -3539,10 +3681,12 @@ fn test_session_order_preserved_across_restart() {
 #[test]
 #[serial]
 fn test_terminal_text_color_is_white() {
+    let _timer = TestTimer::new("test_terminal_text_color_is_white");
+    let _env = TestEnv::setup();
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for initial render
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // We need to focus on the terminal and wait for the shell prompt
@@ -3627,6 +3771,8 @@ fn test_terminal_text_color_is_white() {
 #[test]
 #[serial]
 fn test_terminal_default_fg_color_conversion() {
+    let _timer = TestTimer::new("test_terminal_default_fg_color_conversion");
+    let _env = TestEnv::setup();
     use crate::SbSession;
 
     // This test verifies our color conversion at the unit level
@@ -3656,7 +3802,7 @@ fn test_terminal_default_fg_color_conversion() {
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for shell
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Wait for prompt
@@ -3691,6 +3837,8 @@ fn test_terminal_default_fg_color_conversion() {
 #[test]
 #[serial]
 fn test_shutdown_kills_all_sessions() {
+    let _timer = TestTimer::new("test_shutdown_kills_all_sessions");
+    let _env = TestEnv::setup();
     let binary_path = get_binary_path();
 
     // Create a session first to ensure daemon is running
@@ -3776,6 +3924,8 @@ fn test_shutdown_kills_all_sessions() {
 #[test]
 #[serial]
 fn test_shutdown_no_daemon_running() {
+    let _timer = TestTimer::new("test_shutdown_no_daemon_running");
+    let _env = TestEnv::setup();
     let binary_path = get_binary_path();
 
     // First, ensure no daemon is running by calling shutdown
@@ -3806,6 +3956,8 @@ fn test_shutdown_no_daemon_running() {
 #[test]
 #[serial]
 fn test_sessions_work_after_shutdown() {
+    let _timer = TestTimer::new("test_sessions_work_after_shutdown");
+    let _env = TestEnv::setup();
     let binary_path = get_binary_path();
 
     // Ensure clean state by shutting down any existing daemon
@@ -3872,6 +4024,8 @@ fn test_sessions_work_after_shutdown() {
 #[test]
 #[serial]
 fn test_ctrl_s_toggles_mouse_mode() {
+    let _timer = TestTimer::new("test_ctrl_s_toggles_mouse_mode");
+    let _env = TestEnv::setup();
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("mousemode-{}-{}", pid, unique_id);
@@ -3901,20 +4055,20 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for initial render
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    // Check initial state - should show "Text select" since mouse_mode defaults to false
+    // Check initial state - mouse_mode defaults to true, so hint bar shows "Mouse scroll"
     let screen_contents = parser.screen().contents();
     eprintln!("Initial state:\n{}", screen_contents);
 
     assert!(
-        screen_contents.contains("Text select"),
-        "Initial state should show 'Text select'. Got:\n{}",
+        screen_contents.contains("Mouse scroll"),
+        "Initial state should show 'Mouse scroll' (mouse_mode defaults to true). Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S (ASCII 19) to toggle mouse mode
+    // Send Ctrl+S (ASCII 19) to toggle mouse mode off
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -3923,14 +4077,14 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After first Ctrl+S:\n{}", screen_contents);
 
-    // Should now show "Mouse scroll"
+    // Should now show "Text select"
     assert!(
-        screen_contents.contains("Mouse scroll"),
-        "After toggle, should show 'Mouse scroll'. Got:\n{}",
+        screen_contents.contains("Text select"),
+        "After toggle, should show 'Text select'. Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S again to toggle back
+    // Send Ctrl+S again to toggle back on
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -3939,10 +4093,10 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After second Ctrl+S:\n{}", screen_contents);
 
-    // Should be back to "Text select"
+    // Should be back to "Mouse scroll"
     assert!(
-        screen_contents.contains("Text select"),
-        "After second toggle, should show 'Text select'. Got:\n{}",
+        screen_contents.contains("Mouse scroll"),
+        "After second toggle, should show 'Mouse scroll'. Got:\n{}",
         screen_contents
     );
 
@@ -3958,6 +4112,8 @@ fn test_ctrl_s_toggles_mouse_mode() {
 #[test]
 #[serial]
 fn test_vim_jk_navigation() {
+    let _timer = TestTimer::new("test_vim_jk_navigation");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -3990,7 +4146,7 @@ fn test_vim_jk_navigation() {
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar with Ctrl+B
@@ -4096,6 +4252,8 @@ fn test_vim_jk_navigation() {
 #[test]
 #[serial]
 fn test_esc_jump_back() {
+    let _timer = TestTimer::new("test_esc_jump_back");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -4129,7 +4287,7 @@ fn test_esc_jump_back() {
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let initial_screen = parser.screen().contents();
@@ -4149,7 +4307,7 @@ fn test_esc_jump_back() {
 
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     let screen_with_two = parser.screen().contents();
@@ -4251,12 +4409,14 @@ fn test_esc_jump_back() {
 #[test]
 #[serial]
 fn test_space_focuses_terminal_from_sidebar() {
+    let _timer = TestTimer::new("test_space_focuses_terminal_from_sidebar");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
@@ -4305,12 +4465,14 @@ fn test_space_focuses_terminal_from_sidebar() {
 #[test]
 #[serial]
 fn test_right_arrow_focuses_terminal_from_sidebar() {
+    let _timer = TestTimer::new("test_right_arrow_focuses_terminal_from_sidebar");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let mut session = SbSession::new().expect("Failed to spawn sb");
 
     // Wait for TUI to fully initialize
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
@@ -4360,6 +4522,8 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
 #[test]
 #[serial]
 fn test_session_name_wrapping_with_continuation_indicators() {
+    let _timer = TestTimer::new("test_session_name_wrapping_with_continuation_indicators");
+    let _env = TestEnv::setup();
     // Clean up ALL sessions to ensure we're testing with only our specific long-named session
     cleanup_test_sessions();
 
@@ -4377,7 +4541,7 @@ fn test_session_name_wrapping_with_continuation_indicators() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to fully initialize
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
@@ -4475,6 +4639,8 @@ fn test_session_name_wrapping_with_continuation_indicators() {
 #[test]
 #[serial]
 fn test_truncation_indicators_when_session_list_overflows() {
+    let _timer = TestTimer::new("test_truncation_indicators_when_session_list_overflows");
+    let _env = TestEnv::setup();
     cleanup_test_sessions();
 
     let binary_path = get_binary_path();
@@ -4545,7 +4711,7 @@ fn test_truncation_indicators_when_session_list_overflows() {
     let mut parser = vt100::Parser::new(24, 80, 0);
 
     // Wait for TUI to initialize
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     // Focus sidebar to see the session list
