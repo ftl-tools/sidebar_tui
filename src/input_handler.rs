@@ -139,6 +139,15 @@ impl AppState {
                 EventResult::Consumed
             }
 
+            // Move selected session to another workspace
+            KeyCode::Char('m') => {
+                if let Some(session) = self.sessions.get(self.selected_index) {
+                    let session_name = session.name.clone();
+                    return EventResult::OpenMoveToWorkspaceOverlay { session_name };
+                }
+                EventResult::Consumed
+            }
+
             _ => EventResult::NotConsumed,
         }
     }
@@ -459,41 +468,60 @@ impl AppState {
                         }
                     };
                 }
-                // Create new workspace
+                // Create/rename/delete are disabled in move mode
                 KeyCode::Char('n') => {
-                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
-                        ov.drafting_workspace = Some(RenamingState::new(0, "", self.focus));
-                    }
-                    return EventResult::Consumed;
-                }
-                // Rename selected workspace
-                KeyCode::Char('r') => {
-                    let selected_name = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
-                        ov.workspaces.get(ov.selected_index).cloned().unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    if !selected_name.is_empty() {
+                    let is_move_mode = matches!(
+                        self.mode,
+                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                    );
+                    if !is_move_mode {
                         if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
-                            ov.renaming = Some(RenamingState::new(0, &selected_name, Focus::Sidebar));
+                            ov.drafting_workspace = Some(RenamingState::new(0, "", self.focus));
                         }
                     }
                     return EventResult::Consumed;
                 }
-                // Delete selected workspace
-                KeyCode::Char('d') => {
-                    let (selected, workspaces, active) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
-                        (ov.selected_index, ov.workspaces.clone(), ov.active_workspace.clone())
-                    } else {
-                        return EventResult::Consumed;
-                    };
-                    let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
-                    // Don't delete the active workspace
-                    if workspace_name.is_empty() || workspace_name == active || workspaces.len() <= 1 {
-                        return EventResult::Consumed;
+                // Rename selected workspace (disabled in move mode)
+                KeyCode::Char('r') => {
+                    let is_move_mode = matches!(
+                        self.mode,
+                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                    );
+                    if !is_move_mode {
+                        let selected_name = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                            ov.workspaces.get(ov.selected_index).cloned().unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        if !selected_name.is_empty() {
+                            if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                                ov.renaming = Some(RenamingState::new(0, &selected_name, Focus::Sidebar));
+                            }
+                        }
                     }
-                    self.mode = AppMode::Normal;
-                    return EventResult::DeleteWorkspace { name: workspace_name };
+                    return EventResult::Consumed;
+                }
+                // Delete selected workspace (disabled in move mode)
+                KeyCode::Char('d') => {
+                    let is_move_mode = matches!(
+                        self.mode,
+                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                    );
+                    if !is_move_mode {
+                        let (selected, workspaces, active) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                            (ov.selected_index, ov.workspaces.clone(), ov.active_workspace.clone())
+                        } else {
+                            return EventResult::Consumed;
+                        };
+                        let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
+                        // Don't delete the active workspace
+                        if workspace_name.is_empty() || workspace_name == active || workspaces.len() <= 1 {
+                            return EventResult::Consumed;
+                        }
+                        self.mode = AppMode::Normal;
+                        return EventResult::DeleteWorkspace { name: workspace_name };
+                    }
+                    return EventResult::Consumed;
                 }
                 _ => return EventResult::Consumed,
             }
@@ -1352,5 +1380,192 @@ mod tests {
     fn test_mouse_mode_default_is_false() {
         let state = AppState::default();
         assert!(!state.mouse_mode, "Default mouse mode should be false (text selection enabled)");
+    }
+
+    // === Workspace Overlay Tests ===
+
+    fn workspace_overlay_state(workspaces: Vec<&str>, active: &str) -> crate::state::WorkspaceOverlayState {
+        crate::state::WorkspaceOverlayState::new(
+            workspaces.into_iter().map(|s| s.to_string()).collect(),
+            active.to_string(),
+        )
+    }
+
+    #[test]
+    fn test_m_key_opens_move_to_workspace_overlay() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            sessions: vec![Session::new("mysession")],
+            workspaces: vec!["Default".to_string(), "Work".to_string()],
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('m')));
+        assert!(
+            matches!(result, EventResult::OpenMoveToWorkspaceOverlay { ref session_name } if session_name == "mysession"),
+            "Expected OpenMoveToWorkspaceOverlay, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn test_m_key_does_nothing_with_no_sessions() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            sessions: vec![],
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Char('m')));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_workspace_overlay_esc_closes() {
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default", "Work"], "Default")),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Esc));
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_workspace_overlay_navigate_down() {
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default", "Work"], "Default")),
+            ..Default::default()
+        };
+        state.handle_key(key(KeyCode::Down));
+        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+            assert_eq!(ov.selected_index, 1);
+        } else {
+            panic!("Expected WorkspaceOverlay mode");
+        }
+    }
+
+    #[test]
+    fn test_workspace_overlay_navigate_up() {
+        let ov = {
+            let mut ov = workspace_overlay_state(vec!["Default", "Work"], "Work");
+            ov.selected_index = 1;
+            ov
+        };
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        state.handle_key(key(KeyCode::Up));
+        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+            assert_eq!(ov.selected_index, 0);
+        } else {
+            panic!("Expected WorkspaceOverlay mode");
+        }
+    }
+
+    #[test]
+    fn test_workspace_overlay_enter_switches_workspace() {
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default", "Work"], "Default")),
+            ..Default::default()
+        };
+        // Navigate to "Work"
+        state.handle_key(key(KeyCode::Down));
+        let result = state.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, EventResult::SwitchWorkspace { ref name } if name == "Work"),
+            "Expected SwitchWorkspace(Work), got {:?}", result
+        );
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_workspace_overlay_move_mode_enter_moves_session() {
+        use crate::state::WorkspaceOverlayState;
+        let ov = {
+            let mut ov = WorkspaceOverlayState::new_move_mode(
+                vec!["Default".to_string(), "Work".to_string()],
+                "Default".to_string(),
+                "mysession".to_string(),
+            );
+            ov.selected_index = 1; // Select "Work"
+            ov
+        };
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        let result = state.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(result, EventResult::MoveSessionToWorkspace { ref session_name, ref workspace_name }
+                if session_name == "mysession" && workspace_name == "Work"),
+            "Expected MoveSessionToWorkspace, got {:?}", result
+        );
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_workspace_overlay_move_mode_n_does_nothing() {
+        use crate::state::WorkspaceOverlayState;
+        let ov = WorkspaceOverlayState::new_move_mode(
+            vec!["Default".to_string(), "Work".to_string()],
+            "Default".to_string(),
+            "mysession".to_string(),
+        );
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        // 'n' should be ignored in move mode
+        let result = state.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(result, EventResult::Consumed);
+        // No drafting_workspace should be set
+        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+            assert!(ov.drafting_workspace.is_none(), "drafting_workspace should not be set in move mode");
+        }
+    }
+
+    #[test]
+    fn test_workspace_overlay_move_mode_d_does_nothing() {
+        use crate::state::WorkspaceOverlayState;
+        let ov = WorkspaceOverlayState::new_move_mode(
+            vec!["Default".to_string(), "Work".to_string()],
+            "Default".to_string(),
+            "mysession".to_string(),
+        );
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(ov),
+            ..Default::default()
+        };
+        // 'd' should not delete in move mode
+        state.handle_key(key(KeyCode::Down)); // select Work
+        let result = state.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(result, EventResult::Consumed);
+        // Mode should still be WorkspaceOverlay (not Normal)
+        assert!(matches!(state.mode, AppMode::WorkspaceOverlay(_)));
+    }
+
+    #[test]
+    fn test_workspace_overlay_normal_mode_n_creates_workspace() {
+        let mut state = AppState {
+            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default"], "Default")),
+            ..Default::default()
+        };
+        state.handle_key(key(KeyCode::Char('n')));
+        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+            assert!(ov.drafting_workspace.is_some(), "drafting_workspace should be set after 'n'");
+        } else {
+            panic!("Expected WorkspaceOverlay mode");
+        }
+    }
+
+    #[test]
+    fn test_ctrl_w_opens_workspace_overlay() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            workspaces: vec!["Default".to_string()],
+            ..Default::default()
+        };
+        let result = state.handle_key(ctrl_key('w'));
+        assert_eq!(result, EventResult::OpenWorkspaceOverlay);
     }
 }

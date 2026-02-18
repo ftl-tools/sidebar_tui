@@ -457,6 +457,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
                         KeybindingInfo::new("d", "Delete"),
+                        KeybindingInfo::new("m", "Move to workspace"),
                         KeybindingInfo::new("ctrl + w", "Workspaces"),
                         KeybindingInfo::new("ctrl + s", mouse_desc),
                         KeybindingInfo::new("q", "Quit"),
@@ -496,14 +497,25 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                 KeybindingInfo::new("n", "No"),
             ]
         }
-        AppMode::WorkspaceOverlay(_) => vec![
-            KeybindingInfo::new("enter", "Switch"),
-            KeybindingInfo::new("↑/↓/j/k", "Navigate"),
-            KeybindingInfo::new("n", "New"),
-            KeybindingInfo::new("r", "Rename"),
-            KeybindingInfo::new("d", "Delete"),
-            KeybindingInfo::new("esc", "Close"),
-        ],
+        AppMode::WorkspaceOverlay(overlay) => {
+            use crate::state::WorkspaceOverlayMode;
+            if matches!(overlay.mode, WorkspaceOverlayMode::MoveSession { .. }) {
+                vec![
+                    KeybindingInfo::new("enter", "Move here"),
+                    KeybindingInfo::new("↑/↓/j/k", "Navigate"),
+                    KeybindingInfo::new("esc", "Cancel"),
+                ]
+            } else {
+                vec![
+                    KeybindingInfo::new("enter", "Switch"),
+                    KeybindingInfo::new("↑/↓/j/k", "Navigate"),
+                    KeybindingInfo::new("n", "New"),
+                    KeybindingInfo::new("r", "Rename"),
+                    KeybindingInfo::new("d", "Delete"),
+                    KeybindingInfo::new("esc", "Close"),
+                ]
+            }
+        }
     }
 }
 
