@@ -457,6 +457,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                         KeybindingInfo::new("n", "New"),
                         KeybindingInfo::new("r", "Rename"),
                         KeybindingInfo::new("d", "Delete"),
+                        KeybindingInfo::new("ctrl + w", "Workspaces"),
                         KeybindingInfo::new("ctrl + s", mouse_desc),
                         KeybindingInfo::new("q", "Quit"),
                     ]
@@ -465,6 +466,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             Focus::Terminal => vec![
                 KeybindingInfo::new("ctrl + n", "New"),
                 KeybindingInfo::new("ctrl + b", "Focus on sidebar"),
+                KeybindingInfo::new("ctrl + w", "Workspaces"),
                 KeybindingInfo::new("ctrl + s", mouse_desc),
                 KeybindingInfo::new("ctrl + q", "Quit"),
             ],
@@ -494,6 +496,14 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                 KeybindingInfo::new("n", "No"),
             ]
         }
+        AppMode::WorkspaceOverlay(_) => vec![
+            KeybindingInfo::new("enter", "Switch"),
+            KeybindingInfo::new("↑/↓/j/k", "Navigate"),
+            KeybindingInfo::new("n", "New"),
+            KeybindingInfo::new("r", "Rename"),
+            KeybindingInfo::new("d", "Delete"),
+            KeybindingInfo::new("esc", "Close"),
+        ],
     }
 }
 
@@ -507,6 +517,7 @@ pub fn get_quit_path_for_state(state: &AppState) -> String {
         AppMode::CreateMode { .. } => "esc → q Quit".to_string(),
         AppMode::Drafting(_) | AppMode::Renaming(_) => "esc → q Quit".to_string(),
         AppMode::Confirming(_) => "n → q Quit".to_string(),
+        AppMode::WorkspaceOverlay(_) => "esc → q Quit".to_string(),
     }
 }
 

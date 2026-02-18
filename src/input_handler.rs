@@ -7,7 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::name_generator::generate_unique_session_name;
 use crate::state::{
-    AppMode, AppState, ConfirmAction, EventResult, Focus, SessionType,
+    AppMode, AppState, ConfirmAction, EventResult, Focus, RenamingState, SessionType,
+    WorkspaceOverlayMode,
 };
 
 impl AppState {
@@ -27,6 +28,9 @@ impl AppState {
             }
             AppMode::Renaming(_) => {
                 return self.handle_renaming_key(key);
+            }
+            AppMode::WorkspaceOverlay(_) => {
+                return self.handle_workspace_overlay_key(key);
             }
             AppMode::Normal => {}
         }
@@ -60,6 +64,8 @@ impl AppState {
                     self.request_confirmation(ConfirmAction::Quit);
                     EventResult::Consumed
                 }
+                // Open workspace overlay
+                KeyCode::Char('w') => EventResult::OpenWorkspaceOverlay,
                 _ => EventResult::NotConsumed,
             };
         }
@@ -162,6 +168,8 @@ impl AppState {
                     self.request_confirmation(ConfirmAction::Quit);
                     EventResult::Consumed
                 }
+                // Open workspace overlay
+                KeyCode::Char('w') => EventResult::OpenWorkspaceOverlay,
                 _ => EventResult::NotConsumed,
             };
         }
@@ -309,6 +317,188 @@ impl AppState {
         } else {
             EventResult::NotConsumed
         }
+    }
+
+    /// Handle key events while the workspace overlay is open.
+    fn handle_workspace_overlay_key(&mut self, key: KeyEvent) -> EventResult {
+        if let AppMode::WorkspaceOverlay(ref mut overlay) = self.mode {
+            // If we're in drafting mode (creating a new workspace), handle text input
+            if overlay.drafting_workspace.is_some() {
+                match key.code {
+                    KeyCode::Enter => {
+                        let name = overlay.drafting_workspace.as_ref().map(|d| d.new_name.trim().to_string()).unwrap_or_default();
+                        if name.is_empty() {
+                            overlay.drafting_workspace = None;
+                        } else {
+                            let name_clone = name.clone();
+                            overlay.drafting_workspace = None;
+                            return EventResult::CreateWorkspace { name: name_clone };
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Esc => {
+                        overlay.drafting_workspace = None;
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                            draft.insert_char(c);
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                            draft.delete_char();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Left => {
+                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                            draft.move_cursor_left();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Right => {
+                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                            draft.move_cursor_right();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    _ => return EventResult::Consumed,
+                }
+            }
+
+            // If we're renaming a workspace, handle text input
+            if overlay.renaming.is_some() {
+                match key.code {
+                    KeyCode::Enter => {
+                        let new_name = overlay.renaming.as_ref().map(|r| r.new_name.trim().to_string()).unwrap_or_default();
+                        if !new_name.is_empty() {
+                            let old_name = overlay.workspaces
+                                .get(overlay.selected_index)
+                                .cloned()
+                                .unwrap_or_default();
+                            if !old_name.is_empty() {
+                                overlay.renaming = None;
+                                return EventResult::RenameWorkspace { old_name, new_name };
+                            }
+                        }
+                        overlay.renaming = None;
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Esc => {
+                        overlay.renaming = None;
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(ref mut rename) = overlay.renaming {
+                            rename.insert_char(c);
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut rename) = overlay.renaming {
+                            rename.delete_char();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Left => {
+                        if let Some(ref mut rename) = overlay.renaming {
+                            rename.move_cursor_left();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    KeyCode::Right => {
+                        if let Some(ref mut rename) = overlay.renaming {
+                            rename.move_cursor_right();
+                        }
+                        return EventResult::Consumed;
+                    }
+                    _ => return EventResult::Consumed,
+                }
+            }
+
+            // Normal overlay navigation
+            match key.code {
+                // Close overlay
+                KeyCode::Esc => {
+                    self.mode = AppMode::Normal;
+                    return EventResult::Consumed;
+                }
+                // Navigate down
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                        if ov.selected_index + 1 < ov.workspaces.len() {
+                            ov.selected_index += 1;
+                        }
+                    }
+                    return EventResult::Consumed;
+                }
+                // Navigate up
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                        if ov.selected_index > 0 {
+                            ov.selected_index -= 1;
+                        }
+                    }
+                    return EventResult::Consumed;
+                }
+                // Select (switch to workspace) or move session to workspace
+                KeyCode::Enter => {
+                    let (mode, selected, workspaces) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                        (ov.mode.clone(), ov.selected_index, ov.workspaces.clone())
+                    } else {
+                        return EventResult::Consumed;
+                    };
+                    let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
+                    self.mode = AppMode::Normal;
+                    return match mode {
+                        WorkspaceOverlayMode::Normal => EventResult::SwitchWorkspace { name: workspace_name },
+                        WorkspaceOverlayMode::MoveSession { session_name } => {
+                            EventResult::MoveSessionToWorkspace { session_name, workspace_name }
+                        }
+                    };
+                }
+                // Create new workspace
+                KeyCode::Char('n') => {
+                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                        ov.drafting_workspace = Some(RenamingState::new(0, "", self.focus));
+                    }
+                    return EventResult::Consumed;
+                }
+                // Rename selected workspace
+                KeyCode::Char('r') => {
+                    let selected_name = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                        ov.workspaces.get(ov.selected_index).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    if !selected_name.is_empty() {
+                        if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                            ov.renaming = Some(RenamingState::new(0, &selected_name, Focus::Sidebar));
+                        }
+                    }
+                    return EventResult::Consumed;
+                }
+                // Delete selected workspace
+                KeyCode::Char('d') => {
+                    let (selected, workspaces, active) = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                        (ov.selected_index, ov.workspaces.clone(), ov.active_workspace.clone())
+                    } else {
+                        return EventResult::Consumed;
+                    };
+                    let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
+                    // Don't delete the active workspace
+                    if workspace_name.is_empty() || workspace_name == active || workspaces.len() <= 1 {
+                        return EventResult::Consumed;
+                    }
+                    self.mode = AppMode::Normal;
+                    return EventResult::DeleteWorkspace { name: workspace_name };
+                }
+                _ => return EventResult::Consumed,
+            }
+        }
+        EventResult::NotConsumed
     }
 
     /// Handle key events for confirmation prompts.

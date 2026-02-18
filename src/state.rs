@@ -200,6 +200,99 @@ impl ConfirmState {
     }
 }
 
+/// Mode for the workspace overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceOverlayMode {
+    /// Normal workspace management mode.
+    Normal,
+    /// Move-to-workspace mode (triggered by 'm' in sidebar).
+    MoveSession {
+        /// Name of the session being moved.
+        session_name: String,
+    },
+}
+
+/// State for the workspace overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOverlayState {
+    /// List of all workspaces (sorted alphabetically).
+    pub workspaces: Vec<String>,
+    /// Name of the currently active workspace.
+    pub active_workspace: String,
+    /// Index of the selected workspace in the list.
+    pub selected_index: usize,
+    /// Scroll offset for the workspace list.
+    pub scroll_offset: usize,
+    /// Mode of the overlay (normal or move-to-workspace).
+    pub mode: WorkspaceOverlayMode,
+    /// If renaming: the new name being typed.
+    pub renaming: Option<RenamingState>,
+    /// If creating new workspace: the draft name being typed.
+    pub drafting_workspace: Option<RenamingState>,
+}
+
+impl WorkspaceOverlayState {
+    /// Create a new overlay state in normal mode.
+    pub fn new(workspaces: Vec<String>, active_workspace: String) -> Self {
+        let selected_index = workspaces.iter().position(|w| w == &active_workspace).unwrap_or(0);
+        Self {
+            workspaces,
+            active_workspace,
+            selected_index,
+            scroll_offset: 0,
+            mode: WorkspaceOverlayMode::Normal,
+            renaming: None,
+            drafting_workspace: None,
+        }
+    }
+
+    /// Create overlay state in move-to-workspace mode.
+    pub fn new_move_mode(workspaces: Vec<String>, active_workspace: String, session_name: String) -> Self {
+        let selected_index = workspaces.iter().position(|w| w == &active_workspace).unwrap_or(0);
+        Self {
+            workspaces,
+            active_workspace: active_workspace.clone(),
+            selected_index,
+            scroll_offset: 0,
+            mode: WorkspaceOverlayMode::MoveSession { session_name },
+            renaming: None,
+            drafting_workspace: None,
+        }
+    }
+
+    /// Move selection up.
+    pub fn select_previous(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+            if self.selected_index < self.scroll_offset {
+                self.scroll_offset = self.selected_index;
+            }
+        }
+    }
+
+    /// Move selection down.
+    pub fn select_next(&mut self) {
+        let count = self.workspaces.len() + if self.drafting_workspace.is_some() { 1 } else { 0 };
+        if self.selected_index + 1 < count {
+            self.selected_index += 1;
+        }
+    }
+
+    /// Get the selected workspace name (None if drafting new).
+    pub fn selected_workspace(&self) -> Option<&str> {
+        if let Some(drafting) = &self.drafting_workspace {
+            // The draft row is at index 0
+            if self.selected_index == 0 {
+                return None;
+            }
+            let _ = drafting;
+            self.workspaces.get(self.selected_index.saturating_sub(1)).map(|s| s.as_str())
+        } else {
+            self.workspaces.get(self.selected_index).map(|s| s.as_str())
+        }
+    }
+}
+
 /// Application mode - determines what input mode the TUI is in.
 /// Modal states take precedence over focus-based input handling.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -218,6 +311,8 @@ pub enum AppMode {
     Renaming(RenamingState),
     /// Showing a confirmation prompt.
     Confirming(ConfirmState),
+    /// Workspace overlay is open.
+    WorkspaceOverlay(WorkspaceOverlayState),
 }
 
 impl AppMode {
@@ -302,6 +397,42 @@ pub enum EventResult {
     /// When enabled: scroll wheel works but text selection is blocked.
     /// When disabled: native terminal text selection works.
     ToggleMouseMode,
+    /// Open workspace overlay in normal mode.
+    OpenWorkspaceOverlay,
+    /// Open workspace overlay in move-to-workspace mode.
+    OpenMoveToWorkspaceOverlay {
+        /// The session to move.
+        session_name: String,
+    },
+    /// Switch to a different workspace.
+    SwitchWorkspace {
+        /// Name of the workspace to switch to.
+        name: String,
+    },
+    /// Create a new workspace.
+    CreateWorkspace {
+        /// Name for the new workspace.
+        name: String,
+    },
+    /// Rename a workspace.
+    RenameWorkspace {
+        /// Old workspace name.
+        old_name: String,
+        /// New workspace name.
+        new_name: String,
+    },
+    /// Delete a workspace and all its sessions.
+    DeleteWorkspace {
+        /// Name of the workspace to delete.
+        name: String,
+    },
+    /// Move a session to a different workspace.
+    MoveSessionToWorkspace {
+        /// Name of the session to move.
+        session_name: String,
+        /// Name of the destination workspace.
+        workspace_name: String,
+    },
 }
 
 /// Main application state.
@@ -324,6 +455,8 @@ pub struct AppState {
     pub mouse_mode: bool,
     /// The name of the currently active workspace.
     pub workspace_name: String,
+    /// List of all workspace names (for the workspace overlay).
+    pub workspaces: Vec<String>,
 }
 
 impl Default for AppState {
@@ -337,6 +470,7 @@ impl Default for AppState {
             previous_session: None,
             mouse_mode: false,
             workspace_name: "Default".to_string(),
+            workspaces: vec!["Default".to_string()],
         }
     }
 }

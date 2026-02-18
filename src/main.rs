@@ -10,9 +10,10 @@ use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
 use crossterm::event::{self, Event, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use sidebar_tui::daemon::{
@@ -22,7 +23,7 @@ use sidebar_tui::daemon::{
 use sidebar_tui::hint_bar::hint_bar_for_state;
 use sidebar_tui::input::key_to_bytes;
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
-use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType};
+use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode, WorkspaceOverlayState};
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::colors;
 
@@ -916,6 +917,179 @@ fn run_attached(
                                 execute!(std::io::stdout(), DisableMouseCapture)?;
                             }
                         }
+                        EventResult::OpenWorkspaceOverlay => {
+                            // Open workspace overlay with current workspace list
+                            let workspaces = app.app_state.workspaces.clone();
+                            let active = app.app_state.workspace_name.clone();
+                            app.app_state.mode = AppMode::WorkspaceOverlay(
+                                WorkspaceOverlayState::new(workspaces, active)
+                            );
+                        }
+                        EventResult::OpenMoveToWorkspaceOverlay { session_name } => {
+                            // Open workspace overlay in move-session mode
+                            let workspaces = app.app_state.workspaces.clone();
+                            let active = app.app_state.workspace_name.clone();
+                            app.app_state.mode = AppMode::WorkspaceOverlay(
+                                WorkspaceOverlayState::new_move_mode(workspaces, active, session_name)
+                            );
+                        }
+                        EventResult::SwitchWorkspace { name } => {
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let response = send_daemon_message_sync(stream, ClientMessage::SwitchWorkspace {
+                                name: name.clone(),
+                            }, &mut app)?;
+                            match response {
+                                DaemonResponse::WorkspaceSwitched { name: new_ws, sessions: ws_sessions } => {
+                                    // Update sessions from the response
+                                    app.app_state.sessions = ws_sessions.iter()
+                                        .map(|s| Session::attached(&s.name))
+                                        .collect();
+                                    app.app_state.workspace_name = new_ws;
+                                    // If current session is not in new workspace, switch to first available
+                                    if !app.app_state.sessions.iter().any(|s| s.name == app.session_name) {
+                                        if let Some(first) = app.app_state.sessions.first() {
+                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
+                                                session_name: first.name.clone(),
+                                                rows: term_rows,
+                                                cols: term_cols,
+                                                cwd: cwd.clone(),
+                                            }, &mut app)?;
+                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                                app.session_name = attached_name;
+                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                if let Some(state_bytes) = new_state {
+                                                    app.process_output(&state_bytes);
+                                                }
+                                            }
+                                        } else {
+                                            app.session_name = String::new();
+                                            app.term_emulator = Terminal::new(term_rows, term_cols);
+                                        }
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to switch workspace: {}", message);
+                                }
+                                _ => {}
+                            }
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::CreateWorkspace { name } => {
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let response = send_daemon_message_sync(stream, ClientMessage::CreateWorkspace {
+                                name: name.clone(),
+                            }, &mut app)?;
+                            match response {
+                                DaemonResponse::WorkspaceCreated { name: new_ws } => {
+                                    // Add to local workspace list
+                                    if !app.app_state.workspaces.contains(&new_ws) {
+                                        app.app_state.workspaces.push(new_ws.clone());
+                                        app.app_state.workspaces.sort();
+                                    }
+                                    // Update overlay state if still open
+                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                        ov.workspaces = app.app_state.workspaces.clone();
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to create workspace: {}", message);
+                                }
+                                _ => {}
+                            }
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::RenameWorkspace { old_name, new_name } => {
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let response = send_daemon_message_sync(stream, ClientMessage::RenameWorkspace {
+                                old_name: old_name.clone(),
+                                new_name: new_name.clone(),
+                            }, &mut app)?;
+                            match response {
+                                DaemonResponse::WorkspaceRenamed { old_name: old, new_name: new } => {
+                                    // Update local workspace list
+                                    if let Some(pos) = app.app_state.workspaces.iter().position(|w| w == &old) {
+                                        app.app_state.workspaces[pos] = new.clone();
+                                        app.app_state.workspaces.sort();
+                                    }
+                                    if app.app_state.workspace_name == old {
+                                        app.app_state.workspace_name = new.clone();
+                                    }
+                                    // Update overlay state if still open
+                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                        ov.workspaces = app.app_state.workspaces.clone();
+                                        if ov.active_workspace == old {
+                                            ov.active_workspace = new.clone();
+                                        }
+                                        ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to rename workspace: {}", message);
+                                }
+                                _ => {}
+                            }
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::DeleteWorkspace { name } => {
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let response = send_daemon_message_sync(stream, ClientMessage::DeleteWorkspace {
+                                name: name.clone(),
+                            }, &mut app)?;
+                            match response {
+                                DaemonResponse::WorkspaceDeleted { name: deleted } => {
+                                    app.app_state.workspaces.retain(|w| w != &deleted);
+                                    // Update overlay state if still open
+                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                        ov.workspaces = app.app_state.workspaces.clone();
+                                        ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to delete workspace: {}", message);
+                                }
+                                _ => {}
+                            }
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
+                        EventResult::MoveSessionToWorkspace { session_name, workspace_name } => {
+                            drain_async_messages(&mut msg_reader, stream, &mut app)?;
+                            let response = send_daemon_message_sync(stream, ClientMessage::MoveSessionToWorkspace {
+                                session_name: session_name.clone(),
+                                workspace_name: workspace_name.clone(),
+                            }, &mut app)?;
+                            match response {
+                                DaemonResponse::SessionMoved { .. } => {
+                                    // Remove session from local list (it's now in another workspace)
+                                    app.app_state.sessions.retain(|s| s.name != session_name);
+                                    // If we moved the current session away, switch to another
+                                    if app.session_name == session_name {
+                                        if let Some(next) = app.app_state.sessions.first() {
+                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
+                                                session_name: next.name.clone(),
+                                                rows: term_rows,
+                                                cols: term_cols,
+                                                cwd: cwd.clone(),
+                                            }, &mut app)?;
+                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                                app.session_name = attached_name;
+                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                if let Some(state_bytes) = new_state {
+                                                    app.process_output(&state_bytes);
+                                                }
+                                            }
+                                        } else {
+                                            app.session_name = String::new();
+                                            app.term_emulator = Terminal::new(term_rows, term_cols);
+                                        }
+                                    }
+                                }
+                                DaemonResponse::Error { message } => {
+                                    eprintln!("Failed to move session: {}", message);
+                                }
+                                _ => {}
+                            }
+                            stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        }
                         EventResult::Consumed => {
                             // Event was consumed by UI state machine, nothing to forward
                         }
@@ -1090,6 +1264,11 @@ fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(&app.app_state, sidebar_area) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+
+    // Render workspace overlay on top if active
+    if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
+        render_workspace_overlay(frame, frame.area(), overlay);
+    }
 }
 
 /// Render the static UI layout (for tests without PTY).
@@ -1215,6 +1394,124 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &mut
             if !state.mode.is_text_input() {
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
+        }
+    }
+}
+
+/// Render the workspace overlay as a floating window centered on screen.
+fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOverlayState) {
+    // Overlay dimensions: 40 wide, up to 20 tall (capped by screen height)
+    let overlay_width = 40u16.min(area.width.saturating_sub(4));
+    let max_visible = 10usize;
+    let list_height = (overlay.workspaces.len().min(max_visible) + 2) as u16; // +2 for borders
+    let input_height = if overlay.renaming.is_some() || overlay.drafting_workspace.is_some() { 3u16 } else { 0 };
+    let overlay_height = (list_height + input_height + 2).min(area.height.saturating_sub(4)); // +2 for title/hint
+
+    // Center the overlay
+    let overlay_x = area.x + area.width.saturating_sub(overlay_width) / 2;
+    let overlay_y = area.y + area.height.saturating_sub(overlay_height) / 2;
+    let overlay_area = Rect::new(overlay_x, overlay_y, overlay_width, overlay_height);
+
+    // Determine title based on mode
+    let title = match &overlay.mode {
+        WorkspaceOverlayMode::Normal => " Workspaces ",
+        WorkspaceOverlayMode::MoveSession { .. } => " Move Session to Workspace ",
+    };
+
+    // Clear the area and draw border
+    frame.render_widget(Clear, overlay_area);
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(colors::PURPLE));
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    // Split inner into list area and (optionally) input area
+    let (list_area, input_area_opt) = if input_height > 0 && inner.height > input_height {
+        let chunks = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(input_height),
+        ]).split(inner);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (inner, None)
+    };
+
+    // Render workspace list
+    let visible_start = overlay.scroll_offset;
+    let visible_end = (visible_start + max_visible).min(overlay.workspaces.len());
+    let items: Vec<ListItem> = overlay.workspaces[visible_start..visible_end]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let actual_index = visible_start + i;
+            let is_active = *name == overlay.active_workspace;
+            let is_selected = actual_index == overlay.selected_index;
+
+            let prefix = if is_active { "* " } else { "  " };
+            let display = format!("{}{}", prefix, name);
+
+            let style = if is_selected {
+                Style::default().fg(Color::White).bg(Color::Indexed(238)).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().fg(colors::PURPLE)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(display, style)))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    // Map selected_index to visible index
+    if overlay.selected_index >= visible_start && overlay.selected_index < visible_end {
+        list_state.select(Some(overlay.selected_index - visible_start));
+    }
+    let list = List::new(items);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    // Render truncation indicators if needed
+    if overlay.workspaces.len() > max_visible {
+        let indicator_style = Style::default().fg(Color::Indexed(238));
+        if visible_start > 0 && list_area.height > 0 {
+            let top_line = Line::from(Span::styled("...", indicator_style));
+            frame.render_widget(Paragraph::new(top_line), Rect::new(list_area.x, list_area.y, list_area.width, 1));
+        }
+        if visible_end < overlay.workspaces.len() && list_area.height > 0 {
+            let bot_y = list_area.y + list_area.height.saturating_sub(1);
+            let bot_line = Line::from(Span::styled("...", indicator_style));
+            frame.render_widget(Paragraph::new(bot_line), Rect::new(list_area.x, bot_y, list_area.width, 1));
+        }
+    }
+
+    // Render input area (renaming or drafting)
+    if let Some(input_area) = input_area_opt {
+        let (label, text, cursor_pos) = if let Some(ref rename) = overlay.renaming {
+            ("Rename: ", rename.new_name.as_str(), rename.cursor_position)
+        } else if let Some(ref draft) = overlay.drafting_workspace {
+            ("New workspace: ", draft.new_name.as_str(), draft.cursor_position)
+        } else {
+            ("", "", 0)
+        };
+
+        let input_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(colors::DARK_GREY));
+        let input_inner = input_block.inner(input_area);
+        frame.render_widget(input_block, input_area);
+
+        let display_text = format!("{}{}", label, text);
+        let input_para = Paragraph::new(display_text.as_str())
+            .style(Style::default().fg(Color::White));
+        frame.render_widget(input_para, input_inner);
+
+        // Set cursor position inside input field
+        let cursor_x = input_inner.x + (label.len() + cursor_pos) as u16;
+        let cursor_y = input_inner.y;
+        if cursor_x < input_inner.x + input_inner.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 }
