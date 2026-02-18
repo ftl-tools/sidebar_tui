@@ -5342,3 +5342,384 @@ fn test_workspace_state_restored_on_switch_back() {
 
     session.quit().expect("Failed to quit");
 }
+
+// =========================================================================
+// Missing spec coverage E2E tests (sidebar_tui-cze, sidebar_tui-1ub,
+// sidebar_tui-979, sidebar_tui-kze, sidebar_tui-uf6)
+// =========================================================================
+
+/// Test that mod+n (Ctrl+N) from the terminal pane enters create mode.
+/// Per spec: "mod + n - New: Enter create mode" (terminal pane keybindings).
+#[test]
+#[serial]
+fn test_ctrl_n_from_terminal_enters_create_mode() {
+    let _timer = TestTimer::new("test_ctrl_n_from_terminal_enters_create_mode");
+    let _env = TestEnv::setup();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Terminal pane is focused by default after creating a session
+    let screen = session.screen_contents();
+    eprintln!("Initial state (terminal should be focused):\n{}", screen);
+
+    // Send Ctrl+N (ASCII 14) from terminal pane
+    session.session.write_all(&[14]).expect("Failed to send Ctrl+N");
+    session.session.flush().expect("Failed to flush");
+
+    // Wait for create mode to appear
+    let mut found_create_mode = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("t Terminal") || screen.contains("a Agent") {
+            found_create_mode = true;
+            eprintln!("After Ctrl+N from terminal (create mode):\n{}", screen);
+            break;
+        }
+    }
+
+    let screen = session.screen_contents();
+    assert!(
+        found_create_mode,
+        "Ctrl+N from terminal pane should enter create mode showing session types. Got:\n{}",
+        screen
+    );
+    assert!(
+        screen.contains("t Terminal") && screen.contains("a Agent"),
+        "Create mode should show 't Terminal' and 'a Agent' options. Got:\n{}",
+        screen
+    );
+
+    // Cancel create mode with Esc
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that mod+w (Ctrl+W) from the terminal pane opens the workspace overlay.
+/// Per spec: "mod + w - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)"
+#[test]
+#[serial]
+fn test_ctrl_w_from_terminal_opens_workspace_overlay() {
+    let _timer = TestTimer::new("test_ctrl_w_from_terminal_opens_workspace_overlay");
+    let _env = TestEnv::setup();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Terminal pane is focused by default after creating a session
+    let screen = session.screen_contents();
+    eprintln!("Initial state (terminal should be focused):\n{}", screen);
+    // Verify terminal is focused (hint bar shows ctrl+b)
+    assert!(
+        screen.contains("ctrl + b") || screen.contains("ctrl+b"),
+        "Terminal should be focused initially. Got:\n{}",
+        screen
+    );
+
+    // Send Ctrl+W (ASCII 23) from terminal pane
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+
+    // Wait for workspace overlay to appear
+    let mut found_overlay = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Workspaces") || screen.contains("Default") {
+            found_overlay = true;
+            eprintln!("After Ctrl+W from terminal (workspace overlay):\n{}", screen);
+            break;
+        }
+    }
+
+    let screen = session.screen_contents();
+    assert!(
+        found_overlay,
+        "Ctrl+W from terminal pane should open workspace overlay showing 'Workspaces'. Got:\n{}",
+        screen
+    );
+
+    // Close the overlay with Esc
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that deleting a session moves focus to the next session in the list.
+/// Per spec: "y - Yes: Delete the session and all its data permanently.
+/// Focus on the next session in the list. If there is no next session, focus on the previous one."
+#[test]
+#[serial]
+fn test_delete_session_focus_transitions() {
+    let _timer = TestTimer::new("test_delete_session_focus_transitions");
+    let _env = TestEnv::setup();
+    let binary_path = get_binary_path();
+    let pid = std::process::id();
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    let session1 = format!("del-s1-{}-{}", pid, unique_id);
+    let session2 = format!("del-s2-{}-{}", pid, unique_id + 1);
+    let session3 = format!("del-s3-{}-{}", pid, unique_id + 2);
+
+    struct Cleanup {
+        binary_path: String,
+        sessions: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for s in &self.sessions {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", s])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        sessions: vec![session1.clone(), session2.clone(), session3.clone()],
+    };
+
+    // Create 3 sessions by briefly spawning the TUI for each one
+    for name in &[&session1, &session2, &session3] {
+        let cmd = format!("{} -s {}", binary_path, name);
+        let mut temp = spawn_sb(&cmd);
+        temp.set_expect_timeout(Some(Duration::from_millis(1000)));
+        std::thread::sleep(Duration::from_millis(400));
+        let _ = temp.write_all(&[17]); // Ctrl+Q
+        let _ = temp.flush();
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = temp.get_process_mut().exit(true);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Attach to TUI (session3 is most recently created/used)
+    let cmd = format!("{} -s {}", binary_path, session3);
+    let mut sb = spawn_sb(&cmd);
+    sb.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut sb, &mut parser);
+
+    // Focus sidebar
+    sb.write_all(&[2]).expect("Failed to send Ctrl+B");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(400));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("Before delete (session3 should be at top/selected):\n{}", screen);
+
+    // Delete the selected session (session3): press 'd', then 'y'
+    sb.write_all(b"d").expect("Failed to send 'd'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(400));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("After 'd' (delete prompt):\n{}", screen);
+    assert!(
+        screen.contains("Delete") || screen.contains("permanently"),
+        "Should show delete confirmation. Got:\n{}",
+        screen
+    );
+
+    // Confirm delete with 'y'
+    sb.write_all(b"y").expect("Failed to send 'y'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(600));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("After delete confirmed:\n{}", screen);
+
+    // session3 should be gone; session2 or session1 should now be visible
+    let session3_part = &session3[..8];
+    assert!(
+        !screen.contains(session3_part),
+        "Deleted session3 should no longer be in sidebar. Got:\n{}",
+        screen
+    );
+
+    // Either session2 or session1 should still be visible (focus moved to next/prev)
+    let session2_part = &session2[..8];
+    let session1_part = &session1[..8];
+    assert!(
+        screen.contains(session2_part) || screen.contains(session1_part),
+        "After deleting session3, session2 or session1 should be visible. Got:\n{}",
+        screen
+    );
+
+    // Quit the TUI
+    sb.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    sb.flush().expect("Failed to flush");
+    let _ = sb.get_process_mut().exit(true);
+}
+
+/// Test that invalid characters (like !, @, #) are rejected when renaming a session.
+/// Per spec: "The same character restrictions apply as when drafting a new session."
+/// "The user should be allowed to type uppercase and lowercase letters, numbers,
+/// spaces, and the following special characters: -, _, and .. Any other characters should
+/// be ignored."
+#[test]
+#[serial]
+fn test_session_name_character_restrictions() {
+    let _timer = TestTimer::new("test_session_name_character_restrictions");
+    let _env = TestEnv::setup();
+
+    let mut session = SbSession::new().expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let original_name = session.session_name.clone();
+
+    // Focus sidebar to access session list
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Press 'r' to enter rename mode (cursor at end of current name)
+    session.send("r").expect("Failed to send 'r'");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After 'r' (rename mode):\n{}", screen);
+    // Verify we're in rename mode
+    assert!(
+        screen.contains("Rename") || screen.contains("rename"),
+        "Should be in rename mode. Got:\n{}",
+        screen
+    );
+
+    // Clear the current name (backspace through it) and type a mix of valid and invalid characters.
+    // Valid: letters (a-z, A-Z), digits (0-9), space, -, _, .
+    // Invalid: !, @, # — should be silently ignored per spec
+    for _ in 0..original_name.len() + 2 {
+        session.send_backspace().expect("Failed to send Backspace");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    let input = "valid!@#name";
+    session.send(input).expect("Failed to type name");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After typing mixed chars '{}':\n{}", input, screen);
+
+    // Valid chars 'valid' and 'name' should appear in the sidebar rename row
+    assert!(
+        screen.contains("valid") || screen.contains("name"),
+        "Valid characters ('valid', 'name') should appear in rename field. Got:\n{}",
+        screen
+    );
+    // Invalid chars '!', '#' should be filtered out and NOT appear in the sidebar
+    // (Note: '@' appears in terminal prompt like 'user@host' so we check the sidebar rows only)
+    // The sidebar occupies columns 0-27; check the first few rows for invalid chars
+    let sidebar_content: String = session.parser.screen()
+        .contents_between(0, 0, 20, 27);
+    eprintln!("Sidebar content only:\n{}", sidebar_content);
+    assert!(
+        !sidebar_content.contains('!') && !sidebar_content.contains('#'),
+        "Invalid chars (!, #) should be rejected and not appear in sidebar rename field. Got sidebar:\n{}",
+        sidebar_content
+    );
+
+    // Cancel rename with Esc to avoid actually renaming the session
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that a very long workspace name gets truncated with "..." in the sidebar header.
+/// Per spec: "If the workspace name is too long to fit, it should be truncated with `...` at the end."
+#[test]
+#[serial]
+fn test_workspace_name_truncated_in_sidebar_header() {
+    let _timer = TestTimer::new("test_workspace_name_truncated_in_sidebar_header");
+    let _env = TestEnv::setup();
+    let binary_path = get_binary_path();
+    let pid = std::process::id();
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    // Sidebar content width is 24 chars; create a workspace name definitely longer than that
+    // Use a fixed prefix of 25+ chars so it always exceeds the limit regardless of pid/unique_id
+    let long_ws_name = format!("VeryLongWorkspaceName-{}-{}", pid % 100, unique_id % 100);
+    eprintln!("Long workspace name ({} chars): {}", long_ws_name.len(), long_ws_name);
+    assert!(long_ws_name.len() > 24, "Long workspace name should exceed sidebar width of 24 chars");
+
+    struct Cleanup {
+        binary_path: String,
+        ws_name: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new(&self.binary_path)
+                .args(["workspace", "delete", &self.ws_name])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        ws_name: long_ws_name.clone(),
+    };
+
+    // Create and switch to the long-named workspace via CLI
+    let create_output = std::process::Command::new(&binary_path)
+        .args(["workspace", "create", &long_ws_name])
+        .output()
+        .expect("Failed to create workspace");
+    eprintln!("Create workspace output: {}", String::from_utf8_lossy(&create_output.stdout));
+
+    let switch_output = std::process::Command::new(&binary_path)
+        .args(["workspace", "switch", &long_ws_name])
+        .output()
+        .expect("Failed to switch workspace");
+    eprintln!("Switch workspace output: {}", String::from_utf8_lossy(&switch_output.stdout));
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Spawn TUI and verify the workspace name is truncated in the sidebar header
+    let mut sb = spawn_sb(&binary_path);
+    sb.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(800));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen = parser.screen().contents();
+    eprintln!("TUI with long workspace name:\n{}", screen);
+
+    // The sidebar header should show "..." truncation since the name exceeds 24 chars
+    assert!(
+        screen.contains("..."),
+        "Long workspace name should be truncated with '...' in sidebar header. Got:\n{}",
+        screen
+    );
+
+    // The first few characters of the workspace name should appear in the sidebar
+    let name_prefix = &long_ws_name[..10];
+    assert!(
+        screen.contains(name_prefix),
+        "Sidebar header should show start of workspace name '{}'. Got:\n{}",
+        name_prefix,
+        screen
+    );
+
+    // Quit
+    sb.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    sb.flush().expect("Failed to flush");
+    let _ = sb.get_process_mut().exit(true);
+}

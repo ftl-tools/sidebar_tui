@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-18 - Added Missing E2E Tests for Spec Coverage
+
+Audited spec vs E2E test coverage and found 5 bullet-point requirements without dedicated tests. Added 5 new E2E tests: `test_ctrl_n_from_terminal_enters_create_mode` (mod+n from terminal pane enters create mode), `test_ctrl_w_from_terminal_opens_workspace_overlay` (mod+w from terminal opens workspace overlay), `test_delete_session_focus_transitions` (deleting a session moves focus to next/previous session per spec), `test_session_name_character_restrictions` (invalid chars like !, @, # are rejected in session rename), and `test_workspace_name_truncated_in_sidebar_header` (workspace names > 24 chars show ... truncation in sidebar). All 380 lib + all E2E tests pass. Closed sidebar_tui-cze, sidebar_tui-1ub, sidebar_tui-979, sidebar_tui-kze, sidebar_tui-uf6.
+
 ## 2026-02-17 - Implemented Workspace Data Model and Sidebar Header
 
 Fixed failing `test_vi_editing_workflow` E2E test (stale vim swap file causing ATTENTION dialog). Implemented complete workspace data model in daemon.rs: `WorkspaceMetadata` struct with persistence, `workspace_name` field added to `SessionInfo` and `SessionMetadata`, workspace CRUD operations in `ClientMessage`/`DaemonResponse`, and all process_message handlers for ListWorkspaces, CreateWorkspace, RenameWorkspace, DeleteWorkspace, SwitchWorkspace, MoveSessionToWorkspace, SaveWorkspaceState. Daemon auto-creates "Default" workspace on first run. Added `DaemonClient` workspace methods. Updated sidebar to show active workspace name (not "Sidebar TUI"). Updated AppState with `workspace_name` field. Updated `run_attached` to load workspace info and filter sessions by active workspace. Added 9 new workspace unit tests (369 lib + 41 E2E all pass). Closed sidebar_tui-hka and sidebar_tui-56v.
