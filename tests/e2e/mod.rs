@@ -4060,6 +4060,64 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let _ = session.get_process_mut().exit(true);
 }
 
+/// Test that toggling mouse mode shows a temporary message in the hint bar
+/// that disappears after ~3 seconds (spec line 149).
+#[test]
+fn test_mouse_mode_toggle_shows_timed_message_then_clears() {
+    let _timer = TestTimer::new("test_mouse_mode_toggle_shows_timed_message_then_clears");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to create session");
+
+    // Wait for initial render
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Initial state: normal hint bar bindings visible (no timed message)
+    let initial_screen = session.screen_contents();
+    eprintln!("Initial screen:\n{}", initial_screen);
+    assert!(
+        initial_screen.contains("ctrl + s"),
+        "Initial hint bar should show ctrl+s binding. Got:\n{}",
+        initial_screen
+    );
+
+    // Press Ctrl+S to toggle mouse mode on
+    session.send_ctrl_s().expect("Failed to send Ctrl+S");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let after_toggle_screen = session.screen_contents();
+    eprintln!("After Ctrl+S (message should show):\n{}", after_toggle_screen);
+    assert!(
+        after_toggle_screen.contains("Mouse scroll enabled"),
+        "Hint bar should show timed message 'Mouse scroll enabled' after toggle. Got:\n{}",
+        after_toggle_screen
+    );
+
+    // Wait for the timed message to expire (~3 seconds)
+    // Poll up to 5 seconds for the message to clear
+    let mut message_cleared = false;
+    for _ in 0..25 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        // After message clears, normal bindings are back (ctrl + s visible)
+        if screen.contains("ctrl + s") && !screen.contains("Mouse scroll enabled") {
+            message_cleared = true;
+            eprintln!("Message cleared, normal bindings restored:\n{}", screen);
+            break;
+        }
+    }
+
+    assert!(
+        message_cleared,
+        "Timed message should disappear after ~3 seconds, restoring normal bindings. Got:\n{}",
+        session.screen_contents()
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
 /// Test vim-style j/k navigation in the sidebar.
 /// Per spec: `↑` or `k` - Up, `↓` or `j` - Down
 /// This tests that j moves selection down and k moves selection up.
@@ -6760,4 +6818,87 @@ fn test_delete_last_workspace_auto_creates_default() {
     );
 
     session.quit().expect("Failed to quit");
+}
+
+#[test]
+fn test_new_session_inherits_launch_env_vars() {
+    let _timer = TestTimer::new("test_new_session_inherits_launch_env_vars");
+
+    // Use TestIsolation directly so we can seed the daemon with our custom env var.
+    // TestEnv::setup() starts the daemon without the var; here we need the daemon
+    // to start WITH the var so it inherits into spawned shell sessions.
+    let iso = TestIsolation::new();
+    let binary = get_binary_path();
+
+    // Create a unique env var value to detect in the session
+    let unique_var_value = format!(
+        "sb-env-test-{}-{}",
+        std::process::id(),
+        SESSION_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+
+    // Boot the daemon with our custom env var so the daemon process carries it.
+    // The daemon's spawn_shell() inherits from the daemon process, so sessions get it.
+    {
+        let mut cmd = std::process::Command::new(&binary);
+        iso.apply(&mut cmd);
+        cmd.arg("list");
+        cmd.env("SB_LAUNCH_TEST_VAR", &unique_var_value);
+        cmd.output().ok();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // Spawn the TUI with the custom env var present
+    let session_name = get_unique_session_name();
+    let mut cmd = std::process::Command::new(&binary);
+    iso.apply(&mut cmd);
+    cmd.arg("-s").arg(&session_name);
+    cmd.env("SB_LAUNCH_TEST_VAR", &unique_var_value);
+
+    let mut session = Session::spawn(cmd).expect("Failed to spawn sb");
+    session.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    // Wait for TUI and shell to initialize
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Type the echo command to print the env var and press enter
+    session.write_all(b"echo $SB_LAUNCH_TEST_VAR").expect("Failed to type command");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(200));
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+
+    // Poll until we see the unique value appear in terminal output
+    let mut found_var = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(200));
+        read_into_parser(&mut session, &mut parser);
+        let screen = parser.screen().contents();
+        if screen.contains(&unique_var_value) {
+            found_var = true;
+            eprintln!("Found env var in session output:\n{}", screen);
+            break;
+        }
+    }
+
+    let screen = parser.screen().contents();
+
+    // Clean up: quit TUI, shut down daemon, remove temp dir
+    let _ = session.write_all(&[17]);
+    let _ = session.flush();
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = session.write_all(b"y");
+    let _ = session.flush();
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = session.get_process_mut().exit(true);
+    iso.cleanup();
+
+    assert!(
+        found_var,
+        "New session should inherit env vars from TUI launch environment. \
+        Expected '{}' in output but got:\n{}",
+        unique_var_value, screen
+    );
 }

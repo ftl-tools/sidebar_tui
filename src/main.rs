@@ -344,6 +344,8 @@ struct DaemonApp {
     last_scroll_event_time: std::time::Instant,
     /// Accumulated scroll events for velocity calculation
     scroll_event_count: u32,
+    /// Temporary message to show in hint bar, along with its expiry time.
+    timed_message: Option<(String, std::time::Instant)>,
 }
 
 impl DaemonApp {
@@ -361,6 +363,7 @@ impl DaemonApp {
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
+            timed_message: None,
         }
     }
 
@@ -375,6 +378,22 @@ impl DaemonApp {
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
+            timed_message: None,
+        }
+    }
+
+    /// Show a temporary message in the hint bar for 3 seconds.
+    fn show_timed_message(&mut self, text: impl Into<String>) {
+        let expiry = std::time::Instant::now() + Duration::from_secs(3);
+        self.timed_message = Some((text.into(), expiry));
+    }
+
+    /// Check if timed message has expired and clear it.
+    fn tick_timed_message(&mut self) {
+        if let Some((_, expiry)) = &self.timed_message {
+            if std::time::Instant::now() >= *expiry {
+                self.timed_message = None;
+            }
         }
     }
 
@@ -782,6 +801,9 @@ fn run_attached(
             MainLoopDrainResult::ConnectionError(e) => bail!("Connection error: {}", e),
         }
 
+        // Expire timed messages before rendering
+        app.tick_timed_message();
+
         // Render the UI once after processing all available messages
         ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
 
@@ -994,8 +1016,10 @@ fn run_attached(
                             // Toggle mouse capture based on new state
                             if app.app_state.mouse_mode {
                                 execute!(std::io::stdout(), EnableMouseCapture)?;
+                                app.show_timed_message("Mouse scroll enabled");
                             } else {
                                 execute!(std::io::stdout(), DisableMouseCapture)?;
+                                app.show_timed_message("Text select enabled");
                             }
                         }
                         EventResult::OpenWorkspaceOverlay => {
@@ -1382,7 +1406,11 @@ pub const TERMINAL_H_PADDING: u16 = 1;
 /// Render the application UI with daemon-connected terminal emulator.
 fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     // Calculate hint bar height first
-    let hint_bar = hint_bar_for_state(&app.app_state);
+    let mut hint_bar = hint_bar_for_state(&app.app_state);
+    // Apply timed message if one is active (overrides normal bindings display)
+    if let Some((text, _)) = &app.timed_message {
+        hint_bar.show_message(text);
+    }
     let hint_bar_height = hint_bar.calculate_height(frame.area().width);
 
     // Create vertical layout: main content + hint bar
