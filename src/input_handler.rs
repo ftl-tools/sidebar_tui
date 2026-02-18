@@ -453,18 +453,14 @@ impl AppState {
                 // Navigate down
                 KeyCode::Down | KeyCode::Char('j') => {
                     if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
-                        if ov.selected_index + 1 < ov.workspaces.len() {
-                            ov.selected_index += 1;
-                        }
+                        ov.select_next();
                     }
                     return EventResult::Consumed;
                 }
                 // Navigate up
                 KeyCode::Up | KeyCode::Char('k') => {
                     if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
-                        if ov.selected_index > 0 {
-                            ov.selected_index -= 1;
-                        }
+                        ov.select_previous();
                     }
                     return EventResult::Consumed;
                 }

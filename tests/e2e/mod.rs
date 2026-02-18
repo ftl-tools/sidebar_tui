@@ -7186,3 +7186,104 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
         "Should be back at shell prompt after exiting vim. Got:\n{}", screen_after_vim
     );
 }
+
+/// Test that workspace overlay scrolling works correctly when the workspace list exceeds the
+/// visible height: truncation indicators appear and navigating with j/k keeps selection visible.
+/// Per spec: "If the list is too long to fit, truncation indicators (...) appear at the top
+/// and/or bottom, same as in the sidebar session list."
+#[test]
+fn test_workspace_overlay_scrolling() {
+    let _timer = TestTimer::new("test_workspace_overlay_scrolling");
+    let env = TestEnv::setup();
+
+    // Create enough workspaces to overflow the visible area (typical terminal is 24 rows,
+    // overlay list area is ~20 rows — 30 workspaces is safely beyond that).
+    for i in 1..=30 {
+        env.iso_command()
+            .args(["workspace", "create", &format!("Workspace{:02}", i)])
+            .output()
+            .expect("Failed to create workspace");
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+
+    // Wait for overlay to appear
+    let mut found_overlay = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Workspaces") {
+            found_overlay = true;
+            break;
+        }
+    }
+    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+
+    // The list overflows — a bottom truncation indicator should be visible.
+    let screen_initial = session.screen_contents();
+    eprintln!("Initial overlay screen:\n{}", screen_initial);
+    assert!(
+        screen_initial.contains("..."),
+        "Bottom truncation indicator '...' should be visible when workspace list overflows. Got:\n{}",
+        screen_initial
+    );
+
+    // Navigate down far enough to scroll the list. With ~20-21 visible rows and 31 workspaces
+    // (Default + Workspace01-30), pressing j 25 times should move selection well past the
+    // initial visible window, causing scroll_offset to grow and pushing Workspace01 off screen.
+    for _ in 0..25 {
+        session.send("j").expect("Failed to send j");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_scrolled = session.screen_contents();
+    eprintln!("Scrolled-down overlay screen:\n{}", screen_scrolled);
+
+    // After scrolling down, a truncation indicator should still be visible (items above/below).
+    assert!(
+        screen_scrolled.contains("..."),
+        "Truncation indicator should be visible after scrolling down. Got:\n{}", screen_scrolled
+    );
+
+    // Workspace01 should be scrolled off screen now (selection is at index ~25).
+    assert!(
+        !screen_scrolled.contains("Workspace01"),
+        "Workspace01 should be scrolled off screen after navigating down 25 times. Got:\n{}",
+        screen_scrolled
+    );
+
+    // A later workspace should now be visible, confirming the list scrolled.
+    assert!(
+        screen_scrolled.contains("Workspace2") || screen_scrolled.contains("Workspace3"),
+        "Later workspaces (Workspace2x or Workspace3x) should be visible after scrolling down. Got:\n{}",
+        screen_scrolled
+    );
+
+    // Navigate back up to the top and verify Default is visible again.
+    for _ in 0..30 {
+        session.send("k").expect("Failed to send k");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_top = session.screen_contents();
+    eprintln!("Back-at-top overlay screen:\n{}", screen_top);
+
+    assert!(
+        screen_top.contains("Default"),
+        "Default workspace should be visible after navigating back to top. Got:\n{}", screen_top
+    );
+
+    session.send_esc().expect("Failed to close overlay");
+    session.quit().expect("Failed to quit");
+}

@@ -226,6 +226,8 @@ pub struct WorkspaceOverlayState {
     pub selected_index: usize,
     /// Scroll offset for the workspace list.
     pub scroll_offset: usize,
+    /// Last known visible height of the workspace list area (updated each render cycle).
+    pub visible_height: usize,
     /// Mode of the overlay (normal or move-to-workspace).
     pub mode: WorkspaceOverlayMode,
     /// If renaming: the new name being typed.
@@ -243,6 +245,7 @@ impl WorkspaceOverlayState {
             active_workspace,
             selected_index,
             scroll_offset: 0,
+            visible_height: 20,
             mode: WorkspaceOverlayMode::Normal,
             renaming: None,
             drafting_workspace: None,
@@ -257,6 +260,7 @@ impl WorkspaceOverlayState {
             active_workspace: active_workspace.clone(),
             selected_index,
             scroll_offset: 0,
+            visible_height: 20,
             mode: WorkspaceOverlayMode::MoveSession { session_name },
             renaming: None,
             drafting_workspace: None,
@@ -278,6 +282,11 @@ impl WorkspaceOverlayState {
         let count = self.workspaces.len() + if self.drafting_workspace.is_some() { 1 } else { 0 };
         if self.selected_index + 1 < count {
             self.selected_index += 1;
+            // Scroll down if selection moved below visible area
+            let visible_end = self.scroll_offset + self.visible_height;
+            if self.selected_index >= visible_end {
+                self.scroll_offset = self.selected_index + 1 - self.visible_height;
+            }
         }
     }
 
@@ -1322,5 +1331,70 @@ mod tests {
         assert_eq!(state.sessions[0].name, "a");
         assert_eq!(state.sessions[1].name, "b");
         assert_eq!(state.selected_index, 0);
+    }
+
+    // WorkspaceOverlayState scroll tests
+
+    #[test]
+    fn test_workspace_overlay_select_next_scrolls_down() {
+        let workspaces = vec!["a", "b", "c", "d", "e", "f"]
+            .into_iter().map(String::from).collect();
+        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+        ov.visible_height = 3; // Only 3 rows visible at a time
+        assert_eq!(ov.selected_index, 0);
+        assert_eq!(ov.scroll_offset, 0);
+
+        // Navigate within visible area — no scroll needed
+        ov.select_next();
+        assert_eq!(ov.selected_index, 1);
+        assert_eq!(ov.scroll_offset, 0);
+
+        ov.select_next();
+        assert_eq!(ov.selected_index, 2);
+        assert_eq!(ov.scroll_offset, 0);
+
+        // Moving to index 3 goes beyond visible_end (0 + 3 = 3) — should scroll
+        ov.select_next();
+        assert_eq!(ov.selected_index, 3);
+        assert_eq!(ov.scroll_offset, 1); // 3 + 1 - 3 = 1
+    }
+
+    #[test]
+    fn test_workspace_overlay_select_next_does_not_overflow() {
+        let workspaces = vec!["a", "b", "c"]
+            .into_iter().map(String::from).collect();
+        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+        ov.visible_height = 10;
+
+        ov.select_next(); // index 1
+        ov.select_next(); // index 2
+        ov.select_next(); // at end — no change
+        assert_eq!(ov.selected_index, 2);
+        assert_eq!(ov.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_workspace_overlay_select_previous_scrolls_up() {
+        let workspaces = vec!["a", "b", "c", "d", "e"]
+            .into_iter().map(String::from).collect();
+        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+        ov.visible_height = 3;
+        ov.selected_index = 3;
+        ov.scroll_offset = 1;
+
+        // Move up within visible area — no scroll needed
+        ov.select_previous();
+        assert_eq!(ov.selected_index, 2);
+        assert_eq!(ov.scroll_offset, 1);
+
+        // Moving to index 1 is below scroll_offset (1) — no change needed
+        ov.select_previous();
+        assert_eq!(ov.selected_index, 1);
+        assert_eq!(ov.scroll_offset, 1);
+
+        // Moving to index 0 goes above scroll_offset — should scroll up
+        ov.select_previous();
+        assert_eq!(ov.selected_index, 0);
+        assert_eq!(ov.scroll_offset, 0);
     }
 }

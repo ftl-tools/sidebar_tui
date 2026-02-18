@@ -830,6 +830,15 @@ fn run_attached(
         // Render the UI once after processing all available messages
         ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
 
+        // Keep workspace overlay's visible_height in sync with actual terminal geometry.
+        // This enables select_next() to scroll the list when the selection moves off-screen.
+        // Height = total rows - 1 (title row) - input area (3 if renaming/drafting) - hint bar.
+        if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+            let input_h = if ov.renaming.is_some() || ov.drafting_workspace.is_some() { 3u16 } else { 0u16 };
+            let list_h = last_size.1.saturating_sub(1 + input_h + last_hint_bar_height);
+            ov.visible_height = list_h as usize;
+        }
+
         // Handle input events
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
             match event::read().context("event read failed")? {
