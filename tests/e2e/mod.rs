@@ -7756,3 +7756,228 @@ fn test_workspace_overlay_scrolling() {
     session.send_esc().expect("Failed to close overlay");
     session.quit().expect("Failed to quit");
 }
+
+/// Test that deleting a workspace also deletes all its sessions (spec requirement:
+/// "deleting a workspace (verifying its sessions are gone)").
+///
+/// Strategy: start one TUI session in Default (so Default is NOT in welcome state), then use
+/// Ctrl+W to switch to Victim workspace, create a session named "victim-sess" there via
+/// create mode ('n' from sidebar, welcome state), switch back to Default, delete Victim,
+/// and verify via CLI.
+#[test]
+fn test_delete_workspace_sessions_are_gone() {
+    let _timer = TestTimer::new("test_delete_workspace_sessions_are_gone");
+    let env = TestEnv::setup();
+
+    // Create "Victim" workspace via CLI
+    let _: std::process::Output = env.iso_command()
+        .args(["workspace", "create", "Victim"])
+        .output()
+        .expect("Failed to create Victim workspace");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Start the TUI with a Default session (so Default is NOT in welcome state)
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(1000));
+    session.read_and_parse().expect("Failed to read initial output");
+
+    let screen = session.screen_contents();
+    eprintln!("Initial TUI screen:\n{}", screen);
+    assert!(screen.contains("Default"), "Should start in Default workspace. Got:\n{}", screen);
+
+    // Open workspace overlay with Ctrl+W (works from terminal pane)
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay:\n{}", screen);
+    assert!(screen.contains("Victim"), "Victim should appear in workspace overlay. Got:\n{}", screen);
+
+    // Navigate to Victim (alphabetically after Default, one down)
+    session.send_down_arrow().expect("Failed to navigate to Victim");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch to Victim");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching to Victim:\n{}", screen);
+    assert!(screen.contains("Victim"), "Should be in Victim workspace. Got:\n{}", screen);
+
+    // In Victim workspace (empty, welcome state, terminal pane focused after switch):
+    // use Ctrl+N to enter create mode from terminal pane, then 't' for terminal session type
+    session.session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N is ASCII 14
+    session.session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    session.send("t").expect("Failed to send t (terminal session type)");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Type the session name
+    let victim_session_name = "victim-sess";
+    session.send(victim_session_name).expect("Failed to type session name");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to confirm session creation");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After creating victim-sess in Victim workspace:\n{}", screen);
+    assert!(
+        screen.contains(victim_session_name),
+        "Session '{}' should appear in sidebar. Got:\n{}", victim_session_name, screen
+    );
+
+    // Verify via CLI that victim-sess is listed in the daemon
+    let list_output = env.iso_command()
+        .args(["list"])
+        .output()
+        .expect("Failed to run sb list");
+    let list_str = String::from_utf8_lossy(&list_output.stdout);
+    eprintln!("Sessions before deletion:\n{}", list_str);
+    assert!(
+        list_str.contains(victim_session_name),
+        "Victim session '{}' should appear in list before deletion. Got:\n{}",
+        victim_session_name, list_str
+    );
+
+    // Switch back to Default workspace via overlay
+    session.send_ctrl_w().expect("Failed to re-open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Navigate up to Default (currently Victim is active/selected, Default is above)
+    session.send_up_arrow().expect("Failed to navigate up to Default");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send_enter().expect("Failed to switch to Default");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After switching back to Default:\n{}", screen);
+    assert!(screen.contains("Default"), "Should be back in Default. Got:\n{}", screen);
+
+    // Open workspace overlay and delete Victim
+    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Workspace overlay for deletion:\n{}", screen);
+    assert!(screen.contains("Victim"), "Victim should still be in overlay. Got:\n{}", screen);
+
+    // Navigate to Victim (one down from Default)
+    session.send_down_arrow().expect("Failed to navigate to Victim");
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Press 'd' to delete
+    session.send("d").expect("Failed to send 'd'");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Confirm with 'y'
+    session.send("y").expect("Failed to confirm deletion");
+    std::thread::sleep(Duration::from_millis(800));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After deleting Victim workspace:\n{}", screen);
+
+    // Quit TUI
+    session.quit().expect("Failed to quit TUI");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Verify via CLI that victim-sess is no longer in the daemon
+    let list_output = env.iso_command()
+        .args(["list"])
+        .output()
+        .expect("Failed to run sb list after deletion");
+    let list_str = String::from_utf8_lossy(&list_output.stdout);
+    eprintln!("Sessions after deletion:\n{}", list_str);
+    assert!(
+        !list_str.contains(victim_session_name),
+        "Victim session '{}' should be gone after workspace deletion. Got:\n{}",
+        victim_session_name, list_str
+    );
+}
+
+/// Test that renaming a session with Enter confirmation updates the session name in the
+/// sidebar and returns focus to the terminal pane.
+/// Per spec: "r - Rename... enter - Rename: Rename the session to the current name. Exit
+/// rename mode and focus on the terminal pane."
+#[test]
+fn test_rename_session_confirm() {
+    let _timer = TestTimer::new("test_rename_session_confirm");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    let original_name = session.session_name.clone();
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read initial output");
+
+    // Focus sidebar
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Press 'r' to enter rename mode
+    session.send("r").expect("Failed to send 'r'");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After 'r' (rename mode):\n{}", screen);
+    assert!(
+        screen.contains("Rename") || screen.contains("rename"),
+        "Should be in rename mode. Got:\n{}", screen
+    );
+
+    // Backspace the entire current name and type a new one
+    let new_name = "renamed-sess";
+    for _ in 0..original_name.len() + 2 {
+        session.send_backspace().expect("Failed to backspace");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    session.send(new_name).expect("Failed to type new name");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After typing new name:\n{}", screen);
+    assert!(
+        screen.contains(new_name),
+        "New name '{}' should appear in sidebar during rename. Got:\n{}", new_name, screen
+    );
+
+    // Confirm rename with Enter
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(600));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("After confirming rename:\n{}", screen);
+
+    // New name should appear in sidebar
+    assert!(
+        screen.contains(new_name),
+        "Renamed session '{}' should appear in sidebar after confirm. Got:\n{}", new_name, screen
+    );
+
+    // Old name should be gone from sidebar
+    assert!(
+        !screen.contains(&original_name[..original_name.len().min(10)]),
+        "Original name '{}' should no longer appear after rename. Got:\n{}", original_name, screen
+    );
+
+    // Focus should have returned to terminal pane (hint bar shows terminal-focused keybindings)
+    assert!(
+        screen.contains("ctrl + n") || screen.contains("ctrl + b Sidebar"),
+        "Focus should be on terminal pane after rename confirm. Got:\n{}", screen
+    );
+
+    session.quit().expect("Failed to quit");
+}

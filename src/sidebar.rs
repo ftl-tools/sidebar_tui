@@ -600,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn test_sidebar_welcome_shows_ctrl_n_when_terminal_focused() {
+        let state = AppState {
+            focus: Focus::Terminal,
+            ..Default::default()
+        };
+        let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
+        assert!(buffer_contains(&buf, "Press"));
+        assert!(buffer_contains(&buf, "ctrl+n"));
+    }
+
+    #[test]
     fn test_sidebar_session_list_rendered() {
         let state = AppState::with_sessions(vec![
             Session::new("session1"),
