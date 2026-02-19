@@ -14,7 +14,7 @@ use crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use sidebar_tui::daemon::{
@@ -832,10 +832,9 @@ fn run_attached(
 
         // Keep workspace overlay's visible_height in sync with actual terminal geometry.
         // This enables select_next() to scroll the list when the selection moves off-screen.
-        // Height = total rows - 1 (title row) - input area (3 if renaming/drafting) - hint bar.
+        // Height = total rows - 1 (title row) - hint bar. Editing is done inline, no extra area.
         if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
-            let input_h = if ov.renaming.is_some() || ov.drafting_workspace.is_some() { 3u16 } else { 0u16 };
-            let list_h = last_size.1.saturating_sub(1 + input_h + last_hint_bar_height);
+            let list_h = last_size.1.saturating_sub(1 + last_hint_bar_height);
             ov.visible_height = list_h as usize;
         }
 
@@ -1630,23 +1629,12 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
         WorkspaceOverlayMode::MoveSession { .. } => "Move to Workspace",
     };
 
-    // Layout: title row (1) + list (rest) + optional input area at bottom (3 if active)
-    let input_height = if overlay.renaming.is_some() || overlay.drafting_workspace.is_some() { 3u16 } else { 0 };
-
-    let (title_area, list_area, input_area_opt) = if input_height > 0 && area.height > 1 + input_height {
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(input_height),
-        ]).split(area);
-        (chunks[0], chunks[1], Some(chunks[2]))
-    } else {
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ]).split(area);
-        (chunks[0], chunks[1], None)
-    };
+    // Layout: title row (1) + list (rest). Editing is done inline in the list.
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ]).split(area);
+    let (title_area, list_area) = (chunks[0], chunks[1]);
 
     // Render title: "Workspaces" in purple, left aligned with 1 char of left padding
     let title_para = Paragraph::new(Line::from(Span::styled(
@@ -1655,82 +1643,87 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
     )));
     frame.render_widget(title_para, title_area);
 
-    // Calculate max visible rows (fill the available list area)
+    // Build virtual list:
+    //   - If drafting: virtual[0] = draft row, virtual[i+1] = workspaces[i]
+    //   - Otherwise: virtual[i] = workspaces[i]
+    let is_drafting = overlay.drafting_workspace.is_some();
+    let total_count = overlay.workspaces.len() + if is_drafting { 1 } else { 0 };
     let max_visible = list_area.height as usize;
-
-    // Render workspace list
     let visible_start = overlay.scroll_offset;
-    let visible_end = (visible_start + max_visible).min(overlay.workspaces.len());
-    let items: Vec<ListItem> = overlay.workspaces[visible_start..visible_end]
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let actual_index = visible_start + i;
-            let is_active = *name == overlay.active_workspace;
-            let is_selected = actual_index == overlay.selected_index;
+    let visible_end = (visible_start + max_visible).min(total_count);
 
-            let prefix = if is_active { "* " } else { "  " };
-            let display = format!(" {}{}", prefix, name);
+    let items: Vec<ListItem> = (visible_start..visible_end)
+        .map(|virtual_index| {
+            let is_selected = virtual_index == overlay.selected_index;
 
-            let style = if is_selected {
-                Style::default().fg(Color::White).bg(Color::Indexed(238))
-            } else if is_active {
-                Style::default().fg(colors::PURPLE)
+            if is_drafting && virtual_index == 0 {
+                // Draft row: shown at top, selected, with the current draft name
+                let draft = overlay.drafting_workspace.as_ref().unwrap();
+                let display = format!("   {}", draft.new_name);
+                let style = Style::default().fg(Color::White).bg(Color::Indexed(238));
+                ListItem::new(Line::from(Span::styled(display, style)))
             } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(Line::from(Span::styled(display, style)))
+                // Workspace row (shift index by 1 when a draft row exists above)
+                let workspace_index = if is_drafting { virtual_index - 1 } else { virtual_index };
+                let name = &overlay.workspaces[workspace_index];
+                let is_active = *name == overlay.active_workspace;
+
+                // If renaming this selected row, show the in-progress rename text instead
+                let display_name = if overlay.renaming.is_some() && is_selected {
+                    overlay.renaming.as_ref().unwrap().new_name.as_str()
+                } else {
+                    name.as_str()
+                };
+
+                let prefix = if is_active { "* " } else { "  " };
+                let display = format!(" {}{}", prefix, display_name);
+
+                let style = if is_selected {
+                    Style::default().fg(Color::White).bg(Color::Indexed(238))
+                } else if is_active {
+                    Style::default().fg(colors::PURPLE)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(Span::styled(display, style)))
+            }
         })
         .collect();
 
-    let mut list_state = ListState::default();
-    // Map selected_index to visible index
-    if overlay.selected_index >= visible_start && overlay.selected_index < visible_end {
-        list_state.select(Some(overlay.selected_index - visible_start));
-    }
-    let list = List::new(items);
-    frame.render_stateful_widget(list, list_area, &mut list_state);
+    frame.render_widget(List::new(items), list_area);
 
     // Render truncation indicators if needed
-    if overlay.workspaces.len() > max_visible {
+    if total_count > max_visible {
         let indicator_style = Style::default().fg(Color::Indexed(238));
         if visible_start > 0 && list_area.height > 0 {
             let top_line = Line::from(Span::styled("...", indicator_style));
             frame.render_widget(Paragraph::new(top_line), Rect::new(list_area.x + 1, list_area.y, list_area.width.saturating_sub(1), 1));
         }
-        if visible_end < overlay.workspaces.len() && list_area.height > 0 {
+        if visible_end < total_count && list_area.height > 0 {
             let bot_y = list_area.y + list_area.height.saturating_sub(1);
             let bot_line = Line::from(Span::styled("...", indicator_style));
             frame.render_widget(Paragraph::new(bot_line), Rect::new(list_area.x + 1, bot_y, list_area.width.saturating_sub(1), 1));
         }
     }
 
-    // Render input area (renaming or drafting) at the bottom
-    if let Some(input_area) = input_area_opt {
-        let (label, text, cursor_pos) = if let Some(ref rename) = overlay.renaming {
-            ("Rename: ", rename.new_name.as_str(), rename.cursor_position)
-        } else if let Some(ref draft) = overlay.drafting_workspace {
-            ("New workspace: ", draft.new_name.as_str(), draft.cursor_position)
+    // Set cursor position for inline text editing.
+    // All workspace rows have a 3-char prefix (" * " or "   "), so cursor_x = list_area.x + 3 + cursor_position.
+    let selected_row_in_view = overlay.selected_index >= visible_start && overlay.selected_index < visible_end;
+    if selected_row_in_view {
+        let row = (overlay.selected_index - visible_start) as u16;
+        let cursor_pos = if is_drafting && overlay.selected_index == 0 {
+            overlay.drafting_workspace.as_ref().map(|d| d.cursor_position)
+        } else if overlay.renaming.is_some() {
+            overlay.renaming.as_ref().map(|r| r.cursor_position)
         } else {
-            ("", "", 0)
+            None
         };
-
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::DARK_GREY));
-        let input_inner = input_block.inner(input_area);
-        frame.render_widget(input_block, input_area);
-
-        let display_text = format!("{}{}", label, text);
-        let input_para = Paragraph::new(display_text.as_str())
-            .style(Style::default().fg(Color::White));
-        frame.render_widget(input_para, input_inner);
-
-        // Set cursor position inside input field
-        let cursor_x = input_inner.x + (label.len() + cursor_pos) as u16;
-        let cursor_y = input_inner.y;
-        if cursor_x < input_inner.x + input_inner.width {
-            frame.set_cursor_position((cursor_x, cursor_y));
+        if let Some(cp) = cursor_pos {
+            let cursor_x = list_area.x + 3 + cp as u16;
+            let cursor_y = list_area.y + row;
+            if cursor_x < list_area.x + list_area.width {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
         }
     }
 }

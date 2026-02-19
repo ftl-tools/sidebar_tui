@@ -5807,6 +5807,160 @@ fn test_workspace_overlay_active_workspace_has_asterisk() {
     session.quit().expect("Failed to quit");
 }
 
+#[test]
+fn test_workspace_overlay_inline_create() {
+    let _timer = TestTimer::new("test_workspace_overlay_inline_create");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if session.screen_contents().contains("Workspaces") {
+            break;
+        }
+    }
+    assert!(session.screen_contents().contains("Workspaces"), "Workspace overlay should open");
+
+    // Press 'n' to start drafting a new workspace inline
+    session.send("n").expect("Failed to send n");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // The draft row should be at the top of the list and hint bar should show create-mode bindings
+    let screen_after_n = session.screen_contents();
+    eprintln!("After pressing 'n' for new workspace:\n{}", screen_after_n);
+    assert!(
+        screen_after_n.contains("enter Create"),
+        "Hint bar should show 'enter Create' during workspace drafting. Got:\n{}", screen_after_n
+    );
+
+    // Type a workspace name inline
+    session.send("M").expect("Failed to send M");
+    session.send("y").expect("Failed to send y");
+    session.send("W").expect("Failed to send W");
+    session.send("o").expect("Failed to send o");
+    session.send("r").expect("Failed to send r");
+    session.send("k").expect("Failed to send k");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_typing = session.screen_contents();
+    eprintln!("After typing 'MyWork':\n{}", screen_typing);
+    assert!(
+        screen_typing.contains("MyWork"),
+        "Draft name 'MyWork' should appear inline in the overlay list. Got:\n{}", screen_typing
+    );
+
+    // Press Enter to create the workspace
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_create = session.screen_contents();
+    eprintln!("After creating workspace:\n{}", screen_after_create);
+    assert!(
+        screen_after_create.contains("MyWork"),
+        "Created workspace 'MyWork' should appear in the overlay list. Got:\n{}", screen_after_create
+    );
+
+    session.send_esc().expect("Failed to close overlay");
+    session.quit().expect("Failed to quit");
+}
+
+#[test]
+fn test_workspace_overlay_inline_rename() {
+    let _timer = TestTimer::new("test_workspace_overlay_inline_rename");
+    let env = TestEnv::setup();
+
+    // Pre-create a workspace to rename
+    env.iso_command()
+        .args(["workspace", "create", "OldName"])
+        .output()
+        .expect("Failed to create workspace");
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Open workspace overlay
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if session.screen_contents().contains("OldName") {
+            break;
+        }
+    }
+    assert!(session.screen_contents().contains("OldName"), "OldName workspace should be visible in overlay");
+
+    // Navigate to OldName (it should be below Default)
+    session.send("j").expect("Failed to navigate down");
+    std::thread::sleep(Duration::from_millis(200));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Press 'r' to start renaming inline
+    session.send("r").expect("Failed to send r");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_r = session.screen_contents();
+    eprintln!("After pressing 'r' for rename:\n{}", screen_after_r);
+    // The current name should appear inline (editable)
+    assert!(
+        screen_after_r.contains("OldName"),
+        "Rename should show current name inline. Got:\n{}", screen_after_r
+    );
+
+    // Clear the name and type a new one (backspace 7 times for "OldName")
+    for _ in 0..7 {
+        session.send_backspace().expect("Failed to send backspace");
+    }
+    std::thread::sleep(Duration::from_millis(100));
+
+    session.send("N").expect("send N");
+    session.send("e").expect("send e");
+    session.send("w").expect("send w");
+    session.send("N").expect("send N");
+    session.send("a").expect("send a");
+    session.send("m").expect("send m");
+    session.send("e").expect("send e");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_typing = session.screen_contents();
+    eprintln!("After typing new name 'NewName':\n{}", screen_typing);
+    assert!(
+        screen_typing.contains("NewName"),
+        "New name 'NewName' should appear inline while renaming. Got:\n{}", screen_typing
+    );
+
+    // Press Enter to confirm rename
+    session.send_enter().expect("Failed to send Enter");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen_after_rename = session.screen_contents();
+    eprintln!("After renaming:\n{}", screen_after_rename);
+    assert!(
+        screen_after_rename.contains("NewName"),
+        "Renamed workspace 'NewName' should be visible. Got:\n{}", screen_after_rename
+    );
+    assert!(
+        !screen_after_rename.contains("OldName"),
+        "Old workspace name 'OldName' should no longer be visible. Got:\n{}", screen_after_rename
+    );
+
+    session.send_esc().expect("Failed to close overlay");
+    session.quit().expect("Failed to quit");
+}
+
 /// Test that move mode prevents create ('n'), rename ('r'), and delete ('d') keybindings.
 /// Per spec: "Creating, renaming, and deleting workspaces are not available in move mode."
 #[test]

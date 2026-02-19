@@ -493,6 +493,9 @@ impl AppState {
                     );
                     if !is_move_mode {
                         if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                            // Inline draft: scroll to top so draft row at virtual index 0 is visible
+                            ov.selected_index = 0;
+                            ov.scroll_offset = 0;
                             ov.drafting_workspace = Some(RenamingState::new(0, "", self.focus));
                         }
                     }

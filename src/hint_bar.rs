@@ -500,7 +500,17 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
         }
         AppMode::WorkspaceOverlay(overlay) => {
             use crate::state::WorkspaceOverlayMode;
-            if matches!(overlay.mode, WorkspaceOverlayMode::MoveSession { .. }) {
+            if overlay.drafting_workspace.is_some() {
+                vec![
+                    KeybindingInfo::new("enter", "Create"),
+                    KeybindingInfo::new("esc", "Cancel"),
+                ]
+            } else if overlay.renaming.is_some() {
+                vec![
+                    KeybindingInfo::new("enter", "Rename"),
+                    KeybindingInfo::new("esc", "Cancel"),
+                ]
+            } else if matches!(overlay.mode, WorkspaceOverlayMode::MoveSession { .. }) {
                 vec![
                     KeybindingInfo::new("enter", "Move here"),
                     KeybindingInfo::new("↑/↓/j/k", "Navigate"),
