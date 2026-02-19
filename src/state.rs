@@ -409,6 +409,9 @@ pub enum EventResult {
     /// When enabled: scroll wheel works but text selection is blocked.
     /// When disabled: native terminal text selection works.
     ToggleMouseMode,
+    /// Toggle zoom mode: expands terminal pane to full width by hiding the sidebar.
+    /// Allows clean text selection of terminal-only content in editors like VSCode.
+    ToggleZoom,
     /// Open workspace overlay in normal mode.
     OpenWorkspaceOverlay,
     /// Open workspace overlay in move-to-workspace mode.
@@ -465,6 +468,9 @@ pub struct AppState {
     /// Whether mouse capture is enabled (for scroll wheel support).
     /// When disabled, native terminal text selection works.
     pub mouse_mode: bool,
+    /// Whether the terminal pane is zoomed to full width (sidebar hidden).
+    /// Used to allow clean text selection of only terminal content in editors like VSCode.
+    pub zoomed: bool,
     /// The name of the currently active workspace.
     pub workspace_name: String,
     /// List of all workspace names (for the workspace overlay).
@@ -481,6 +487,7 @@ impl Default for AppState {
             scroll_offset: 0,
             previous_session: None,
             mouse_mode: false,
+            zoomed: false,
             workspace_name: "Default".to_string(),
             workspaces: vec!["Default".to_string()],
         }
@@ -536,13 +543,15 @@ impl AppState {
         self.focus = Focus::Terminal;
     }
 
-    /// Focus on the sidebar pane.
+    /// Focus on the sidebar pane. Also exits zoom mode (sidebar was hidden while zoomed).
     pub fn focus_sidebar(&mut self) {
         self.focus = Focus::Sidebar;
+        self.zoomed = false;
     }
 
-    /// Enter create mode from current focus.
+    /// Enter create mode from current focus. Exits zoom mode so the sidebar is visible.
     pub fn enter_create_mode(&mut self) {
+        self.zoomed = false;
         self.mode = AppMode::CreateMode {
             previous_focus: self.focus,
         };

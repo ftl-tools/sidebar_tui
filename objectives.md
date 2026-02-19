@@ -115,6 +115,7 @@ Key properties of workspaces:
   - `mod + b` or `mod + t` - Sidebar: Focus on the sidebar pane.
   - `mod + n` - New: Enter create mode.
   - `mod + s` - Toggle mouse mode: Toggle between text selection mode (native terminal selection works) and mouse scroll mode (scroll wheel works but text selection is blocked). The hint bar shows the current mode ("Text select" or "Mouse scroll").
+  - `mod + z` - Zoom: Toggle zoom mode. When zoomed, the sidebar is hidden and the terminal pane takes the full width of the TUI. This allows clean text selection of only terminal content (useful in editors like VSCode where selection otherwise includes sidebar borders and session names). Press `mod + z` again to unzoom (restore the sidebar). Pressing `mod + b` while zoomed also unzooms and focuses the sidebar. Entering create mode while zoomed also unzooms automatically. A timed hint bar message confirms the current state.
   - `mod + w` - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)
 
 #### Create Mode

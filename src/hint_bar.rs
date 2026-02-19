@@ -465,13 +465,17 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     ]
                 }
             }
-            Focus::Terminal => vec![
-                KeybindingInfo::new("ctrl + n", "New"),
-                KeybindingInfo::new("ctrl + b", "Sidebar"),
-                KeybindingInfo::new("ctrl + w", "Workspaces"),
-                KeybindingInfo::new("ctrl + s", mouse_desc),
-                KeybindingInfo::new("ctrl + q", "Quit"),
-            ],
+            Focus::Terminal => {
+                let zoom_desc = if state.zoomed { "Unzoom" } else { "Zoom" };
+                vec![
+                    KeybindingInfo::new("ctrl + n", "New"),
+                    KeybindingInfo::new("ctrl + b", "Sidebar"),
+                    KeybindingInfo::new("ctrl + w", "Workspaces"),
+                    KeybindingInfo::new("ctrl + s", mouse_desc),
+                    KeybindingInfo::new("ctrl + z", zoom_desc),
+                    KeybindingInfo::new("ctrl + q", "Quit"),
+                ]
+            }
         },
         AppMode::CreateMode { .. } => vec![
             KeybindingInfo::new("t", "Terminal Session"),
@@ -1363,6 +1367,32 @@ mod tests {
             bindings.iter().any(|b| b.key == "esc" && b.description == "Cancel"),
             "Workspace overlay move mode bindings should include 'esc' for Cancel"
         );
+    }
+
+    #[test]
+    fn test_terminal_hint_bar_shows_zoom_binding() {
+        let state = AppState {
+            focus: Focus::Terminal,
+            zoomed: false,
+            ..Default::default()
+        };
+        let bindings = get_bindings_for_state(&state);
+        let zoom_binding = bindings.iter().find(|b| b.key == "ctrl + z");
+        assert!(zoom_binding.is_some(), "Terminal bindings should include ctrl + z");
+        assert_eq!(zoom_binding.unwrap().description, "Zoom");
+    }
+
+    #[test]
+    fn test_terminal_hint_bar_shows_unzoom_when_zoomed() {
+        let state = AppState {
+            focus: Focus::Terminal,
+            zoomed: true,
+            ..Default::default()
+        };
+        let bindings = get_bindings_for_state(&state);
+        let zoom_binding = bindings.iter().find(|b| b.key == "ctrl + z");
+        assert!(zoom_binding.is_some(), "Terminal bindings should include ctrl + z when zoomed");
+        assert_eq!(zoom_binding.unwrap().description, "Unzoom");
     }
 
 }

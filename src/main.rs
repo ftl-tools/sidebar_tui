@@ -628,8 +628,8 @@ fn run_attached(
 ) -> Result<()> {
     // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
     let size = ratatui_term.size()?;
-    // Subtract sidebar width, 2*h_padding (left + right), and 2 for terminal border (left + right)
-    let mut term_cols = size.width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+    // Subtract sidebar width (0 when zoomed), 2*h_padding (left + right), and 2 for terminal border
+    let mut term_cols = compute_term_cols(size.width, false);
     // Subtract 2 for terminal border (top + bottom), and hint bar height (1)
     let mut term_rows = size.height.saturating_sub(3);
 
@@ -1053,6 +1053,20 @@ fn run_attached(
                                 app.show_timed_message("Text select enabled");
                             }
                         }
+                        EventResult::ToggleZoom => {
+                            // Recalculate term_cols based on new zoom state
+                            term_cols = compute_term_cols(last_size.0, app.app_state.zoomed);
+                            app.resize(term_rows, term_cols);
+                            let resize_msg = ClientMessage::Resize { rows: term_rows, cols: term_cols };
+                            let encoded = encode_message(&resize_msg)?;
+                            stream.write_all(&encoded)?;
+                            stream.flush()?;
+                            if app.app_state.zoomed {
+                                app.show_timed_message("Zoomed — sidebar hidden");
+                            } else {
+                                app.show_timed_message("Unzoomed — sidebar visible");
+                            }
+                        }
                         EventResult::OpenWorkspaceOverlay => {
                             // Fetch fresh workspace list from daemon before opening overlay
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
@@ -1323,8 +1337,8 @@ fn run_attached(
                 Event::Resize(width, height) => {
                     if (width, height) != last_size {
                         last_size = (width, height);
-                        // Account for sidebar, horizontal padding (left + right), and terminal border
-                        term_cols = width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+                        // Account for sidebar (0 when zoomed), horizontal padding, and terminal border
+                        term_cols = compute_term_cols(width, app.app_state.zoomed);
                         // Account for terminal border (top + bottom), and dynamic hint bar height
                         {
                             let mut hb = hint_bar_for_state(&app.app_state);
@@ -1437,6 +1451,16 @@ pub const SIDEBAR_WIDTH: u16 = 28;
 /// Horizontal padding on left and right of terminal view (1 character each side per spec)
 pub const TERMINAL_H_PADDING: u16 = 1;
 
+/// Compute the number of terminal columns given the total screen width and zoom state.
+/// When zoomed, the sidebar is hidden so the terminal gets the full width.
+pub fn compute_term_cols(screen_width: u16, zoomed: bool) -> u16 {
+    let sidebar = if zoomed { 0 } else { SIDEBAR_WIDTH };
+    screen_width
+        .saturating_sub(sidebar)
+        .saturating_sub(TERMINAL_H_PADDING * 2)
+        .saturating_sub(2)
+}
+
 /// Render the application UI with daemon-connected terminal emulator.
 fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     // Calculate hint bar height first
@@ -1460,6 +1484,10 @@ fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
         // Full-screen workspace overlay replaces sidebar and terminal panes.
         render_workspace_overlay(frame, main_area, overlay);
+    } else if app.app_state.zoomed {
+        // Zoomed mode: terminal takes the full main area (sidebar is hidden).
+        // This allows clean text selection of terminal-only content (e.g. in VSCode).
+        render_terminal_emulator_with_state(frame, main_area, &mut app.term_emulator, &app.app_state);
     } else {
         // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
         let horizontal_chunks = Layout::horizontal([

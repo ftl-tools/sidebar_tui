@@ -195,6 +195,11 @@ impl AppState {
                 }
                 // Open workspace overlay
                 KeyCode::Char('w') => EventResult::OpenWorkspaceOverlay,
+                // Toggle zoom: expand terminal to full width for clean text selection
+                KeyCode::Char('z') => {
+                    self.zoomed = !self.zoomed;
+                    EventResult::ToggleZoom
+                }
                 _ => EventResult::NotConsumed,
             };
         }
@@ -1446,6 +1451,82 @@ mod tests {
     fn test_mouse_mode_default_is_false() {
         let state = AppState::default();
         assert!(!state.mouse_mode, "Default mouse mode should be false (text selection enabled)");
+    }
+
+    // === Zoom Mode Tests ===
+
+    #[test]
+    fn test_zoom_default_is_false() {
+        let state = AppState::default();
+        assert!(!state.zoomed, "Default zoom should be false (sidebar visible)");
+    }
+
+    #[test]
+    fn test_ctrl_z_toggles_zoom_from_terminal() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            zoomed: false,
+            ..Default::default()
+        };
+
+        // Toggle on
+        let result = state.handle_key(ctrl_key('z'));
+        assert_eq!(result, EventResult::ToggleZoom);
+        assert!(state.zoomed, "Zoom should be enabled");
+
+        // Toggle off
+        let result = state.handle_key(ctrl_key('z'));
+        assert_eq!(result, EventResult::ToggleZoom);
+        assert!(!state.zoomed, "Zoom should be disabled");
+    }
+
+    #[test]
+    fn test_ctrl_z_not_handled_from_sidebar() {
+        let mut state = AppState {
+            focus: Focus::Sidebar,
+            zoomed: false,
+            ..Default::default()
+        };
+        // Ctrl+Z is not a sidebar binding — should not change zoom
+        let result = state.handle_key(ctrl_key('z'));
+        assert_ne!(result, EventResult::ToggleZoom);
+        assert!(!state.zoomed, "Zoom should remain false from sidebar");
+    }
+
+    #[test]
+    fn test_focus_sidebar_clears_zoom() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            zoomed: true,
+            ..Default::default()
+        };
+        state.focus_sidebar();
+        assert!(!state.zoomed, "Zoom should be cleared when focusing sidebar");
+        assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn test_ctrl_b_from_terminal_clears_zoom() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            zoomed: true,
+            ..Default::default()
+        };
+        let result = state.handle_key(ctrl_key('b'));
+        assert_eq!(result, EventResult::Consumed);
+        assert!(!state.zoomed, "Zoom should be cleared by ctrl+b");
+        assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn test_enter_create_mode_clears_zoom() {
+        let mut state = AppState {
+            focus: Focus::Terminal,
+            zoomed: true,
+            ..Default::default()
+        };
+        state.enter_create_mode();
+        assert!(!state.zoomed, "Zoom should be cleared when entering create mode");
     }
 
     // === Workspace Overlay Tests ===

@@ -313,6 +313,14 @@ impl SbSession {
         Ok(())
     }
 
+    /// Send Ctrl+Z to toggle zoom mode
+    fn send_ctrl_z(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Ctrl+Z is ASCII 26
+        self.session.write_all(&[26])?;
+        self.session.flush()?;
+        Ok(())
+    }
+
     /// Send a mouse scroll up event using X10 SGR mouse protocol.
     /// col and row are 1-based terminal coordinates.
     fn send_mouse_scroll_up(&mut self, col: u8, row: u8) -> Result<(), Box<dyn std::error::Error>> {
@@ -4112,6 +4120,82 @@ fn test_mouse_mode_toggle_shows_timed_message_then_clears() {
     assert!(
         message_cleared,
         "Timed message should disappear after ~3 seconds, restoring normal bindings. Got:\n{}",
+        session.screen_contents()
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that Ctrl+Z toggles zoom mode: hides the sidebar and expands the terminal to full width.
+/// When zoomed, native text selection in editors like VSCode only grabs terminal content.
+#[test]
+fn test_zoom_hides_sidebar_and_shows_timed_message() {
+    let _timer = TestTimer::new("test_zoom_hides_sidebar_and_shows_timed_message");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to create session");
+
+    // Create a session and focus terminal so Ctrl+Z works
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Create a session to have something to show
+    session.send("n").expect("Failed to send n");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send("t").expect("Failed to send t (terminal session)");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Should be in terminal focus now with sidebar visible (Default workspace)
+    let pre_zoom = session.screen_contents();
+    eprintln!("Pre-zoom screen:\n{}", pre_zoom);
+    assert!(
+        pre_zoom.contains("Default"),
+        "Sidebar should show 'Default' workspace before zooming. Got:\n{}", pre_zoom
+    );
+
+    // Press Ctrl+Z to zoom
+    session.send_ctrl_z().expect("Failed to send Ctrl+Z");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let zoomed_screen = session.screen_contents();
+    eprintln!("Zoomed screen:\n{}", zoomed_screen);
+    assert!(
+        zoomed_screen.contains("Zoomed"),
+        "Should show 'Zoomed' timed message after Ctrl+Z. Got:\n{}", zoomed_screen
+    );
+    assert!(
+        !zoomed_screen.contains("Default"),
+        "Sidebar workspace name 'Default' should be hidden when zoomed. Got:\n{}", zoomed_screen
+    );
+
+    // Press Ctrl+Z again to unzoom
+    session.send_ctrl_z().expect("Failed to send second Ctrl+Z");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    let unzoomed_screen = session.screen_contents();
+    eprintln!("Unzoomed screen:\n{}", unzoomed_screen);
+    assert!(
+        unzoomed_screen.contains("Unzoomed"),
+        "Should show 'Unzoomed' timed message after second Ctrl+Z. Got:\n{}", unzoomed_screen
+    );
+
+    // Wait for timed message to clear, then sidebar should be visible again
+    let mut sidebar_restored = false;
+    for _ in 0..25 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Default") {
+            sidebar_restored = true;
+            eprintln!("Sidebar restored:\n{}", screen);
+            break;
+        }
+    }
+    assert!(
+        sidebar_restored,
+        "Sidebar with 'Default' workspace should be visible after unzoom. Got:\n{}",
         session.screen_contents()
     );
 
