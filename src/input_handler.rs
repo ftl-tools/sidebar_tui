@@ -5,7 +5,6 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::name_generator::generate_unique_session_name;
 use crate::state::{
     AppMode, AppState, ConfirmAction, ConfirmState, EventResult, Focus, RenamingState, SessionType,
     WorkspaceOverlayMode,
@@ -209,26 +208,18 @@ impl AppState {
     }
 
     /// Handle key events in create mode (selecting session type: t or a).
-    /// Directly generates a random session name and creates the session.
+    /// Transitions into drafting mode so the user can type a custom session name.
     fn handle_create_mode_key(&mut self, key: KeyEvent) -> EventResult {
         match key.code {
-            // Terminal session
+            // Terminal session: enter drafting mode for user to type a name
             KeyCode::Char('t') => {
-                let name = self.generate_unique_name();
-                self.mode = AppMode::Normal;
-                EventResult::CreateSession {
-                    name,
-                    session_type: SessionType::Terminal,
-                }
+                self.start_drafting(SessionType::Terminal);
+                EventResult::Consumed
             }
-            // Agent session
+            // Agent session: enter drafting mode for user to type a name
             KeyCode::Char('a') => {
-                let name = self.generate_unique_name();
-                self.mode = AppMode::Normal;
-                EventResult::CreateSession {
-                    name,
-                    session_type: SessionType::Agent,
-                }
+                self.start_drafting(SessionType::Agent);
+                EventResult::Consumed
             }
             // Cancel
             KeyCode::Esc => {
@@ -237,12 +228,6 @@ impl AppState {
             }
             _ => EventResult::Consumed, // Consume but ignore other keys
         }
-    }
-
-    /// Generate a unique session name that doesn't conflict with existing sessions.
-    fn generate_unique_name(&self) -> String {
-        let existing_names: Vec<&str> = self.sessions.iter().map(|s| s.name.as_str()).collect();
-        generate_unique_session_name(&existing_names)
     }
 
     /// Handle key events while drafting a new session name.
@@ -1016,47 +1001,41 @@ mod tests {
     // === Create Mode Tests ===
 
     #[test]
-    fn test_create_mode_t_creates_terminal_session() {
+    fn test_create_mode_t_enters_drafting_mode() {
         let mut state = AppState {
             mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('t')));
-        // Should directly create session with auto-generated name
-        match result {
-            EventResult::CreateSession { name, session_type } => {
-                assert!(!name.is_empty(), "Name should be auto-generated");
-                assert_eq!(session_type, SessionType::Terminal);
-                // Name should be three words with first capitalized
-                assert!(name.chars().next().unwrap().is_uppercase(),
-                        "First char should be uppercase: {}", name);
+        assert_eq!(result, EventResult::Consumed);
+        // Should transition to Drafting mode for user to type a name
+        match &state.mode {
+            AppMode::Drafting(draft) => {
+                assert_eq!(draft.session_type, SessionType::Terminal);
+                assert!(draft.name.is_empty(), "Draft name should start empty");
             }
-            _ => panic!("Expected CreateSession, got {:?}", result),
+            _ => panic!("Expected Drafting mode, got {:?}", state.mode),
         }
-        assert!(matches!(state.mode, AppMode::Normal));
     }
 
     #[test]
-    fn test_create_mode_a_creates_agent_session() {
+    fn test_create_mode_a_enters_drafting_mode() {
         let mut state = AppState {
             mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('a')));
-        // Should directly create session with auto-generated name
-        match result {
-            EventResult::CreateSession { name, session_type } => {
-                assert!(!name.is_empty(), "Name should be auto-generated");
-                assert_eq!(session_type, SessionType::Agent);
-                // Name should be three words with first capitalized
-                assert!(name.chars().next().unwrap().is_uppercase(),
-                        "First char should be uppercase: {}", name);
+        assert_eq!(result, EventResult::Consumed);
+        // Should transition to Drafting mode for user to type a name
+        match &state.mode {
+            AppMode::Drafting(draft) => {
+                assert_eq!(draft.session_type, SessionType::Agent);
+                assert!(draft.name.is_empty(), "Draft name should start empty");
             }
-            _ => panic!("Expected CreateSession, got {:?}", result),
+            _ => panic!("Expected Drafting mode, got {:?}", state.mode),
         }
-        assert!(matches!(state.mode, AppMode::Normal));
     }
 
     #[test]
@@ -1083,44 +1062,6 @@ mod tests {
         let result = state.handle_key(key(KeyCode::Char('x')));
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::CreateMode { .. })); // Still in create mode
-    }
-
-    #[test]
-    fn test_create_mode_generates_unique_name() {
-        // Create state with some existing sessions
-        let mut state = AppState {
-            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
-            sessions: vec![
-                Session::new("Test session"),
-                Session::new("Another session"),
-            ],
-            ..Default::default()
-        };
-
-        let result = state.handle_key(key(KeyCode::Char('t')));
-        match result {
-            EventResult::CreateSession { name, .. } => {
-                // Name should not match any existing session (case-insensitive)
-                let name_lower = name.to_lowercase();
-                assert_ne!(name_lower, "test session");
-                assert_ne!(name_lower, "another session");
-            }
-            _ => panic!("Expected CreateSession"),
-        }
-    }
-
-    #[test]
-    fn test_generate_unique_name_helper() {
-        let state = AppState {
-            sessions: vec![Session::new("Existing")],
-            ..Default::default()
-        };
-
-        let name = state.generate_unique_name();
-        assert!(!name.is_empty());
-        assert!(name.chars().next().unwrap().is_uppercase());
-        // Should have 2 spaces (3 words)
-        assert_eq!(name.matches(' ').count(), 2);
     }
 
     // === Drafting Mode Tests ===

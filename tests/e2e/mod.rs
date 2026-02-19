@@ -1450,47 +1450,40 @@ fn test_create_mode_flow() {
     let session_count_before = lines_before.len();
     eprintln!("Sessions before 't': {}", session_count_before);
 
-    // Press 't' to create terminal session (now directly creates with auto-generated name)
+    // Press 't' to enter drafting mode, then type a name and confirm
+    let new_session_name = format!("new-{}-{}", pid, unique_id);
+    created_sessions.lock().unwrap().push(new_session_name.clone());
     session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    // Type the session name
+    session.write_all(new_session_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Press Enter to create
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After 't' (session created with auto name):\n{}", screen_contents);
+    eprintln!("After creating session with name '{}':\n{}", new_session_name, screen_contents);
 
-    // Should now be in Normal mode (terminal focused) after auto-creating session
-    // Hint bar should show terminal-focused bindings, not drafting bindings
+    // Should now be in Normal mode (terminal focused)
     assert!(
-        screen_contents.contains("Focus on sidebar") || screen_contents.contains("ctrl + b"),
-        "Should be back in normal mode with terminal focused after auto-creating session. Got:\n{}",
+        screen_contents.contains("ctrl + b") || screen_contents.contains("Sidebar"),
+        "Should be in normal mode with terminal focused after creating session. Got:\n{}",
         screen_contents
     );
 
-    // The sidebar should have a new session at the top (auto-generated name format: "Word word word")
-    // Count sessions after
-    let lines_after: Vec<&str> = screen_contents.lines()
-        .skip(1) // Skip title
-        .take_while(|l| !l.contains("ctrl + n"))
-        .filter(|l| l.contains("│") && l.trim_matches(|c| c == '│' || c == ' ').len() > 0)
-        .collect();
-    eprintln!("Sidebar lines after 't': {:?}", lines_after);
-
-    // The new session should be at the top (row 1 after title)
-    // Look for a session that looks like "Word word word" format (3 words, first capitalized)
-    let row_1 = screen_contents.lines().nth(1).unwrap_or("");
-    eprintln!("Row 1 (should be new session): {:?}", row_1);
-
-    // Row 1 should contain content that looks like an auto-generated name
-    // Auto-generated names have format "Word word word" (first capitalized, then lowercase)
-    let sidebar_text = row_1.trim_start_matches("│").trim();
-    let words: Vec<&str> = sidebar_text.split_whitespace().collect();
-
-    // Should have at least some text (the session name)
+    // The new session should appear in the sidebar
     assert!(
-        !sidebar_text.is_empty() && words.len() >= 1,
-        "New session should be visible in sidebar. Row 1: {:?}",
-        row_1
+        screen_contents.contains(&new_session_name),
+        "New session '{}' should be visible in sidebar. Got:\n{}",
+        new_session_name, screen_contents
     );
 
     // Cleanup - quit the TUI
@@ -3269,32 +3262,35 @@ fn test_welcome_state_on_fresh_start() {
         screen_contents
     );
 
-    // Pressing 't' now directly creates a session with an auto-generated name (no drafting mode)
+    // Press 't' to enter drafting, type name, press Enter
+    let welcome_new_name = format!("wlcm-{}-{}", pid, unique_id);
     session.write_all(b"t").expect("Failed to send 't'");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut session, &mut parser);
+
+    session.write_all(welcome_new_name.as_bytes()).expect("Failed to type name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After creating session (auto-named):\n{}", screen_contents);
+    eprintln!("After creating session '{}':\n{}", welcome_new_name, screen_contents);
 
-    // Should now have a session with auto-generated name at row 2
-    // Auto-generated names have format "Word word word" (3 words)
-    // The sidebar should show the new session and terminal should be focused
-    let row2 = parser.screen().contents_between(2, 0, 2, 27);
-    eprintln!("Row 2 (new session): '{}'", row2);
-
-    // Row 2 should have some session content
-    let session_name_part = row2.trim_matches(|c| c == '│' || c == ' ');
+    // The new session should appear in the sidebar
     assert!(
-        !session_name_part.is_empty(),
-        "New auto-generated session should appear in sidebar row 2. Got:\n{}",
-        screen_contents
+        screen_contents.contains(&welcome_new_name),
+        "New session '{}' should appear in sidebar. Got:\n{}",
+        welcome_new_name, screen_contents
     );
 
-    // Terminal should be focused (hint bar shows terminal bindings)
+    // Terminal should be focused
     assert!(
-        screen_contents.contains("ctrl + b") || screen_contents.contains("Focus on sidebar"),
+        screen_contents.contains("ctrl + b") || screen_contents.contains("Sidebar"),
         "Terminal should be focused after creating session. Got:\n{}",
         screen_contents
     );
@@ -3386,23 +3382,31 @@ fn test_session_ordering_by_last_used() {
     eprintln!("Row 2 before creating session2: '{}'", row2_before);
     assert!(row2_before.contains(&session1_name), "Session1 should be at row 2");
 
-    // Create a second session with Ctrl+N -> 't' (auto-generates name now)
+    // Create a second session with Ctrl+N -> 't' -> type name -> Enter
+    let session2_name = format!("order2-{}-{}", pid, unique_id);
     session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     read_into_parser(&mut session, &mut parser);
 
-    // Select terminal type - now immediately creates session with auto-generated name
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    let screen_contents = parser.screen().contents();
-    eprintln!("After second session created (auto-named):\n{}", screen_contents);
+    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
 
-    // Session 2 (auto-named) should be at the top now (most recently created/used)
-    // Row 2 should have a different session than session1
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    let screen_contents = parser.screen().contents();
+    eprintln!("After second session '{}' created:\n{}", session2_name, screen_contents);
+
+    // Session 2 should be at the top now (most recently created/used)
     let row2_after = parser.screen().contents_between(2, 0, 2, 27);
     eprintln!("Row 2 after session2 creation: '{}'", row2_after);
 
@@ -3422,9 +3426,7 @@ fn test_session_ordering_by_last_used() {
         row3_after
     );
 
-    // Capture what the auto-generated session name looks like (row 2 content)
-    let auto_session_name_row = row2_after.trim_matches(|c| c == '│' || c == ' ');
-    eprintln!("Auto-generated session at row 2: '{}'", auto_session_name_row);
+    eprintln!("Session2 at row 2: '{}'", row2_after.trim_matches(|c| c == '│' || c == ' '));
 
     // Now switch to session1 by navigating down and pressing Enter
     // First, go to sidebar
@@ -3530,32 +3532,39 @@ fn test_session_order_preserved_across_restart() {
     eprintln!("PHASE 1 - Initial session at row2: '{}'", row2_initial);
     assert!(row2_initial.contains(&session1_name), "Session1 should be at row 2 initially");
 
-    // Create a second session with Ctrl+N -> 't' (auto-generates name)
+    // Create a second session with Ctrl+N -> 't' -> type name -> Enter
+    let session2_name = format!("persist2-{}-{}", pid, unique_id);
     session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     read_into_parser(&mut session, &mut parser);
 
-    // Select terminal type - now immediately creates with auto-generated name
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    // Session 2 (auto-named) should now be at the top
+    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut session, &mut parser);
+
+    // Session 2 should now be at the top
     let row2_after_create = parser.screen().contents_between(2, 0, 2, 27);
     eprintln!("PHASE 1 - After creating session2, row2: '{}'", row2_after_create);
 
-    // The new auto-named session should be at top, session1 should be at row 3
+    // The new session should be at top, session1 should be at row 3
     assert!(
         !row2_after_create.contains(&session1_name),
         "New session should be at top after creation. Row 2: '{}'",
         row2_after_create
     );
 
-    // Capture the auto-generated session name from row 2
-    let auto_session_name = row2_after_create.trim_matches(|c| c == '│' || c == ' ').to_string();
-    eprintln!("Auto-generated session name: '{}'", auto_session_name);
+    eprintln!("Session2 name: '{}'", session2_name);
 
     // Session1 should now be at row 3
     let row3_after_create = parser.screen().contents_between(3, 0, 3, 27);
@@ -4350,6 +4359,7 @@ fn test_esc_jump_back() {
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session1_name = format!("jump1-{}-{}", pid, unique_id);
+    let session2_name = format!("jump2-{}-{}", pid, unique_id);
     let binary_path = get_binary_path();
 
     struct Cleanup {
@@ -4368,7 +4378,7 @@ fn test_esc_jump_back() {
     }
     let _cleanup = Cleanup {
         binary_path: binary_path.clone(),
-        session_names: vec![session1_name.clone()],
+        session_names: vec![session1_name.clone(), session2_name.clone()],
     };
 
     // Start with first session (named via CLI)
@@ -4382,14 +4392,14 @@ fn test_esc_jump_back() {
     let initial_screen = parser.screen().contents();
     eprintln!("Initial screen with session1:\n{}", initial_screen);
 
-    // Create a second session via n -> t (auto-generates name)
+    // Create a second session via n -> t -> type name -> Enter
     // First focus sidebar
     session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     read_into_parser(&mut session, &mut parser);
 
-    // Press 'n' for new, then 't' for terminal
+    // Press 'n' for new, then 't' for terminal, then type name, then Enter
     session.write_all(b"n").expect("Failed to send 'n'");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
@@ -4397,12 +4407,20 @@ fn test_esc_jump_back() {
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    session.write_all(&[0x0d]).expect("Failed to send Enter");
+    session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
 
     let screen_with_two = parser.screen().contents();
-    eprintln!("After creating second session:\n{}", screen_with_two);
+    eprintln!("After creating second session '{}':\n{}", session2_name, screen_with_two);
 
-    // Now we're attached to session2 (auto-named). Focus sidebar.
+    // Now we're attached to session2. Focus sidebar.
     session.write_all(&[2]).expect("Failed to send Ctrl+B");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -5627,6 +5645,144 @@ fn test_delete_session_focus_transitions() {
     );
 
     // Quit the TUI
+    sb.write_all(&[17]).expect("Failed to send Ctrl+Q");
+    sb.flush().expect("Failed to flush");
+    let _ = sb.get_process_mut().exit(true);
+}
+
+/// Test the full create mode drafting UI workflow:
+/// n -> t -> type name -> Enter creates session; n -> t -> Esc cancels without creating.
+/// Per spec: "When drafting a new session: Add an empty session row to the top of the sidebar
+/// list... There should be a blinking | cursor... press enter to Create, esc to Cancel."
+#[test]
+fn test_create_mode_drafting_workflow() {
+    let _timer = TestTimer::new("test_create_mode_drafting_workflow");
+    let env = TestEnv::setup();
+
+    let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let initial_session = format!("draft-base-{}-{}", pid, unique_id);
+    let new_session = format!("draft-new-{}-{}", pid, unique_id);
+    let binary_path = get_binary_path();
+
+    struct Cleanup {
+        binary_path: String,
+        session_names: Vec<String>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for name in &self.session_names {
+                let _ = std::process::Command::new(&self.binary_path)
+                    .args(["kill", name])
+                    .output();
+            }
+        }
+    }
+    let _cleanup = Cleanup {
+        binary_path: binary_path.clone(),
+        session_names: vec![initial_session.clone(), new_session.clone()],
+    };
+
+    let mut sb = spawn_sb(&env, &initial_session);
+    sb.set_expect_timeout(Some(Duration::from_secs(5)));
+    let mut parser = vt100::Parser::new(24, 80, 0);
+
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    // Focus sidebar
+    sb.write_all(&[2]).expect("Failed to send Ctrl+B");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    // === Part 1: Test Esc cancels without creating ===
+    sb.write_all(b"n").expect("Failed to send 'n'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    sb.write_all(b"t").expect("Failed to send 't'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen_drafting = parser.screen().contents();
+    eprintln!("After 'n' -> 't' (should be in drafting mode):\n{}", screen_drafting);
+
+    // Should show drafting hint bar (enter Create, esc Cancel)
+    assert!(
+        screen_drafting.contains("Create") || screen_drafting.contains("Cancel"),
+        "Drafting mode should show 'Create' / 'Cancel' in hint bar. Got:\n{}",
+        screen_drafting
+    );
+
+    // Press Esc to cancel
+    sb.write_all(&[0x1b]).expect("Failed to send Esc");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(500));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen_after_cancel = parser.screen().contents();
+    eprintln!("After Esc (cancelled draft):\n{}", screen_after_cancel);
+
+    // No extra session should have been created
+    assert!(
+        !screen_after_cancel.contains(&new_session),
+        "Esc should not create the session. Sidebar:\n{}",
+        screen_after_cancel
+    );
+
+    // === Part 2: Test Enter creates the session with typed name ===
+    sb.write_all(b"n").expect("Failed to send 'n'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+
+    sb.write_all(b"t").expect("Failed to send 't'");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    // Type the session name
+    sb.write_all(new_session.as_bytes()).expect("Failed to type name");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(300));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen_while_typing = parser.screen().contents();
+    eprintln!("While typing name '{}':\n{}", new_session, screen_while_typing);
+
+    // The typed name should be visible in the sidebar draft row
+    let name_prefix = &new_session[..new_session.len().min(15)];
+    assert!(
+        screen_while_typing.contains(&new_session) || screen_while_typing.contains(name_prefix),
+        "Typed name should appear in sidebar while drafting. Got:\n{}",
+        screen_while_typing
+    );
+
+    // Press Enter to confirm creation
+    sb.write_all(&[0x0d]).expect("Failed to send Enter");
+    sb.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(1000));
+    read_into_parser(&mut sb, &mut parser);
+
+    let screen_after_create = parser.screen().contents();
+    eprintln!("After Enter (session created):\n{}", screen_after_create);
+
+    // The named session should now appear in the sidebar
+    assert!(
+        screen_after_create.contains(&new_session),
+        "Created session '{}' should appear in sidebar. Got:\n{}",
+        new_session, screen_after_create
+    );
+
+    // Should be back in normal terminal-focused mode
+    assert!(
+        screen_after_create.contains("ctrl + b") || screen_after_create.contains("Sidebar"),
+        "Should return to normal mode after creating session. Got:\n{}",
+        screen_after_create
+    );
+
     sb.write_all(&[17]).expect("Failed to send Ctrl+Q");
     sb.flush().expect("Failed to flush");
     let _ = sb.get_process_mut().exit(true);
