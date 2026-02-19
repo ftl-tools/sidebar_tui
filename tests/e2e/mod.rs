@@ -5174,14 +5174,32 @@ fn test_workspace_persists_across_restart() {
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
-    // Open workspace overlay and verify the workspace is there
+    // Focus the sidebar first (poll until sidebar bindings appear)
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
-    std::thread::sleep(Duration::from_millis(300));
-    session.send_ctrl_w().expect("Failed to send Ctrl+W");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
+    let mut sidebar_focused = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let s = session.screen_contents();
+        if s.contains("Jump back") || s.contains("r Rename") {
+            sidebar_focused = true;
+            break;
+        }
+    }
+    assert!(sidebar_focused, "Sidebar should be focused after Ctrl+B");
 
-    let screen = session.screen_contents();
+    // Open workspace overlay and poll until it appears
+    session.send_ctrl_w().expect("Failed to send Ctrl+W");
+    let mut screen = String::new();
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        screen = session.screen_contents();
+        if screen.contains("Workspaces") {
+            break;
+        }
+    }
+
     eprintln!("Workspace overlay after restart:\n{}", screen);
     assert!(
         screen.contains("Persistent"),
@@ -5604,6 +5622,63 @@ fn test_session_name_character_restrictions() {
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that typing a long session name during create/rename mode wraps live in the sidebar.
+/// Per spec the same wrapping with │/└ indicators applies while editing, not just after submitting.
+#[test]
+fn test_session_name_wraps_while_typing() {
+    let _timer = TestTimer::new("test_session_name_wraps_while_typing");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Focus sidebar
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Press 'r' to enter rename mode
+    session.send("r").expect("Failed to enter rename mode");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Clear the current name and type a name longer than CONTENT_WIDTH (24 chars)
+    let original_name = session.session_name.clone();
+    for _ in 0..original_name.len() + 5 {
+        session.send_backspace().expect("Failed to backspace");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Type 27 chars: fills line 0 (24 chars) and wraps 3 chars to line 1
+    let long_name = "abcdefghijklmnopqrstuvwxyz1";
+    session.send(long_name).expect("Failed to type long name");
+
+    // Poll until the continuation indicator appears in the sidebar
+    let mut got_wrap = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        // Sidebar is columns 0-27; check for continuation indicator chars
+        let sidebar: String = session.parser.screen().contents_between(0, 0, 23, 27);
+        if sidebar.contains('│') || sidebar.contains('└') {
+            got_wrap = true;
+            break;
+        }
+    }
+
+    let screen = session.screen_contents();
+    eprintln!("Screen after typing long rename name:\n{}", screen);
+    assert!(got_wrap, "Session name should wrap with │/└ indicators while typing. Got:\n{}", screen);
+
+    // The first 24 chars should be on row 2, remaining on row 3 in the sidebar
+    let sidebar: String = session.parser.screen().contents_between(0, 0, 23, 27);
+    assert!(sidebar.contains("abcdefghijklmnopqrstuvwx"), "First 24 chars should appear in sidebar while typing");
+    assert!(sidebar.contains("yz1"), "Remaining chars should appear on continuation line");
+
+    session.send_esc().expect("Cancel rename");
     session.quit().expect("Failed to quit");
 }
 

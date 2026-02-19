@@ -87,6 +87,23 @@ fn session_row_count(name: &str, max_width: usize) -> usize {
     wrap_session_name(name, max_width).len()
 }
 
+/// Given wrapped lines and a cursor_position (character offset into the full string),
+/// return (line_index, col_within_that_line).
+fn cursor_line_col(wrapped: &[(String, bool, bool)], cursor_position: usize) -> (usize, usize) {
+    let mut chars_before = 0usize;
+    for (line_idx, (text, _, _)) in wrapped.iter().enumerate() {
+        let chars_on_line = text.len();
+        if cursor_position <= chars_before + chars_on_line {
+            return (line_idx, cursor_position - chars_before);
+        }
+        if line_idx == wrapped.len().saturating_sub(1) {
+            return (line_idx, chars_on_line);
+        }
+        chars_before += chars_on_line;
+    }
+    (0, 0)
+}
+
 /// Build the list of sidebar lines for rendering.
 /// Returns (lines, show_top_truncation, show_bottom_truncation).
 fn build_sidebar_lines(
@@ -105,13 +122,31 @@ fn build_sidebar_lines(
         None
     };
 
+    // Rename info: (session_index, new_name) if we're currently renaming a session.
+    // We use the rename text for row calculations so wrapping reflects what's being typed.
+    let renaming_info: Option<(usize, String)> = if let AppMode::Renaming(rename) = &state.mode {
+        Some((rename.session_index, rename.new_name.clone()))
+    } else {
+        None
+    };
+
+    // Helper: get the display name for session at index (substitutes rename text if applicable).
+    let effective_name = |idx: usize, session_name: &str| -> String {
+        if let Some((ri, ref rn)) = renaming_info {
+            if ri == idx {
+                return rn.clone();
+            }
+        }
+        session_name.to_string()
+    };
+
     // Calculate total rows needed for all sessions (plus draft if any)
     let mut total_rows = 0;
     if draft_name.is_some() {
         total_rows += session_row_count("", max_width);
     }
-    for session in &state.sessions {
-        total_rows += session_row_count(&session.name, max_width);
+    for (idx, session) in state.sessions.iter().enumerate() {
+        total_rows += session_row_count(&effective_name(idx, &session.name), max_width);
     }
 
     // If everything fits, render all
@@ -127,9 +162,10 @@ fn build_sidebar_lines(
                 });
             }
         }
-        // Render all sessions
+        // Render all sessions (using effective name for renamed sessions)
         for (idx, session) in state.sessions.iter().enumerate() {
-            for (text, is_continuation, is_last_line) in wrap_session_name(&session.name, max_width) {
+            let name = effective_name(idx, &session.name);
+            for (text, is_continuation, is_last_line) in wrap_session_name(&name, max_width) {
                 lines.push(SessionLine {
                     text,
                     session_index: idx,
@@ -159,9 +195,10 @@ fn build_sidebar_lines(
         }
     }
 
-    // Find first visible session
+    // Find first visible session (using effective names for row counts)
     for (idx, session) in state.sessions.iter().enumerate() {
-        let session_rows = session_row_count(&session.name, max_width);
+        let name = effective_name(idx, &session.name);
+        let session_rows = session_row_count(&name, max_width);
         if rows_before_scroll + session_rows > scroll_offset {
             first_visible_session = idx;
             break;
@@ -200,14 +237,15 @@ fn build_sidebar_lines(
         }
     }
 
-    // Add visible sessions
+    // Add visible sessions (using effective names for renamed sessions)
     for idx in first_visible_session..state.sessions.len() {
         if rows_used >= rows_for_content {
             show_bottom_truncation = true;
             break;
         }
         let session = &state.sessions[idx];
-        let wrapped = wrap_session_name(&session.name, max_width);
+        let name = effective_name(idx, &session.name);
+        let wrapped = wrap_session_name(&name, max_width);
         for (text, is_continuation, is_last_line) in wrapped {
             if rows_used >= rows_for_content {
                 show_bottom_truncation = true;
@@ -317,13 +355,8 @@ impl<'a> Sidebar<'a> {
             y += 1;
         }
 
-        // Check if we're in drafting or renaming mode
+        // Check if we're in drafting mode
         let is_drafting = matches!(&self.state.mode, AppMode::Drafting(_));
-        let renaming_index = if let AppMode::Renaming(rename) = &self.state.mode {
-            Some(rename.session_index)
-        } else {
-            None
-        };
 
         // Render session lines
         for line in &lines {
@@ -375,30 +408,15 @@ impl<'a> Sidebar<'a> {
                 x += 1;
             }
 
-            // Check if we're renaming this session
-            let show_renaming = renaming_index == Some(*session_index) && !*is_continuation;
-
-            if show_renaming {
-                // Show the renaming text with cursor
-                if let AppMode::Renaming(rename) = &self.state.mode {
-                    let rename_style = Style::default().fg(WHITE).bg(DARK_GREY);
-                    buf.set_string(x, y, &rename.new_name, rename_style);
-                }
-            } else if *session_index == usize::MAX {
-                // Draft line - show the text being typed
-                if let AppMode::Drafting(draft) = &self.state.mode {
-                    let draft_style = Style::default().fg(WHITE).bg(DARK_GREY);
-                    buf.set_string(x, y, &draft.name, draft_style);
-                }
+            // Render text: always use the pre-wrapped slice for this line.
+            // For draft and renamed sessions, build_sidebar_lines already wraps using the
+            // typed text, so 'text' is the correct slice to show here.
+            let text_style = if is_selected {
+                Style::default().fg(WHITE).bg(DARK_GREY)
             } else {
-                // Normal session line
-                let text_style = if is_selected {
-                    Style::default().fg(WHITE).bg(DARK_GREY)
-                } else {
-                    Style::default().fg(WHITE)
-                };
-                buf.set_string(x, y, text, text_style);
-            }
+                Style::default().fg(WHITE)
+            };
+            buf.set_string(x, y, text, text_style);
 
             y += 1;
         }
@@ -465,21 +483,27 @@ pub fn get_sidebar_cursor_position(state: &AppState, area: Rect) -> Option<(u16,
 
     match &state.mode {
         AppMode::Drafting(draft) => {
-            // Cursor is at cursor_position within the draft name
-            let cursor_x = inner_x + draft.cursor_position as u16;
-            Some((cursor_x, inner_y))
+            // Cursor may be on a wrapped line; compute which line and column.
+            let wrapped = wrap_session_name(&draft.name, CONTENT_WIDTH);
+            let (cursor_line, cursor_col) = cursor_line_col(&wrapped, draft.cursor_position);
+            let indicator_offset = if cursor_line > 0 { 1u16 } else { 0u16 };
+            let cursor_x = inner_x + indicator_offset + cursor_col as u16;
+            let cursor_y = inner_y + cursor_line as u16;
+            Some((cursor_x, cursor_y))
         }
         AppMode::Renaming(rename) => {
-            // Find the row for this session
-            // For simplicity, assume it's at selected_index position
-            // This needs proper calculation based on scroll offset and wrapped lines
-            let rows_before = state.sessions.iter()
+            // Rows before the renamed session (using the current rename text for that session's row count).
+            let rows_before: usize = state.sessions.iter()
                 .take(rename.session_index)
                 .map(|s| session_row_count(&s.name, CONTENT_WIDTH))
-                .sum::<usize>();
-            let row_y = inner_y + rows_before as u16;
-            let cursor_x = inner_x + rename.cursor_position as u16;
-            Some((cursor_x, row_y))
+                .sum();
+            // Within the renamed session, cursor may be on a wrapped line.
+            let wrapped = wrap_session_name(&rename.new_name, CONTENT_WIDTH);
+            let (cursor_line, cursor_col) = cursor_line_col(&wrapped, rename.cursor_position);
+            let indicator_offset = if cursor_line > 0 { 1u16 } else { 0u16 };
+            let cursor_x = inner_x + indicator_offset + cursor_col as u16;
+            let cursor_y = inner_y + rows_before as u16 + cursor_line as u16;
+            Some((cursor_x, cursor_y))
         }
         _ => None,
     }
@@ -768,6 +792,99 @@ mod tests {
         let (x, _y) = cursor.unwrap();
         // Cursor should be at position after 'abc': 1 (border) + 1 (padding) + 3 (cursor_position) = 5
         assert_eq!(x, 1 + 1 + 3); // border + padding + cursor_position
+    }
+
+    #[test]
+    fn test_draft_wraps_while_typing() {
+        use crate::state::{DraftingState, SessionType};
+
+        // Type a name longer than CONTENT_WIDTH (24 chars)
+        let long_name = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
+        let mut state = AppState::default();
+        let mut draft = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        for c in long_name.chars() {
+            draft.insert_char(c);
+        }
+        state.mode = AppMode::Drafting(draft);
+
+        let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
+
+        // First 24 chars on row 2, continuation on row 3.
+        // Layout: border at x=0, padding at x=1, content starts at x=2.
+        assert!(buffer_contains(&buf, "abcdefghijklmnopqrstuvwx"), "First line should contain first 24 chars");
+        assert!(buffer_contains(&buf, "yz"), "Continuation line should contain remaining chars");
+        // Continuation indicator at content_x=2 on row 3
+        let row3_indicator = &buf[(2, 3)];
+        assert_eq!(row3_indicator.symbol(), "└", "Continuation indicator should be └ at x=2");
+    }
+
+    #[test]
+    fn test_draft_cursor_wraps_correctly() {
+        use crate::state::{DraftingState, SessionType};
+
+        // Type exactly CONTENT_WIDTH + 1 chars so name wraps
+        let name: String = "a".repeat(CONTENT_WIDTH + 1); // 25 chars
+        let mut state = AppState::default();
+        let mut draft = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        for c in name.chars() {
+            draft.insert_char(c);
+        }
+        // cursor_position is now 25 (end of name)
+        state.mode = AppMode::Drafting(draft);
+
+        let area = Rect::new(0, 0, SIDEBAR_WIDTH, 24);
+        let cursor = get_sidebar_cursor_position(&state, area);
+
+        assert!(cursor.is_some());
+        let (cursor_x, cursor_y) = cursor.unwrap();
+        // Cursor should be on line 1 (the continuation line), col 1 (after 1-char content)
+        // cursor_y = area.y + 2 (border+title) + 1 (line 1) = 3
+        assert_eq!(cursor_y, area.y + 3, "Cursor should be on the second line (wrapping)");
+        // cursor_x = inner_x (2) + indicator_offset (1) + col (1) = 4
+        assert_eq!(cursor_x, 1 + 1 + 1 + 1, "Cursor x should account for border, padding, indicator, and col"); // x=4
+    }
+
+    #[test]
+    fn test_rename_wraps_while_typing() {
+        use crate::state::{RenamingState, Session};
+
+        // Session with short name, rename it with a long name
+        let mut state = AppState::with_sessions(vec![Session::new("short")]);
+        state.selected_index = 0;
+        let long_name = "averylongsessionnamethatiswrapped"; // >24 chars
+        let mut rename = RenamingState::new(0, long_name, Focus::Sidebar);
+        // Move cursor to end
+        for _ in 0..long_name.len() {
+            rename.move_cursor_right();
+        }
+        state.mode = AppMode::Renaming(rename);
+
+        let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
+
+        // The first 24 chars should appear on row 2
+        assert!(buffer_contains(&buf, &long_name[..24]), "First 24 chars should appear on row 2");
+        // The remaining chars should appear on row 3 with a continuation indicator
+        assert!(buffer_contains(&buf, &long_name[24..]), "Remaining chars should appear on row 3");
+    }
+
+    #[test]
+    fn test_cursor_line_col_no_wrap() {
+        let wrapped = wrap_session_name("abc", CONTENT_WIDTH);
+        assert_eq!(cursor_line_col(&wrapped, 0), (0, 0));
+        assert_eq!(cursor_line_col(&wrapped, 2), (0, 2));
+        assert_eq!(cursor_line_col(&wrapped, 3), (0, 3));
+    }
+
+    #[test]
+    fn test_cursor_line_col_with_wrap() {
+        let name = "a".repeat(CONTENT_WIDTH + 5); // 29 chars
+        let wrapped = wrap_session_name(&name, CONTENT_WIDTH);
+        // First 24 chars on line 0, next 5 (23-max continuation) on line 1
+        assert_eq!(cursor_line_col(&wrapped, 0), (0, 0));
+        assert_eq!(cursor_line_col(&wrapped, 23), (0, 23));
+        assert_eq!(cursor_line_col(&wrapped, 24), (0, 24)); // end of line 0
+        assert_eq!(cursor_line_col(&wrapped, 25), (1, 1));
+        assert_eq!(cursor_line_col(&wrapped, 29), (1, 5)); // end of line 1
     }
 
     #[test]
