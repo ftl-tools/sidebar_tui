@@ -1,5 +1,13 @@
 # Progress Logs
 
+## 2026-02-20 - Researched Terminal Recording Tools for sidebar-tui Hero (sidebar_tui-6kbp)
+
+Completed terminal recording tools research for the sidebar-tui website hero graphic. Cloned charmbracelet/vhs, asciinema/asciinema, and asciinema/asciinema-player into `references/terminal-recording/` and read key source files from each. Wrote a comprehensive `references/terminal-recording/README.md` covering: a comparison table of VHS vs asciinema-player vs alternatives (terminalizer, carbon, termtosvg), recommendation to use VHS generating MP4+WebM embedded via `<video>` in the VitePress `#home-hero-image` layout slot (scriptable, reproducible, no JS dependency, full alt-screen TUI support), a ready-to-use sample `.tape` script for sidebar-tui, complete VitePress embedding code for both approaches, file size estimates (GIF: 4-10 MB vs MP4/WebM: 100-400 KB), and a list of gotchas including VHS's Chromium/ttyd/ffmpeg deps and asciinema-player's SSR incompatibility requiring dynamic import in onMounted. Closed sidebar_tui-6kbp.
+
+## 2026-02-20 - Researched VitePress for sidebar-tui Marketing Site (sidebar_tui-kx7y)
+
+Completed VitePress research for the sidebar-tui marketing/docs website. Cloned VitePress, Starship, and mise repos into `references/vitepress-website/` and extracted practical patterns covering: home page hero frontmatter schema (TypeScript interfaces included), two video embed approaches (Starship's raw `<video>` tag in markdown below the frontmatter, and the layout slot approach using `home-hero-image`), code group syntax for tabbed install methods (curl/brew/npm/bun/AUR/cargo), all key CSS variables for dark theming, the GitHub Actions deploy workflow, and a recommended minimal project structure. Key finding: Starship proves a great TUI CLI site needs only frontmatter + one `<video>` tag + CSS variable overrides — no custom Vue components required. Closed sidebar_tui-kx7y. The remaining gate for site implementation is sidebar_tui-6kbp (terminal recording research).
+
 ## 2026-02-20 - Planned VitePress Website (sidebar_tui-wzkn)
 
 Planned the sidebar-tui marketing/docs website using VitePress. Evaluated 10 possible directions and chose a minimal VitePress site with a video hero (using a terminal recording tool) and a code group for install methods. Created two research issues that must be completed before implementation: sidebar_tui-kx7y (VitePress home page, video hero, code groups, GitHub Pages deploy) and sidebar_tui-6kbp (terminal recording tools — VHS, asciinema, and alternatives). Closed sidebar_tui-wzkn.
