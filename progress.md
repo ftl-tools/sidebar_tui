@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-20 - Added E2E Test for Dynamic Hint Bar Quit Path (sidebar_tui-qgqy)
+
+Added `test_hint_bar_dynamic_quit_path` E2E test to verify the hint bar quit path updates dynamically per spec line 148. The test checks three states: (a) terminal focused → quit path shows "ctrl + b" and "q Quit", (b) rename mode → quit path shows "esc" and "q Quit" without the "ctrl + b" prefix, (c) sidebar focused → quit path shows "q Quit" without "ctrl + b → q Quit". All 85 E2E tests and 414 lib tests pass. Closed sidebar_tui-qgqy.
+
 ## 2026-02-20 - Researched Terminal Recording Tools for sidebar-tui Hero (sidebar_tui-6kbp)
 
 Completed terminal recording tools research for the sidebar-tui website hero graphic. Cloned charmbracelet/vhs, asciinema/asciinema, and asciinema/asciinema-player into `references/terminal-recording/` and read key source files from each. Wrote a comprehensive `references/terminal-recording/README.md` covering: a comparison table of VHS vs asciinema-player vs alternatives (terminalizer, carbon, termtosvg), recommendation to use VHS generating MP4+WebM embedded via `<video>` in the VitePress `#home-hero-image` layout slot (scriptable, reproducible, no JS dependency, full alt-screen TUI support), a ready-to-use sample `.tape` script for sidebar-tui, complete VitePress embedding code for both approaches, file size estimates (GIF: 4-10 MB vs MP4/WebM: 100-400 KB), and a list of gotchas including VHS's Chromium/ttyd/ffmpeg deps and asciinema-player's SSR incompatibility requiring dynamic import in onMounted. Closed sidebar_tui-6kbp.
@@ -111,3 +115,7 @@ Implemented platform-specific IPC as specified: on Unix, the daemon still uses U
 ## 2026-02-20 - Added bd list Performance E2E Test (sidebar_tui-ryma)
 
 Added `test_bd_list_performance_in_tui` E2E test to catch performance regressions where commands run significantly slower inside the TUI PTY than in a direct shell. The test measures `bd list` baseline time outside the TUI, then runs `bd list && echo BD_PERF_DONE_12345` inside the TUI and uses `wait_for_text` on the sentinel to detect completion. It asserts that TUI overhead does not exceed 10 seconds beyond the baseline; on the current system the baseline is ~110ms and TUI is ~813ms (~700ms overhead, well within limits). If `bd` is not installed, the test exits gracefully. All 414 lib + 84 E2E tests pass. Closed sidebar_tui-ryma.
+
+## 2026-02-20 - Verification check found incomplete work
+
+All 414 unit tests and 84 E2E tests pass. Core TUI and all distribution requirements (CI/CD, self-update, npm, Homebrew, AUR, curl install, Windows TCP socket) are implemented. One spec gap found: the hint bar dynamic quit path bullet (objectives.md line 148 — "The right side of the hint bar should always show the path to quitting the TUI... update dynamically") lacks a dedicated E2E test. The spec requires "at least one E2E test... for each individual bullet point." The workspace overlay case is explicitly tested but terminal-focused ("ctrl + b → q Quit") and rename-mode ("esc → q Quit") states have no explicit E2E verification. Created sidebar_tui-qgqy to add test_hint_bar_dynamic_quit_path.

@@ -8070,3 +8070,72 @@ fn test_bd_list_performance_in_tui() {
 
     session.quit().expect("Failed to quit");
 }
+
+/// Test that the hint bar quit path updates dynamically based on current focus/mode.
+/// Spec line 148: "The right side of the hint bar should always show the path to quitting
+/// the TUI... This should update dynamically based on the current state of the TUI."
+/// Verifies: (a) terminal focused → "ctrl + b → q Quit", (b) rename mode → "esc → q Quit",
+/// (c) sidebar focused → "q Quit".
+#[test]
+fn test_hint_bar_dynamic_quit_path() {
+    let _timer = TestTimer::new("test_hint_bar_dynamic_quit_path");
+    let env = TestEnv::setup();
+
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read initial output");
+
+    // --- (a) Terminal focused: quit path should show "ctrl + b" and "q Quit" ---
+    let screen = session.screen_contents();
+    eprintln!("Terminal focused screen:\n{}", screen);
+    assert!(
+        screen.contains("ctrl + b") && screen.contains("q Quit"),
+        "When terminal is focused, hint bar quit path should show 'ctrl + b' and 'q Quit'. Got:\n{}",
+        screen
+    );
+
+    // --- (b) Enter sidebar focus then rename mode: quit path should be "esc → q Quit" ---
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read after Ctrl+B");
+
+    // Press 'r' to enter rename mode
+    session.send("r").expect("Failed to send 'r'");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read after 'r'");
+
+    let screen = session.screen_contents();
+    eprintln!("Rename mode screen:\n{}", screen);
+    assert!(
+        screen.contains("esc") && screen.contains("q Quit"),
+        "When in rename mode, hint bar quit path should show 'esc' and 'q Quit'. Got:\n{}",
+        screen
+    );
+    // In rename mode there should be no "ctrl + b" in the quit path
+    assert!(
+        !screen.contains("ctrl + b → q Quit"),
+        "In rename mode, quit path should NOT show 'ctrl + b → q Quit'. Got:\n{}",
+        screen
+    );
+
+    // Cancel rename with Escape
+    session.send_esc().expect("Failed to send Escape");
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().expect("Failed to read after Escape");
+
+    // --- (c) Sidebar focused: quit path should be "q Quit" (no ctrl+b prefix) ---
+    let screen = session.screen_contents();
+    eprintln!("Sidebar focused screen:\n{}", screen);
+    assert!(
+        screen.contains("q Quit"),
+        "When sidebar is focused, hint bar should show 'q Quit'. Got:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains("ctrl + b → q Quit"),
+        "When sidebar is focused, quit path should be 'q Quit' not 'ctrl + b → q Quit'. Got:\n{}",
+        screen
+    );
+
+    session.quit().expect("Failed to quit");
+}
