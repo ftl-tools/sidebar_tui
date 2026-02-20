@@ -3991,9 +3991,9 @@ fn test_sessions_work_after_shutdown() {
         .output();
 }
 
-/// Test that Ctrl+S toggles mouse mode (text selection vs mouse scroll).
-/// By default mouse_mode is false, showing "Text select" in the hint bar.
-/// After pressing Ctrl+S, it should show "Mouse scroll".
+/// Test that Ctrl+S toggles mouse mode (mouse scroll vs text selection).
+/// By default mouse_mode is true, showing "Mouse scroll" in the hint bar.
+/// After pressing Ctrl+S, it should show "Text select".
 #[test]
 fn test_ctrl_s_toggles_mouse_mode() {
     let _timer = TestTimer::new("test_ctrl_s_toggles_mouse_mode");
@@ -4029,17 +4029,17 @@ fn test_ctrl_s_toggles_mouse_mode() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    // Check initial state - mouse_mode defaults to false (text selection mode), so hint bar shows "Text select"
+    // Check initial state - mouse_mode defaults to true (scroll mode), so hint bar shows "Mouse scroll"
     let screen_contents = parser.screen().contents();
     eprintln!("Initial state:\n{}", screen_contents);
 
     assert!(
-        screen_contents.contains("Text select"),
-        "Initial state should show 'Text select' (mouse_mode defaults to false per spec). Got:\n{}",
+        screen_contents.contains("Mouse scroll"),
+        "Initial state should show 'Mouse scroll' (mouse_mode defaults to true). Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S (ASCII 19) to toggle mouse mode on
+    // Send Ctrl+S (ASCII 19) to toggle mouse mode off (to text select)
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -4048,14 +4048,14 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After first Ctrl+S:\n{}", screen_contents);
 
-    // Should now show "Mouse scroll"
+    // Should now show "Text select"
     assert!(
-        screen_contents.contains("Mouse scroll"),
-        "After toggle, should show 'Mouse scroll'. Got:\n{}",
+        screen_contents.contains("Text select"),
+        "After toggle, should show 'Text select'. Got:\n{}",
         screen_contents
     );
 
-    // Send Ctrl+S again to toggle back off
+    // Send Ctrl+S again to toggle back to scroll mode
     session.write_all(&[19]).expect("Failed to send Ctrl+S");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
@@ -4064,10 +4064,10 @@ fn test_ctrl_s_toggles_mouse_mode() {
     let screen_contents = parser.screen().contents();
     eprintln!("After second Ctrl+S:\n{}", screen_contents);
 
-    // Should be back to "Text select"
+    // Should be back to "Mouse scroll"
     assert!(
-        screen_contents.contains("Text select"),
-        "After second toggle, should show 'Text select'. Got:\n{}",
+        screen_contents.contains("Mouse scroll"),
+        "After second toggle, should show 'Mouse scroll'. Got:\n{}",
         screen_contents
     );
 
@@ -4098,7 +4098,7 @@ fn test_mouse_mode_toggle_shows_timed_message_then_clears() {
         initial_screen
     );
 
-    // Press Ctrl+S to toggle mouse mode on
+    // Press Ctrl+S to toggle mouse mode off (from default on to text select)
     session.send_ctrl_s().expect("Failed to send Ctrl+S");
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
@@ -4106,8 +4106,8 @@ fn test_mouse_mode_toggle_shows_timed_message_then_clears() {
     let after_toggle_screen = session.screen_contents();
     eprintln!("After Ctrl+S (message should show):\n{}", after_toggle_screen);
     assert!(
-        after_toggle_screen.contains("Mouse scroll enabled"),
-        "Hint bar should show timed message 'Mouse scroll enabled' after toggle. Got:\n{}",
+        after_toggle_screen.contains("Text select enabled"),
+        "Hint bar should show timed message 'Text select enabled' after toggle. Got:\n{}",
         after_toggle_screen
     );
 
@@ -7154,16 +7154,11 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
-    // Enable mouse mode (Ctrl+S) to allow scroll wheel events
-    session.send_ctrl_s().expect("Failed to send Ctrl+S");
-    std::thread::sleep(Duration::from_millis(300));
-    session.read_and_parse().expect("Failed to read output");
-
-    // Verify mouse mode is enabled
+    // Mouse scroll is enabled by default; verify it's showing in hint bar
     let screen_mouse = session.screen_contents();
     assert!(
         screen_mouse.contains("Mouse scroll"),
-        "Mouse mode should be enabled after Ctrl+S. Got:\n{}", screen_mouse
+        "Mouse scroll mode should be enabled by default. Got:\n{}", screen_mouse
     );
 
     // Scroll up many times to move view back in history (center of terminal area ~row 12, col 50)
@@ -7530,11 +7525,7 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read");
 
-    // Enable mouse scroll mode
-    session.send_ctrl_s().expect("Failed to send Ctrl+S");
-    std::thread::sleep(Duration::from_millis(300));
-    session.read_and_parse().expect("Failed to read");
-
+    // Mouse scroll is enabled by default — no need to enable it
     // Scroll up aggressively to get well into history (50ms between events > 30ms throttle)
     for _ in 0..60 {
         session.send_mouse_scroll_up(50, 12).expect("Failed to send scroll up");
@@ -7599,10 +7590,7 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
-    // Enable mouse scroll mode
-    session.send_ctrl_s().expect("Failed to send Ctrl+S");
-    std::thread::sleep(Duration::from_millis(300));
-    session.read_and_parse().expect("Failed to read");
+    // Mouse scroll is enabled by default — no need to enable it
 
     // Open the file in vim (it will enter alt screen mode)
     session.send(&format!("vim {}\n", test_file)).expect("Failed to open vim");

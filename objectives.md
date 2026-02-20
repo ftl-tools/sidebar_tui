@@ -109,13 +109,13 @@ Key properties of workspaces:
 - There should be one char of padding on the left and right of the terminal pane between the terminal content and the border.
 - The terminal text should be white (color 255).
 - When the terminal is focused it should have a purple outline (color 99) and when it's not focused it should have a darker outline (color 238).
-- Mouse scrolling when the Sidebar TUI is openned at all, regardless of focus should scroll the terminal pane's visible history. NOTE: This only works when mouse mode is enabled (see `mod + s` below).
-- By default, mouse mode is disabled to allow native terminal text selection (for copying text). Use `mod + s` to toggle between text selection mode and mouse scroll mode.
+- Mouse scrolling when the Sidebar TUI is open at all, regardless of focus, scrolls the terminal pane's visible history by default. For full-screen terminal apps (those using alternate screen mode, like vim, less, htop), scroll events are forwarded to the app instead.
+- By default, mouse scroll mode is enabled. Use `mod + s` to toggle between mouse scroll mode and text selection mode (where native terminal text selection works but scroll wheel goes through as arrow keys).
 - When quitting the Sidebar TUI, restarting the computer, and reopening the Sidebar TUI, the terminal sessions should be restored to their previous state as best we can, with comand history, working directory, scrollable visible history, env vars, and anything else we can manage to save and restore.
 - The following keybindings should work when the terminal pane is focused:
   - `mod + b` or `mod + t` - Sidebar: Focus on the sidebar pane.
   - `mod + n` - New: Enter create mode.
-  - `mod + s` - Toggle mouse mode: Toggle between text selection mode (native terminal selection works) and mouse scroll mode (scroll wheel works but text selection is blocked). The hint bar shows the current mode ("Text select" or "Mouse scroll").
+  - `mod + s` - Toggle mouse mode: Toggle between mouse scroll mode (scroll wheel scrolls terminal history; enabled by default) and text selection mode (native terminal text selection works but scroll goes through as arrow keys). The hint bar shows the current mode ("Mouse scroll" or "Text select").
   - `mod + z` - Zoom: Toggle zoom mode. When zoomed, the sidebar is hidden and the terminal pane takes the full width of the TUI. This allows clean text selection of only terminal content (useful in editors like VSCode where selection otherwise includes sidebar borders and session names). Press `mod + z` again to unzoom (restore the sidebar). Pressing `mod + b` while zoomed also unzooms and focuses the sidebar. Entering create mode while zoomed also unzooms automatically. A timed hint bar message confirms the current state.
   - `mod + w` - Workspaces: Open the workspace overlay. (This keybinding works from any pane.)
 

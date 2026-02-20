@@ -1389,9 +1389,9 @@ mod tests {
     }
 
     #[test]
-    fn test_mouse_mode_default_is_false() {
+    fn test_mouse_mode_default_is_true() {
         let state = AppState::default();
-        assert!(!state.mouse_mode, "Default mouse mode should be false (text selection enabled)");
+        assert!(state.mouse_mode, "Default mouse mode should be true (scroll wheel enabled)");
     }
 
     // === Zoom Mode Tests ===

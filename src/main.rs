@@ -285,9 +285,12 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
-    // Initialize TUI without mouse capture so native text selection works by default.
-    // Users can enable mouse scroll mode with Ctrl+S.
+    // Initialize TUI with mouse capture enabled so scroll wheel scrolls terminal
+    // scrollback history rather than sending arrow keys to the shell.
+    // Users can disable mouse capture (for native text selection) with Ctrl+S.
     let mut ratatui_term = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)
+        .context("Failed to enable mouse capture")?;
 
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
 

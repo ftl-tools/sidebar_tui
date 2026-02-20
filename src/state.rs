@@ -486,7 +486,7 @@ impl Default for AppState {
             selected_index: 0,
             scroll_offset: 0,
             previous_session: None,
-            mouse_mode: false,
+            mouse_mode: true,
             zoomed: false,
             workspace_name: "Default".to_string(),
             workspaces: vec!["Default".to_string()],
