@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-const GITHUB_OWNER: &str = "melchiahmauck";
+const GITHUB_OWNER: &str = "ftl-tools";
 const GITHUB_REPO: &str = "sidebar_tui";
 const CACHE_FILE_NAME: &str = "update-check.json";
 const CHECK_INTERVAL: Duration = Duration::from_secs(86400); // 24 hours

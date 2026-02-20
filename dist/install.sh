@@ -2,14 +2,14 @@
 # Install sidebar-tui (sb) from GitHub Releases
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/melchiahmauck/sidebar_tui/main/dist/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ftl-tools/sidebar_tui/main/dist/install.sh | bash
 #
 # Downloads the pre-built binary for the current platform and installs it to
 # /usr/local/bin/sb or ~/.local/bin/sb if /usr/local/bin is not writable.
 
 set -euo pipefail
 
-GITHUB_OWNER="melchiahmauck"
+GITHUB_OWNER="ftl-tools"
 GITHUB_REPO="sidebar_tui"
 BIN_NAME="sb"
 

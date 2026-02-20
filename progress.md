@@ -119,3 +119,11 @@ Added `test_bd_list_performance_in_tui` E2E test to catch performance regression
 ## 2026-02-20 - Verification check found incomplete work
 
 All 414 unit tests and 84 E2E tests pass. Core TUI and all distribution requirements (CI/CD, self-update, npm, Homebrew, AUR, curl install, Windows TCP socket) are implemented. One spec gap found: the hint bar dynamic quit path bullet (objectives.md line 148 — "The right side of the hint bar should always show the path to quitting the TUI... update dynamically") lacks a dedicated E2E test. The spec requires "at least one E2E test... for each individual bullet point." The workspace overlay case is explicitly tested but terminal-focused ("ctrl + b → q Quit") and rename-mode ("esc → q Quit") states have no explicit E2E verification. Created sidebar_tui-qgqy to add test_hint_bar_dynamic_quit_path.
+
+## 2026-02-20 - Verification check found incomplete work
+
+All 85 E2E tests and 414 unit tests pass; no open bd issues. Three gaps found: (1) Missing E2E test for zoom + ctrl+b unzoom and focus sidebar (spec line 119) — sidebar_tui-87ia; (2) Missing E2E test for create mode while zoomed unzooms automatically (spec line 119) — sidebar_tui-s009; (3) GitHub org inconsistency — Homebrew formula uses `ftl-tools/sidebar_tui` for release download URLs but `src/updater.rs` and `dist/install.sh` use `melchiahmauck/sidebar_tui`, so one set of distribution artifacts would look for releases at the wrong repo — sidebar_tui-sx0z; (4) Missing E2E test for minimum terminal size 64x24 (spec line 39) — sidebar_tui-gyml.
+
+## 2026-02-20 - Fixed GitHub Org Inconsistency (sidebar_tui-sx0z)
+
+Fixed the GitHub org inconsistency where `src/updater.rs` and `dist/install.sh` used `melchiahmauck/sidebar_tui` for release URLs while the actual git remote and Homebrew formula use `ftl-tools/sidebar_tui`. Changed `GITHUB_OWNER` constant in `updater.rs` and both the comment URL and `GITHUB_OWNER` variable in `install.sh` to `ftl-tools`. All 414 lib tests pass. Closed sidebar_tui-sx0z.
