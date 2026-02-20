@@ -214,6 +214,12 @@ jobs:
                 cp "$bin_src" "${pkg_dir}/"
                 chmod +x "${pkg_dir}/sb" 2>/dev/null || true
               fi
+            elif [ -f "dist/${archive_base}.zip" ]; then
+              unzip -q "dist/${archive_base}.zip" -d dist/
+              bin_src=$(find "dist/${archive_base}" -name "sb.exe" | head -1)
+              if [ -n "$bin_src" ]; then
+                cp "$bin_src" "${pkg_dir}/"
+              fi
             fi
           done
 
