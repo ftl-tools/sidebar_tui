@@ -7969,3 +7969,104 @@ fn test_rename_session_confirm() {
 
     session.quit().expect("Failed to quit");
 }
+
+/// Test that running `bd list` inside the TUI terminal is not significantly slower
+/// than running it directly in a shell. This catches performance regressions in
+/// the PTY emulation/read loop.
+///
+/// If `bd` is not installed, this test skips gracefully.
+#[test]
+fn test_bd_list_performance_in_tui() {
+    let _timer = TestTimer::new("test_bd_list_performance_in_tui");
+
+    // Check if bd is available
+    let bd_check = std::process::Command::new("which")
+        .arg("bd")
+        .output();
+    match bd_check {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            eprintln!("bd is not installed, skipping performance test");
+            return;
+        }
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+    // Measure baseline time for `bd list` outside the TUI
+    let baseline_start = std::time::Instant::now();
+    let baseline_result = std::process::Command::new("bd")
+        .arg("list")
+        .current_dir(manifest_dir)
+        .output()
+        .expect("Failed to run bd list");
+    let baseline_duration = baseline_start.elapsed();
+
+    assert!(
+        baseline_result.status.success(),
+        "bd list should succeed outside the TUI. stderr: {}",
+        String::from_utf8_lossy(&baseline_result.stderr)
+    );
+
+    eprintln!("bd list baseline time: {:?}", baseline_duration);
+
+    // Now measure bd list inside the TUI
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+
+    // Wait for TUI to be ready and shell prompt to appear
+    std::thread::sleep(Duration::from_millis(1500));
+    session.read_and_parse().expect("Failed to read initial output");
+
+    // Use a sentinel echo to detect command completion
+    let sentinel = "BD_PERF_DONE_12345";
+    let command = format!("bd list && echo {}", sentinel);
+
+    let tui_start = std::time::Instant::now();
+    session.send(&command).expect("Failed to send command");
+    session.send_enter().expect("Failed to send enter");
+
+    // Give the TUI a generous timeout: 5x the baseline, minimum 15 seconds
+    let tui_timeout_ms = (baseline_duration.as_millis() as u64 * 5).max(15_000);
+    let appeared = wait_for_text(
+        &mut session.session,
+        &mut session.parser,
+        sentinel,
+        tui_timeout_ms,
+    );
+    let tui_duration = tui_start.elapsed();
+
+    eprintln!("bd list TUI time: {:?}", tui_duration);
+    eprintln!(
+        "Ratio: {:.1}x slower than baseline",
+        tui_duration.as_secs_f64() / baseline_duration.as_secs_f64().max(0.001)
+    );
+
+    assert!(
+        appeared,
+        "bd list did not complete in the TUI within {:?}. \
+        This indicates a serious performance regression in TUI PTY throughput. \
+        Baseline (direct shell) time was: {:?}",
+        Duration::from_millis(tui_timeout_ms),
+        baseline_duration
+    );
+
+    // Assert that the TUI does not add more than 10 seconds of overhead
+    // beyond the baseline. This catches cases where the TUI makes the command
+    // 10x+ slower than running it directly.
+    let max_overhead = Duration::from_secs(10);
+    let overhead = tui_duration.saturating_sub(baseline_duration);
+
+    assert!(
+        overhead <= max_overhead,
+        "bd list in TUI ({:?}) is too slow compared to direct execution ({:?}). \
+        Overhead: {:?} (max allowed: {:?}). \
+        This indicates a performance regression in the TUI PTY emulation loop.",
+        tui_duration,
+        baseline_duration,
+        overhead,
+        max_overhead
+    );
+
+    session.quit().expect("Failed to quit");
+}
