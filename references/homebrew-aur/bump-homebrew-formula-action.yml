@@ -1,0 +1,37 @@
+name: bump-homebrew-formula
+description: "Bump Homebrew formula after a new release"
+author: "@mislav"
+runs:
+  using: node20
+  main: "./lib/index.js"
+inputs:
+  formula-name:
+    description: The name of the Homebrew formula (defaults to lower-cased repository name)
+  formula-path:
+    description: The path to the Homebrew formula file (defaults to `Formula/<formula-name>.rb`)
+  tag-name:
+    description: The git tag name to bump the formula to (defaults to the currently pushed tag)
+  download-url:
+    description: The package download URL for the Homebrew formula (defaults to the release tarball)
+  download-sha256:
+    description: The SHA256 checksum of the archive at download-url (defaults to calculating it)
+  homebrew-tap:
+    description: The repository where the formula should be updated
+    default: Homebrew/homebrew-core
+  push-to:
+    description: An existing fork of the homebrew-tap repository where the edit should be pushed to (defaults to creating or reusing a personal fork)
+  base-branch:
+    description: The branch name in the homebrew-tap repository to update the formula in
+  create-pullrequest:
+    description: Set to a boolean value to either force or prohibit making a pull request to homebrew-tap
+  create-branch:
+    description: Set to a boolean value to either force or prohibit creating a separate branch on homebrew-tap
+  commit-message:
+    description: The git commit message template to use when updating the formula
+    default: |
+      {{formulaName}} {{version}}
+
+      Created by https://github.com/mislav/bump-homebrew-formula-action
+branding:
+  icon: box
+  color: orange
