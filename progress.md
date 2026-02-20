@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-20 - Added E2E Tests for Zoom Ctrl+B, Create Mode Unzoom, and Minimum Terminal Size (sidebar_tui-87ia, sidebar_tui-s009, sidebar_tui-gyml)
+
+Added three E2E tests to cover remaining spec gaps: `test_zoom_ctrl_b_unzooms_and_focuses_sidebar` verifies that pressing Ctrl+B while zoomed restores the sidebar and focuses it (border color 99); `test_zoom_create_mode_unzooms_automatically` verifies that pressing Ctrl+N while zoomed unzooms and shows create mode; `test_minimum_terminal_size_64x24` resizes the PTY to 64x24 via ptyprocess and sends SIGWINCH, then verifies the TUI renders without crashing. All 88 E2E tests and 414 lib tests pass. Closed sidebar_tui-87ia, sidebar_tui-s009, sidebar_tui-gyml.
+
 ## 2026-02-20 - Added E2E Test for Dynamic Hint Bar Quit Path (sidebar_tui-qgqy)
 
 Added `test_hint_bar_dynamic_quit_path` E2E test to verify the hint bar quit path updates dynamically per spec line 148. The test checks three states: (a) terminal focused → quit path shows "ctrl + b" and "q Quit", (b) rename mode → quit path shows "esc" and "q Quit" without the "ctrl + b" prefix, (c) sidebar focused → quit path shows "q Quit" without "ctrl + b → q Quit". All 85 E2E tests and 414 lib tests pass. Closed sidebar_tui-qgqy.

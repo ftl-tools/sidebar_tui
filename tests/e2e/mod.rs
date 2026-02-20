@@ -8139,3 +8139,200 @@ fn test_hint_bar_dynamic_quit_path() {
 
     session.quit().expect("Failed to quit");
 }
+
+/// Test that pressing Ctrl+B while zoomed unzooms and focuses the sidebar.
+/// Per spec line 119: "Pressing mod+b while zoomed also unzooms and focuses the sidebar."
+#[test]
+fn test_zoom_ctrl_b_unzooms_and_focuses_sidebar() {
+    let _timer = TestTimer::new("test_zoom_ctrl_b_unzooms_and_focuses_sidebar");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to create session");
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Create a session so terminal is focused
+    session.send("n").expect("Failed to send n");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send("t").expect("Failed to send t");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify sidebar is visible before zooming
+    let pre_zoom = session.screen_contents();
+    assert!(
+        pre_zoom.contains("Default"),
+        "Sidebar should show 'Default' workspace before zooming. Got:\n{}", pre_zoom
+    );
+
+    // Press Ctrl+Z to enter zoom mode
+    session.send_ctrl_z().expect("Failed to send Ctrl+Z");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let zoomed_screen = session.screen_contents();
+    eprintln!("Zoomed screen:\n{}", zoomed_screen);
+    assert!(
+        !zoomed_screen.contains("Default"),
+        "Sidebar should be hidden when zoomed. Got:\n{}", zoomed_screen
+    );
+
+    // Press Ctrl+B while zoomed — should unzoom AND focus the sidebar
+    session.send_ctrl_b().expect("Failed to send Ctrl+B");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Poll until sidebar reappears (timed Unzoomed message clears, Default visible)
+    let mut sidebar_visible = false;
+    for _ in 0..25 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        if screen.contains("Default") {
+            sidebar_visible = true;
+            eprintln!("Sidebar restored after Ctrl+B while zoomed:\n{}", screen);
+            break;
+        }
+    }
+    assert!(
+        sidebar_visible,
+        "Sidebar should be visible after Ctrl+B while zoomed. Got:\n{}",
+        session.screen_contents()
+    );
+
+    // Verify sidebar is focused (border should be purple = color 99)
+    let mut sidebar_focused = false;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        if let Some(sidebar_corner) = session.cell_at(0, 0) {
+            let sidebar_fg = sidebar_corner.fgcolor();
+            eprintln!("Sidebar border color after Ctrl+B unzoom: {:?}", sidebar_fg);
+            if matches!(sidebar_fg, vt100::Color::Idx(99)) {
+                sidebar_focused = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        sidebar_focused,
+        "Sidebar border should be purple (99) — focused — after Ctrl+B unzoom"
+    );
+
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that entering create mode while zoomed automatically unzooms.
+/// Per spec line 119: "Entering create mode while zoomed also unzooms automatically."
+#[test]
+fn test_zoom_create_mode_unzooms_automatically() {
+    let _timer = TestTimer::new("test_zoom_create_mode_unzooms_automatically");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to create session");
+
+    // Wait for TUI to initialize
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Create a session so terminal is focused
+    session.send("n").expect("Failed to send n");
+    std::thread::sleep(Duration::from_millis(200));
+    session.send("t").expect("Failed to send t");
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Verify sidebar is visible before zooming
+    let pre_zoom = session.screen_contents();
+    assert!(
+        pre_zoom.contains("Default"),
+        "Sidebar should show 'Default' before zooming. Got:\n{}", pre_zoom
+    );
+
+    // Press Ctrl+Z to zoom
+    session.send_ctrl_z().expect("Failed to send Ctrl+Z");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    let zoomed_screen = session.screen_contents();
+    eprintln!("Zoomed screen:\n{}", zoomed_screen);
+    assert!(
+        !zoomed_screen.contains("Default"),
+        "Sidebar should be hidden when zoomed. Got:\n{}", zoomed_screen
+    );
+
+    // Press Ctrl+N to enter create mode — this should unzoom automatically
+    session.session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N = ASCII 14
+    session.session.flush().expect("Failed to flush");
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Poll until sidebar reappears (create mode unzooms and shows drafting UI)
+    let mut sidebar_visible = false;
+    for _ in 0..25 {
+        std::thread::sleep(Duration::from_millis(200));
+        session.read_and_parse().expect("Failed to read output");
+        let screen = session.screen_contents();
+        eprintln!("Create-mode-while-zoomed screen poll:\n{}", screen);
+        if screen.contains("Default") {
+            sidebar_visible = true;
+            eprintln!("Sidebar restored by create mode:\n{}", screen);
+            break;
+        }
+    }
+    assert!(
+        sidebar_visible,
+        "Sidebar should be visible after entering create mode while zoomed. Got:\n{}",
+        session.screen_contents()
+    );
+
+    // Cancel create mode and quit cleanly
+    session.send_esc().expect("Failed to send Esc");
+    std::thread::sleep(Duration::from_millis(200));
+    session.quit().expect("Failed to quit");
+}
+
+/// Test that the TUI works at the minimum supported terminal size of 64x24.
+/// Per spec line 39: "The minimum supported terminal size is 64 characters wide by 24 characters tall."
+#[test]
+fn test_minimum_terminal_size_64x24() {
+    let _timer = TestTimer::new("test_minimum_terminal_size_64x24");
+    let env = TestEnv::setup();
+    let mut session = SbSession::new(&env).expect("Failed to create session");
+
+    // Wait for initial render at default 80x24
+    std::thread::sleep(Duration::from_millis(500));
+    session.read_and_parse().expect("Failed to read output");
+
+    // Resize the PTY to the minimum supported size: 64 columns x 24 rows
+    session.session.get_process_mut().set_window_size(64, 24)
+        .expect("Failed to resize PTY to 64x24");
+
+    // Send SIGWINCH so the TUI re-reads the terminal size
+    let pid = session.session.get_process_mut().pid().as_raw();
+    let _ = std::process::Command::new("kill")
+        .args(["-WINCH", &pid.to_string()])
+        .output();
+
+    // Update our vt100 parser to match the new size
+    session.parser = vt100::Parser::new(24, 64, 0);
+
+    // Wait for the TUI to handle the resize and re-render
+    std::thread::sleep(Duration::from_millis(600));
+    session.read_and_parse().expect("Failed to read output");
+
+    let screen = session.screen_contents();
+    eprintln!("Screen at 64x24:\n{}", screen);
+
+    // The TUI should still be alive and showing the sidebar
+    assert!(
+        !screen.is_empty(),
+        "TUI should render something at 64x24 minimum size. Got empty screen."
+    );
+    assert!(
+        screen.contains("Default"),
+        "Sidebar should show 'Default' workspace at 64x24 minimum size. Got:\n{}", screen
+    );
+
+    session.quit().expect("Failed to quit");
+}
