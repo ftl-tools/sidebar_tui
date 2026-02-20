@@ -8,7 +8,20 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use std::net::{TcpListener, TcpStream};
+
+/// Platform-specific IPC stream type (UnixStream on Unix, TcpStream on Windows).
+#[cfg(unix)]
+pub type IpcStream = UnixStream;
+#[cfg(unix)]
+type IpcListener = UnixListener;
+#[cfg(windows)]
+pub type IpcStream = TcpStream;
+#[cfg(windows)]
+type IpcListener = TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -465,10 +478,24 @@ pub fn get_runtime_dir() -> PathBuf {
     if let Ok(dir) = env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(dir).join("sidebar-tui");
     }
+    platform_default_runtime_dir()
+}
 
+#[cfg(unix)]
+fn platform_default_runtime_dir() -> PathBuf {
     // Fall back to /tmp/sidebar-tui-{uid}
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/tmp/sidebar-tui-{}", uid))
+}
+
+#[cfg(windows)]
+fn platform_default_runtime_dir() -> PathBuf {
+    // Use %LOCALAPPDATA%\sidebar-tui\runtime or fallback to %TEMP%
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        return PathBuf::from(local).join("sidebar-tui").join("runtime");
+    }
+    PathBuf::from(env::var("TEMP").unwrap_or_else(|_| r"C:\Windows\Temp".to_string()))
+        .join("sidebar-tui")
 }
 
 /// Get the data directory for persistent storage (survives reboots).
@@ -492,9 +519,47 @@ pub fn get_sessions_dir() -> PathBuf {
     get_data_dir().join("sessions")
 }
 
-/// Get the socket path for the daemon.
+/// Get the socket path for the daemon (Unix) or port lockfile path (Windows).
 pub fn get_socket_path() -> PathBuf {
-    get_runtime_dir().join("daemon.sock")
+    #[cfg(unix)]
+    return get_runtime_dir().join("daemon.sock");
+    #[cfg(windows)]
+    return get_runtime_dir().join("daemon.port");
+}
+
+/// Read the daemon TCP port from the lockfile (Windows only).
+#[cfg(windows)]
+fn read_daemon_port(lockfile: &Path) -> io::Result<u16> {
+    let content = fs::read_to_string(lockfile)?;
+    content.trim().parse::<u16>().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid port in lockfile: {}", e))
+    })
+}
+
+/// Write the daemon TCP port to the lockfile (Windows only).
+#[cfg(windows)]
+fn write_daemon_port(lockfile: &Path, port: u16) -> Result<()> {
+    fs::write(lockfile, port.to_string())
+        .context("Failed to write daemon port lockfile")?;
+    Ok(())
+}
+
+/// Check if a daemon is running at the given socket/lockfile path.
+fn is_daemon_running(socket_path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        if !socket_path.exists() {
+            return false;
+        }
+        UnixStream::connect(socket_path).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        match read_daemon_port(socket_path) {
+            Ok(port) => TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok(),
+            Err(_) => false,
+        }
+    }
 }
 
 /// Ensure the runtime directory exists with proper permissions.
@@ -1094,11 +1159,7 @@ impl Daemon {
 
     /// Check if a daemon is already running.
     pub fn is_running(&self) -> bool {
-        if !self.socket_path.exists() {
-            return false;
-        }
-        // Try to connect to see if there's actually a daemon listening
-        UnixStream::connect(&self.socket_path).is_ok()
+        is_daemon_running(&self.socket_path)
     }
 
     /// Signal the daemon to shut down.
@@ -1113,6 +1174,11 @@ impl Daemon {
 
     /// Start the daemon and listen for connections.
     pub fn run(&self) -> Result<()> {
+        self.run_platform()
+    }
+
+    #[cfg(unix)]
+    fn run_platform(&self) -> Result<()> {
         ensure_runtime_dir()?;
 
         // Remove stale socket file if it exists
@@ -1136,7 +1202,13 @@ impl Daemon {
 
         while !self.should_shutdown() {
             match listener.accept() {
-                Ok((stream, _addr)) => {
+                Ok((mut stream, _addr)) => {
+                    // Configure stream before passing to handler thread:
+                    // accepted sockets inherit non-blocking mode from the listener.
+                    stream.set_nonblocking(false)
+                        .context("Failed to set stream to blocking mode")?;
+                    stream.set_read_timeout(Some(Duration::from_millis(50)))
+                        .context("Failed to set stream read timeout")?;
                     let sessions = Arc::clone(&self.sessions);
                     let workspaces = Arc::clone(&self.workspaces);
                     let active_workspace = Arc::clone(&self.active_workspace);
@@ -1161,6 +1233,59 @@ impl Daemon {
         if self.socket_path.exists() {
             let _ = fs::remove_file(&self.socket_path);
         }
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn run_platform(&self) -> Result<()> {
+        ensure_runtime_dir()?;
+
+        // Bind to a random port assigned by the OS
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .context("Failed to bind TCP listener")?;
+        let port = listener.local_addr()
+            .context("Failed to get local address")?.port();
+
+        // Write port to lockfile so clients can discover us
+        write_daemon_port(&self.socket_path, port)?;
+
+        // Set non-blocking so we can check for shutdown
+        listener.set_nonblocking(true)
+            .context("Failed to set listener to non-blocking")?;
+
+        // Set up signal handler for graceful shutdown
+        self.setup_signal_handler()?;
+
+        while !self.should_shutdown() {
+            match listener.accept() {
+                Ok((mut stream, _addr)) => {
+                    stream.set_nonblocking(false)
+                        .context("Failed to set stream to blocking mode")?;
+                    stream.set_read_timeout(Some(Duration::from_millis(50)))
+                        .context("Failed to set stream read timeout")?;
+                    let sessions = Arc::clone(&self.sessions);
+                    let workspaces = Arc::clone(&self.workspaces);
+                    let active_workspace = Arc::clone(&self.active_workspace);
+                    let shutdown = Arc::clone(&self.shutdown);
+                    thread::spawn(move || {
+                        if let Err(e) = handle_client(stream, sessions, workspaces, active_workspace, shutdown) {
+                            eprintln!("Error handling client: {:?}", e);
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // No connection ready, sleep briefly and check shutdown
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    eprintln!("Error accepting connection: {:?}", e);
+                }
+            }
+        }
+
+        // Clean up port lockfile on exit
+        let _ = fs::remove_file(&self.socket_path);
 
         Ok(())
     }
@@ -1347,19 +1472,14 @@ impl Default for Daemon {
 }
 
 /// Handle a client connection.
+/// The stream must already be configured (blocking, read timeout set) by the caller.
 fn handle_client(
-    mut stream: UnixStream,
+    mut stream: IpcStream,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     workspaces: Arc<Mutex<HashMap<String, WorkspaceMetadata>>>,
     active_workspace: Arc<Mutex<String>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
-    // The listener is non-blocking, so accepted sockets inherit that.
-    // We need to set blocking mode first, then set a read timeout.
-    stream.set_nonblocking(false)
-        .context("Failed to set blocking mode")?;
-    stream.set_read_timeout(Some(Duration::from_millis(50)))
-        .context("Failed to set read timeout")?;
 
     let mut current_session: Option<String> = None;
 
@@ -2042,12 +2162,12 @@ impl MessageReader {
 }
 
 /// Read a message from the stream.
-fn read_message(stream: &mut UnixStream) -> io::Result<ClientMessage> {
+fn read_message(stream: &mut IpcStream) -> io::Result<ClientMessage> {
     decode_message(stream)
 }
 
 /// Send a response to the client.
-fn send_response(stream: &mut UnixStream, response: &DaemonResponse) -> Result<()> {
+fn send_response(stream: &mut IpcStream, response: &DaemonResponse) -> Result<()> {
     let encoded = encode_message(response)?;
     stream.write_all(&encoded).context("Failed to write response")?;
     stream.flush().context("Failed to flush response")?;
@@ -2056,7 +2176,7 @@ fn send_response(stream: &mut UnixStream, response: &DaemonResponse) -> Result<(
 
 /// Client handle for connecting to the daemon.
 pub struct DaemonClient {
-    stream: UnixStream,
+    stream: IpcStream,
 }
 
 impl DaemonClient {
@@ -2066,10 +2186,21 @@ impl DaemonClient {
         Self::connect_to(&socket_path)
     }
 
-    /// Connect to a daemon at a specific socket path.
+    /// Connect to a daemon at the given path.
+    /// On Unix: connects to the Unix domain socket at `socket_path`.
+    /// On Windows: reads the TCP port from the lockfile at `socket_path` and
+    /// connects to `127.0.0.1:{port}`.
     pub fn connect_to(socket_path: &Path) -> Result<Self> {
+        #[cfg(unix)]
         let stream = UnixStream::connect(socket_path)
             .context("Failed to connect to daemon")?;
+        #[cfg(windows)]
+        let stream = {
+            let port = read_daemon_port(socket_path)
+                .context("Failed to read daemon port from lockfile")?;
+            TcpStream::connect(format!("127.0.0.1:{}", port))
+                .context("Failed to connect to daemon via TCP")?
+        };
         Ok(Self { stream })
     }
 
@@ -2505,10 +2636,17 @@ mod tests {
     fn test_get_socket_path_format() {
         let path = get_socket_path();
         let path_str = path.to_string_lossy();
-        // Should end with "daemon.sock"
+        // Should end with "daemon.sock" on Unix, "daemon.port" on Windows
+        #[cfg(unix)]
         assert!(
             path_str.ends_with("daemon.sock"),
             "Socket path should end with 'daemon.sock': {}",
+            path_str
+        );
+        #[cfg(windows)]
+        assert!(
+            path_str.ends_with("daemon.port"),
+            "Lockfile path should end with 'daemon.port': {}",
             path_str
         );
     }

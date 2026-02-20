@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::Write as IoWrite;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -18,7 +21,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use sidebar_tui::daemon::{
-    self, ClientMessage, DaemonClient, DaemonResponse, MessageReader, get_socket_path,
+    self, ClientMessage, DaemonClient, DaemonResponse, IpcStream, MessageReader, get_socket_path,
     ensure_runtime_dir, decode_message, encode_message,
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
@@ -263,10 +266,20 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     // Ensure daemon is running
     ensure_daemon_running()?;
 
-    // Connect to daemon
+    // Connect to daemon: on Unix use Unix socket, on Windows use TCP via lockfile port.
     let socket_path = get_socket_path();
-    let mut stream = UnixStream::connect(&socket_path)
+    #[cfg(unix)]
+    let mut stream: IpcStream = UnixStream::connect(&socket_path)
         .context("Failed to connect to daemon")?;
+    #[cfg(windows)]
+    let mut stream: IpcStream = {
+        let port = std::fs::read_to_string(&socket_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to read daemon port from lockfile"))?;
+        TcpStream::connect(format!("127.0.0.1:{}", port))
+            .context("Failed to connect to daemon via TCP")?
+    };
 
     // Set read timeout for non-blocking reads
     stream.set_read_timeout(Some(Duration::from_millis(1)))
@@ -296,7 +309,7 @@ fn ensure_daemon_running() -> Result<()> {
     let socket_path = get_socket_path();
 
     // Try to connect to see if daemon is already running
-    if UnixStream::connect(&socket_path).is_ok() {
+    if daemon_is_reachable(&socket_path) {
         return Ok(());
     }
 
@@ -305,13 +318,31 @@ fn ensure_daemon_running() -> Result<()> {
 
     // Wait for daemon to be ready
     for _ in 0..50 {
-        if UnixStream::connect(&socket_path).is_ok() {
+        if daemon_is_reachable(&socket_path) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
 
     bail!("Daemon failed to start within timeout")
+}
+
+/// Check if the daemon is reachable at the given socket/lockfile path.
+#[cfg(unix)]
+fn daemon_is_reachable(socket_path: &std::path::Path) -> bool {
+    UnixStream::connect(socket_path).is_ok()
+}
+
+#[cfg(windows)]
+fn daemon_is_reachable(socket_path: &std::path::Path) -> bool {
+    use std::fs;
+    let port = fs::read_to_string(socket_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    match port {
+        Some(p) => TcpStream::connect(format!("127.0.0.1:{}", p)).is_ok(),
+        None => false,
+    }
 }
 
 /// Start the daemon as a background process.
@@ -418,7 +449,7 @@ impl DaemonApp {
 }
 
 /// Helper to send a message to the daemon and read the response.
-fn send_daemon_message(stream: &mut UnixStream, msg: ClientMessage) -> Result<DaemonResponse> {
+fn send_daemon_message(stream: &mut IpcStream, msg: ClientMessage) -> Result<DaemonResponse> {
     let encoded = encode_message(&msg)?;
     stream.write_all(&encoded)?;
     stream.flush()?;
@@ -437,7 +468,7 @@ fn send_daemon_message(stream: &mut UnixStream, msg: ClientMessage) -> Result<Da
 /// this, `send_daemon_message` would return an Output message instead of the expected
 /// response, causing session switches to silently fail and session A content to bleed
 /// into session B's terminal.
-fn send_daemon_message_sync(stream: &mut UnixStream, msg: ClientMessage, app: &mut DaemonApp) -> Result<DaemonResponse> {
+fn send_daemon_message_sync(stream: &mut IpcStream, msg: ClientMessage, app: &mut DaemonApp) -> Result<DaemonResponse> {
     let encoded = encode_message(&msg)?;
     stream.write_all(&encoded)?;
     stream.flush()?;
@@ -468,7 +499,7 @@ fn send_daemon_message_sync(stream: &mut UnixStream, msg: ClientMessage, app: &m
 /// Returns Ok(()) on success, or an error if reading fails.
 fn drain_async_messages(
     msg_reader: &mut MessageReader,
-    stream: &mut UnixStream,
+    stream: &mut IpcStream,
     app: &mut DaemonApp,
 ) -> Result<()> {
     use std::io;
@@ -553,7 +584,7 @@ enum MainLoopDrainResult {
 /// like pasting, where many Output messages arrive in quick succession.
 fn drain_main_loop_messages(
     msg_reader: &mut MessageReader,
-    stream: &mut UnixStream,
+    stream: &mut IpcStream,
     app: &mut DaemonApp,
     term_rows: u16,
     term_cols: u16,
@@ -632,7 +663,7 @@ fn handle_main_loop_response(
 /// If requested_session is Some, will attach to that session (creating if needed).
 fn run_attached(
     ratatui_term: &mut DefaultTerminal,
-    stream: &mut UnixStream,
+    stream: &mut IpcStream,
     requested_session: Option<&str>,
 ) -> Result<()> {
     // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
