@@ -26,6 +26,7 @@ The general requirements are as follows:
 A workspace is a named container that groups terminal sessions and saves view/layout state. Every session belongs to exactly one workspace. Workspaces allow you to organize sessions by project, context, or any other grouping that makes sense to you.
 
 Key properties of workspaces:
+
 - Every session belongs to exactly one workspace. Sessions cannot be shared across workspaces.
 - Background sessions in other workspaces keep running when you switch — they are just hidden.
 - Each workspace saves its full view state: which session was last selected, which pane was focused, scroll position of the sidebar list, and scroll position of each session's terminal history. This state is restored when you switch back to the workspace.
@@ -65,7 +66,7 @@ Key properties of workspaces:
   │ Terminal Session         ││                                                                      │
   │ ...                      ││                                                                      │
   └──────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
-  ctrl + n New  ctrl + b Sidebar                                                │ ctrl + b -> q Quit
+   ctrl + n New  ctrl + b Sidebar                                                │ ctrl + b -> q Quit
   ```
 - On Mac, Windows, and Linux we use `ctrl` for the modifier key. This might change in the future, so below we refer to this as `mod`. In the TUI though we should show the actual keybinding. (Down the road if we vary this based on OS or if we allow users to customize it we whould still show the actual keybinding.)
 
@@ -161,6 +162,7 @@ The workspace overlay is a full-screen view that replaces the sidebar and termin
 **Layout:**
 
 The overlay covers the entire main area (sidebar + terminal panes area). It shows:
+
 - A title row at the top: "Workspaces" in purple text (color 99), left aligned with one char of left padding.
 - A list of all workspaces below the title, one per row, in white (color 255). The currently active workspace is marked with a `*` indicator to the left of its name.
 - The selected/highlighted workspace row has a dark grey background (color 238), same as selected sessions in the sidebar.
@@ -168,6 +170,7 @@ The overlay covers the entire main area (sidebar + terminal panes area). It show
 - The hint bar at the bottom shows the available keybindings for the overlay (see below).
 
 **Normal mode keybindings:**
+
 - `↑` / `k` - Up: Move the selection up one workspace.
 - `↓` / `j` - Down: Move the selection down one workspace.
 - `enter` - Switch: Switch to the selected workspace. Close the overlay and restore the workspace's last saved state (last focused pane, last selected session, scroll positions, etc.).
@@ -180,6 +183,7 @@ The overlay covers the entire main area (sidebar + terminal panes area). It show
 **Move-to-workspace mode:**
 
 When triggered by pressing `m` in the sidebar, the workspace overlay opens in move mode. The title row changes to "Move to Workspace" in purple. The behavior is identical to normal mode except:
+
 - `enter` - Move: Move the currently selected session (from the sidebar) to the highlighted workspace. If the selected workspace is the current workspace, do nothing. Close the overlay and return focus to the sidebar.
 - `esc` - Cancel: Close the overlay and return focus to the sidebar without moving anything.
 - Creating, renaming, and deleting workspaces are not available in move mode.
@@ -191,6 +195,38 @@ When the workspace overlay is open, the right side of the hint bar should show `
 **Persistence:**
 
 The workspace's saved state (last focused pane, last selected session, scroll position of each session's terminal history, sidebar scroll position) is persisted to disk and restored when the TUI is reopened, same as sessions.
+
+## Distribution
+
+### Releases
+- Feature branches → PRs → `main`; CI runs tests on every PR
+- Release by pushing a version tag: `git tag v0.2.0 && git push --tags`
+- GitHub Actions builds all platform binaries, creates a GitHub Release, publishes to npm
+
+### Updates
+- Binary checks GitHub Releases API once per day (cached) and self-updates on next run (`self_update` crate)
+- If installed via Homebrew, skip self-update and print: `"sb v0.2.0 available — run 'brew upgrade sb' to update"`
+
+### Windows
+- Daemon IPC: TCP on localhost (`127.0.0.1:PORT`, port stored in a lockfile) replacing Unix socket
+- Supported from initial release
+
+### Install methods
+| Method | Command |
+|---|---|
+| curl | `curl -fsSL https://... \| bash` |
+| Homebrew | `brew install <tap>/sb` |
+| npm | `npm install -g sidebar-tui` |
+| bun | `bun add -g sidebar-tui` |
+| AUR | `paru -S sidebar-tui` |
+
+### One-time manual setup (human required)
+| Task | Why it can't be automated |
+|---|---|
+| Make the GitHub repo public | Requires GitHub account action |
+| Create an npm account + generate publish token | External account |
+| Create an AUR account + upload SSH public key | External account, SSH key pair |
+| Create a GitHub PAT and add secrets to repo settings | `NPM_TOKEN`, `AUR_SSH_PRIVATE_KEY`, `HOMEBREW_TAP_GITHUB_TOKEN` |
 
 ## Order
 
