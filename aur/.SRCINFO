@@ -1,0 +1,17 @@
+pkgbase = sidebar-tui-bin
+	pkgdesc = TUI for managing terminal sessions in a sidebar
+	pkgver = 0.1.9
+	pkgrel = 1
+	url = https://github.com/ftl-tools/sidebar_tui
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	provides = sidebar-tui
+	provides = sb
+	conflicts = sidebar-tui
+	source_x86_64 = sb-v0.1.9-x86_64-unknown-linux-musl.tar.gz::https://github.com/ftl-tools/sidebar_tui/releases/download/v0.1.9/sb-v0.1.9-x86_64-unknown-linux-musl.tar.gz
+	sha256sums_x86_64 = PLACEHOLDER_LINUX_X64_SHA256
+	source_aarch64 = sb-v0.1.9-aarch64-unknown-linux-musl.tar.gz::https://github.com/ftl-tools/sidebar_tui/releases/download/v0.1.9/sb-v0.1.9-aarch64-unknown-linux-musl.tar.gz
+	sha256sums_aarch64 = PLACEHOLDER_LINUX_ARM64_SHA256
+
+pkgname = sidebar-tui-bin

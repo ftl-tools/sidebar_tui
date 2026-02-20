@@ -226,7 +226,8 @@ The workspace's saved state (last focused pane, last selected session, scroll po
 | Make the GitHub repo public | Requires GitHub account action |
 | Create an npm account + generate publish token | External account |
 | Create an AUR account + upload SSH public key | External account, SSH key pair |
-| Create a GitHub PAT and add secrets to repo settings | `NPM_TOKEN`, `AUR_SSH_PRIVATE_KEY`, `HOMEBREW_TAP_GITHUB_TOKEN` |
+| Create `ftl-tools/homebrew-sidebar-tui` GitHub repo (the Homebrew tap) | Requires GitHub account action; the repo must exist before CI can push to it |
+| Create a GitHub PAT and add secrets to repo settings | `NPM_TOKEN`, `AUR_SSH_PRIVATE_KEY`, `AUR_USERNAME`, `AUR_EMAIL`, `HOMEBREW_TAP_GITHUB_TOKEN` |
 
 ## Order
 

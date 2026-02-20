@@ -1,0 +1,22 @@
+# Maintainer: ftl-tools <https://github.com/ftl-tools>
+# This file is automatically updated by the release workflow. Do not edit manually.
+
+pkgname=sidebar-tui-bin
+pkgver=0.1.9
+pkgrel=1
+pkgdesc="TUI for managing terminal sessions in a sidebar"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ftl-tools/sidebar_tui"
+license=('MIT')
+provides=('sidebar-tui' 'sb')
+conflicts=('sidebar-tui')
+
+source_x86_64=("sb-v${pkgver}-x86_64-unknown-linux-musl.tar.gz::https://github.com/ftl-tools/sidebar_tui/releases/download/v${pkgver}/sb-v${pkgver}-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("sb-v${pkgver}-aarch64-unknown-linux-musl.tar.gz::https://github.com/ftl-tools/sidebar_tui/releases/download/v${pkgver}/sb-v${pkgver}-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('PLACEHOLDER_LINUX_X64_SHA256')
+sha256sums_aarch64=('PLACEHOLDER_LINUX_ARM64_SHA256')
+
+package() {
+  cd "${srcdir}/sb-v${pkgver}-${CARCH}-unknown-linux-musl"
+  install -Dm755 "sb" "$pkgdir/usr/bin/sb"
+}

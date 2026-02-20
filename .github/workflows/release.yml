@@ -263,3 +263,165 @@ jobs:
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
           gh release edit "$VERSION" --draft=false --repo=${{ github.repository }}
+
+  # ──────────────────────────────────────────────────
+  # Job 5: Update Homebrew tap formula
+  # Requires: HOMEBREW_TAP_GITHUB_TOKEN secret (PAT with repo+workflow scopes
+  #   on the ftl-tools/homebrew-sidebar-tui tap repo)
+  # ──────────────────────────────────────────────────
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: [create-release, build-release, publish-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release asset checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          mkdir -p dist
+          # Download only the .sha256 files (small, no need for full binaries)
+          gh release download "$VERSION" --dir dist --pattern "*.sha256"
+
+      - name: Generate Homebrew formula
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Parse sha256 files (shasum -a 256 format: "<hash>  <filename>")
+          MACOS_ARM64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-aarch64-apple-darwin.tar.gz.sha256")
+          MACOS_X64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-x86_64-apple-darwin.tar.gz.sha256")
+          LINUX_ARM64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-aarch64-unknown-linux-musl.tar.gz.sha256")
+          LINUX_X64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-x86_64-unknown-linux-musl.tar.gz.sha256")
+
+          # Strip leading 'v' for the version field
+          VER="${VERSION#v}"
+          REPO="https://github.com/${{ github.repository }}"
+
+          cat > homebrew/Formula/sb.rb <<FORMULA
+          class Sb < Formula
+            desc "TUI for managing terminal sessions in a sidebar"
+            homepage "${REPO}"
+            version "${VER}"
+            license "MIT"
+
+            if OS.mac?
+              if Hardware::CPU.arm?
+                url "${REPO}/releases/download/${VERSION}/sb-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${MACOS_ARM64_SHA}"
+              end
+              if Hardware::CPU.intel?
+                url "${REPO}/releases/download/${VERSION}/sb-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${MACOS_X64_SHA}"
+              end
+            end
+            if OS.linux?
+              if Hardware::CPU.arm?
+                url "${REPO}/releases/download/${VERSION}/sb-${VERSION}-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${LINUX_ARM64_SHA}"
+              end
+              if Hardware::CPU.intel?
+                url "${REPO}/releases/download/${VERSION}/sb-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${LINUX_X64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "sb"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/sb --version")
+            end
+          end
+          FORMULA
+
+      - name: Push formula to Homebrew tap repo
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/ftl-tools/homebrew-sidebar-tui.git" tap-repo
+          mkdir -p tap-repo/Formula
+          cp homebrew/Formula/sb.rb tap-repo/Formula/sb.rb
+
+          cd tap-repo
+          git add Formula/sb.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "Update sb to ${VERSION}"
+            git push
+          fi
+
+  # ──────────────────────────────────────────────────
+  # Job 6: Publish AUR package
+  # Requires: AUR_SSH_PRIVATE_KEY, AUR_USERNAME, AUR_EMAIL secrets
+  # One-time setup: create AUR account, upload SSH public key,
+  #   create 'sidebar-tui-bin' AUR package on first release.
+  # ──────────────────────────────────────────────────
+  publish-aur:
+    name: Publish to AUR
+    needs: [create-release, build-release, publish-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release asset checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          mkdir -p dist
+          gh release download "$VERSION" --dir dist --pattern "*.sha256"
+
+      - name: Generate PKGBUILD
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          VER="${VERSION#v}"
+
+          # Parse sha256 files (shasum -a 256 format: "<hash>  <filename>")
+          LINUX_X64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-x86_64-unknown-linux-musl.tar.gz.sha256")
+          LINUX_ARM64_SHA=$(awk '{print $1}' "dist/sb-${VERSION}-aarch64-unknown-linux-musl.tar.gz.sha256")
+
+          REPO="https://github.com/${{ github.repository }}"
+
+          cat > aur/PKGBUILD <<PKGBUILD
+          # Maintainer: ftl-tools <${REPO}>
+          # This file is automatically updated by the release workflow. Do not edit manually.
+
+          pkgname=sidebar-tui-bin
+          pkgver=${VER}
+          pkgrel=1
+          pkgdesc="TUI for managing terminal sessions in a sidebar"
+          arch=('x86_64' 'aarch64')
+          url="${REPO}"
+          license=('MIT')
+          provides=('sidebar-tui' 'sb')
+          conflicts=('sidebar-tui')
+
+          source_x86_64=("sb-${VERSION}-x86_64-unknown-linux-musl.tar.gz::${REPO}/releases/download/${VERSION}/sb-${VERSION}-x86_64-unknown-linux-musl.tar.gz")
+          source_aarch64=("sb-${VERSION}-aarch64-unknown-linux-musl.tar.gz::${REPO}/releases/download/${VERSION}/sb-${VERSION}-aarch64-unknown-linux-musl.tar.gz")
+          sha256sums_x86_64=('${LINUX_X64_SHA}')
+          sha256sums_aarch64=('${LINUX_ARM64_SHA}')
+
+          package() {
+            cd "\${srcdir}/sb-${VERSION}-\${CARCH}-unknown-linux-musl"
+            install -Dm755 "sb" "\$pkgdir/usr/bin/sb"
+          }
+          PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: sidebar-tui-bin
+          pkgbuild: ./aur/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.create-release.outputs.version }}"
+          force_push: 'true'
