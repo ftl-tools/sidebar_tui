@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-20 - Planned VitePress Website (sidebar_tui-wzkn)
+
+Planned the sidebar-tui marketing/docs website using VitePress. Evaluated 10 possible directions and chose a minimal VitePress site with a video hero (using a terminal recording tool) and a code group for install methods. Created two research issues that must be completed before implementation: sidebar_tui-kx7y (VitePress home page, video hero, code groups, GitHub Pages deploy) and sidebar_tui-6kbp (terminal recording tools — VHS, asciinema, and alternatives). Closed sidebar_tui-wzkn.
+
 ## 2026-02-16 through 2026-02-18 - Compressed History (Early Work, Core Features, Bug Fixes)
 
 Through 2026-02-18, the core TUI was built up from initial work with E2E test stability hardening, and the complete workspace data model was implemented with full CRUD operations, sidebar header, and overlay. Several bugs were fixed including delete-last-workspace (daemon auto-creates "Default"), move-to-same-workspace no-op, mouse scroll (history vs alt-screen detection), and the hint bar dynamic height layout that was incorrectly cutting off terminal content at narrow widths. Features added include env var inheritance E2E test, timed messages for mouse mode toggle, correct color scheme (ANSI 99 purple throughout), workspace overlay changed from popup to full-screen, inline workspace create/rename, session name live-wrapping while typing in create/rename mode, and zoom mode (`ctrl+z`) for clean text selection. At the end of this period, 410 lib tests and 80 E2E tests were passing, with agent session type (`a` in create mode running `claude`) as the only remaining core spec gap.

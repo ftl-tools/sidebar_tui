@@ -1,6 +1,6 @@
 ---
 name: kang-realigner
-description: Between-iteration hygiene agent. Dispatched every 7th iteration. Sanitizes progress entries that justify skipping work, compresses old log entries, runs system tests, checks test coverage gaps, and commits all changes.
+description: Between-iteration hygiene agent. Dispatched every 10th, 20th, 30th, etc... iteration, and just before final verification. Sanitizes progress entries that justify skipping work, compresses old log entries, runs system tests, checks test coverage gaps, and commits all changes.
 kang_agent: true
 ---
 
