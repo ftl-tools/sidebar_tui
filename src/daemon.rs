@@ -1202,18 +1202,25 @@ impl Daemon {
 
         while !self.should_shutdown() {
             match listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    // Configure stream before passing to handler thread:
-                    // accepted sockets inherit non-blocking mode from the listener.
-                    stream.set_nonblocking(false)
-                        .context("Failed to set stream to blocking mode")?;
-                    stream.set_read_timeout(Some(Duration::from_millis(50)))
-                        .context("Failed to set stream read timeout")?;
+                Ok((stream, _addr)) => {
                     let sessions = Arc::clone(&self.sessions);
                     let workspaces = Arc::clone(&self.workspaces);
                     let active_workspace = Arc::clone(&self.active_workspace);
                     let shutdown = Arc::clone(&self.shutdown);
                     thread::spawn(move || {
+                        // Configure stream inside the thread so failures are isolated
+                        // to this connection and don't crash the whole daemon.
+                        // On macOS, set_read_timeout on Unix domain sockets may return
+                        // EINVAL — log and continue rather than propagating.
+                        let stream = stream;
+                        if let Err(e) = stream.set_nonblocking(false) {
+                            eprintln!("Failed to set stream to blocking mode: {:?}", e);
+                            return;
+                        }
+                        if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(50))) {
+                            eprintln!("Failed to set stream read timeout (non-fatal): {:?}", e);
+                            // Continue anyway — handle_client can still function without the timeout.
+                        }
                         if let Err(e) = handle_client(stream, sessions, workspaces, active_workspace, shutdown) {
                             eprintln!("Error handling client: {:?}", e);
                         }
