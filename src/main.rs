@@ -27,6 +27,7 @@ use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
 use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode, WorkspaceOverlayState};
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::colors;
+use sidebar_tui::updater;
 
 /// Version from Cargo.toml
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -86,6 +87,8 @@ enum Commands {
         #[command(subcommand)]
         action: WorkspaceAction,
     },
+    /// Check for updates and self-update the binary
+    SelfUpdate,
 }
 
 #[derive(Subcommand, Debug)]
@@ -113,6 +116,11 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
 
+    // On normal startup (not a daemon or subcommand) check for updates in the background.
+    if cli.command.is_none() {
+        updater::check_and_notify();
+    }
+
     match cli.command {
         Some(Commands::List) => cmd_list(),
         Some(Commands::Kill { session }) => cmd_kill(&session),
@@ -123,6 +131,7 @@ fn main() -> Result<()> {
         Some(Commands::Forget { session }) => cmd_forget(&session),
         Some(Commands::Shutdown) => cmd_shutdown(),
         Some(Commands::Workspace { action }) => cmd_workspace(action),
+        Some(Commands::SelfUpdate) => updater::run_self_update(),
         None => cmd_attach(cli.session.as_deref()),
     }
 }

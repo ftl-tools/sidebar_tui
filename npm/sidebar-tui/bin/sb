@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// Launcher script for sidebar-tui (sb).
+// Resolves the platform-specific binary from the optionalDependency packages
+// and spawns it with all arguments forwarded.
+
+const { platform, arch } = process;
+
+const PLATFORM_PACKAGES = {
+  darwin: {
+    arm64: { pkg: "sidebar-tui-darwin-arm64", bin: "sb" },
+    x64:   { pkg: "sidebar-tui-darwin-x64",   bin: "sb" },
+  },
+  linux: {
+    x64:   { pkg: "sidebar-tui-linux-x64",   bin: "sb" },
+    arm64: { pkg: "sidebar-tui-linux-arm64",  bin: "sb" },
+  },
+  win32: {
+    x64: { pkg: "sidebar-tui-win32-x64", bin: "sb.exe" },
+  },
+};
+
+// Allow overriding the binary path for development/CI.
+const overridePath = process.env.SB_BINARY;
+
+function resolveBin() {
+  if (overridePath) {
+    return overridePath;
+  }
+
+  const platformEntry = PLATFORM_PACKAGES[platform];
+  if (!platformEntry) {
+    return null;
+  }
+
+  const entry = platformEntry[arch];
+  if (!entry) {
+    return null;
+  }
+
+  try {
+    // require.resolve finds the file inside the platform package in node_modules.
+    return require.resolve(`${entry.pkg}/${entry.bin}`);
+  } catch (_) {
+    return null;
+  }
+}
+
+const binPath = resolveBin();
+
+if (!binPath) {
+  console.error(
+    `sidebar-tui: no pre-built binary for ${platform}/${arch}.\n` +
+    `Install from source: https://github.com/melchiahmauck/sidebar_tui\n` +
+    `Or set SB_BINARY=/path/to/sb to use a local binary.`
+  );
+  process.exit(1);
+}
+
+const result = require("child_process").spawnSync(
+  binPath,
+  process.argv.slice(2),
+  { shell: false, stdio: "inherit" }
+);
+
+if (result.error) {
+  throw result.error;
+}
+
+process.exitCode = result.status ?? 1;

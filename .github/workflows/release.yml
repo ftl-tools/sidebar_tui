@@ -1,0 +1,253 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+
+jobs:
+  # ──────────────────────────────────────────────────
+  # Job 1: Create the GitHub Release (as a draft)
+  # ──────────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ env.VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        run: echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          CARGO_VERSION="${VERSION#v}"
+          if ! grep -q "^version = \"${CARGO_VERSION}\"" Cargo.toml; then
+            echo "ERROR: Tag ${VERSION} does not match version in Cargo.toml" >&2
+            echo "Cargo.toml has: $(grep '^version' Cargo.toml)" >&2
+            exit 1
+          fi
+
+      - name: Create draft GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$VERSION" \
+            --draft \
+            --verify-tag \
+            --title "$VERSION" \
+            --notes "Release $VERSION"
+
+  # ──────────────────────────────────────────────────
+  # Job 2: Build release binaries (matrix)
+  # ──────────────────────────────────────────────────
+  build-release:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive_suffix: .tar.gz
+
+          - target: x86_64-apple-darwin
+            os: macos-15-large
+            archive_suffix: .tar.gz
+
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+            archive_suffix: .tar.gz
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive_suffix: .zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (Linux musl only)
+        if: matrix.use-cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Set build command
+        shell: bash
+        run: |
+          if [[ "${{ matrix.use-cross }}" == "true" ]]; then
+            echo "BUILD_CMD=cross" >> $GITHUB_ENV
+          else
+            echo "BUILD_CMD=cargo" >> $GITHUB_ENV
+          fi
+
+      - name: Build release binary
+        shell: bash
+        run: ${{ env.BUILD_CMD }} build --release --locked --target=${{ matrix.target }}
+
+      - name: Determine binary name
+        shell: bash
+        run: |
+          EXE_SUFFIX=""
+          case "${{ matrix.target }}" in
+            *-pc-windows-*) EXE_SUFFIX=".exe" ;;
+          esac
+          echo "BIN=target/${{ matrix.target }}/release/sb${EXE_SUFFIX}" >> $GITHUB_ENV
+
+      - name: Strip binary (macOS/Linux)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: strip "${{ env.BIN }}" || true
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          ARCHIVE_BASE="sb-${VERSION}-${{ matrix.target }}"
+
+          mkdir -p "$ARCHIVE_BASE"
+          cp "${{ env.BIN }}" "$ARCHIVE_BASE/"
+          cp README.md LICENSE "$ARCHIVE_BASE/" 2>/dev/null || true
+
+          case "${{ matrix.archive_suffix }}" in
+            .tar.gz)
+              tar czf "${ARCHIVE_BASE}.tar.gz" "$ARCHIVE_BASE"
+              shasum -a 256 "${ARCHIVE_BASE}.tar.gz" > "${ARCHIVE_BASE}.tar.gz.sha256"
+              echo "ASSET=${ARCHIVE_BASE}.tar.gz" >> $GITHUB_ENV
+              echo "ASSET_SUM=${ARCHIVE_BASE}.tar.gz.sha256" >> $GITHUB_ENV
+              ;;
+            .zip)
+              7z a "${ARCHIVE_BASE}.zip" "$ARCHIVE_BASE"
+              certutil -hashfile "${ARCHIVE_BASE}.zip" SHA256 > "${ARCHIVE_BASE}.zip.sha256"
+              echo "ASSET=${ARCHIVE_BASE}.zip" >> $GITHUB_ENV
+              echo "ASSET_SUM=${ARCHIVE_BASE}.zip.sha256" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Upload binary to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          gh release upload "$VERSION" "${{ env.ASSET }}" "${{ env.ASSET_SUM }}"
+
+  # ──────────────────────────────────────────────────
+  # Job 3: Publish npm packages
+  # Depends on npm package structure from sidebar_tui-ff7u.
+  # ──────────────────────────────────────────────────
+  publish-npm:
+    name: Publish npm packages
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          mkdir -p dist
+          gh release download "$VERSION" --dir dist
+
+      - name: Set npm package versions and inject binaries
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          # Strip leading 'v' for npm version (npm uses semver without 'v' prefix)
+          NPM_VERSION="${VERSION#v}"
+
+          # Map GitHub release asset names to npm package names
+          declare -A PLATFORM_MAP=(
+            ["sb-${VERSION}-aarch64-apple-darwin"]="sidebar-tui-darwin-arm64"
+            ["sb-${VERSION}-x86_64-apple-darwin"]="sidebar-tui-darwin-x64"
+            ["sb-${VERSION}-x86_64-unknown-linux-musl"]="sidebar-tui-linux-x64"
+            ["sb-${VERSION}-x86_64-pc-windows-msvc"]="sidebar-tui-win32-x64"
+          )
+
+          for archive_base in "${!PLATFORM_MAP[@]}"; do
+            pkg="${PLATFORM_MAP[$archive_base]}"
+            pkg_dir="npm/$pkg"
+
+            # Update package version
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('${pkg_dir}/package.json', 'utf8'));
+              p.version = '${NPM_VERSION}';
+              fs.writeFileSync('${pkg_dir}/package.json', JSON.stringify(p, null, 2) + '\n');
+            "
+
+            # Copy binary (tar.gz or zip)
+            if [ -f "dist/${archive_base}.tar.gz" ]; then
+              tar xzf "dist/${archive_base}.tar.gz" -C dist/
+              bin_src=$(find "dist/${archive_base}" -name "sb" -o -name "sb.exe" | head -1)
+              if [ -n "$bin_src" ]; then
+                cp "$bin_src" "${pkg_dir}/"
+                chmod +x "${pkg_dir}/sb" 2>/dev/null || true
+              fi
+            fi
+          done
+
+          # Update main package version and optionalDependencies versions
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('npm/sidebar-tui/package.json', 'utf8'));
+            p.version = '${NPM_VERSION}';
+            for (const dep of Object.keys(p.optionalDependencies || {})) {
+              p.optionalDependencies[dep] = '${NPM_VERSION}';
+            }
+            fs.writeFileSync('npm/sidebar-tui/package.json', JSON.stringify(p, null, 2) + '\n');
+          "
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg_dir in npm/sidebar-tui-*; do
+            [ -d "$pkg_dir" ] || continue
+            echo "Publishing $pkg_dir..."
+            npm publish "$pkg_dir" --access public
+          done
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish npm/sidebar-tui --access public
+
+  # ──────────────────────────────────────────────────
+  # Job 4: Publish (undraft) the release
+  # ──────────────────────────────────────────────────
+  publish-release:
+    name: Publish GitHub Release
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Undraft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          gh release edit "$VERSION" --draft=false --repo=${{ github.repository }}

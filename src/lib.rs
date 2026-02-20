@@ -17,3 +17,4 @@ pub mod pty;
 pub mod sidebar;
 pub mod state;
 pub mod terminal;
+pub mod updater;
