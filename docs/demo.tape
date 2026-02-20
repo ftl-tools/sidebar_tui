@@ -14,8 +14,9 @@ Output docs/public/hero/demo.webm
 Set Shell "zsh"
 Set FontFamily "JetBrains Mono"
 Set FontSize 16
-Set Width 1100
-Set Height 650
+# Width/Height must be even for H.264; nearest even values to requested 1125x975
+Set Width 1126
+Set Height 750
 Set Theme "Catppuccin Mocha"
 Set WindowBar Colorful
 Set WindowBarSize 32

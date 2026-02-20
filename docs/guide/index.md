@@ -1,4 +1,4 @@
-# Quick Start
+# Quickstart
 
 sidebar-tui is a terminal session manager that lives in a sidebar inside your terminal. You get a persistent list of named sessions on the left and a full terminal on the right — no window switching, no context loss.
 

@@ -10,8 +10,7 @@
   --vp-home-hero-name-color: transparent;
   --vp-home-hero-name-background: linear-gradient(135deg, #875fff 30%, #c084fc);
 
-  --vp-home-hero-image-background-image: linear-gradient(-45deg, #875fff 50%, #c084fc 50%);
-  --vp-home-hero-image-filter: blur(56px);
+  /* Removed blurred gradient glow — hero video has its own opaque background */
 }
 
 .dark {
@@ -35,10 +34,23 @@
   --vp-font-family-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Monaco, Consolas, monospace;
 }
 
+/* Reduce default VitePress hero bottom padding so install section sits closer */
+.VPHome .VPHero {
+  padding-bottom: 0 !important;
+}
+
+/* Right-align the hero video — override VPHero's centered flex and the -32px nudge transform */
+@media (min-width: 960px) {
+  .VPHero .image-container {
+    justify-content: flex-end !important;
+    transform: none !important;
+  }
+}
+
 /* Hero video styling */
 .hero-video-wrapper {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
   align-items: center;
   width: 100%;
 }

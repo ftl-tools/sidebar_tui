@@ -56,7 +56,8 @@ onMounted(() => {
 <style scoped>
 .hero-video-wrapper {
   display: flex;
-  justify-content: center;
+  /* Changed from center to flex-end to push video flush to the right edge */
+  justify-content: flex-end;
   align-items: center;
   width: 100%;
   padding: 8px 0;

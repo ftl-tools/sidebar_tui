@@ -32821,3 +32821,26 @@ time=2026-02-20T14:56:31.971-08:00 level=INFO msg="   Consider running 'bd sync'
 time=2026-02-20T14:56:32.603-08:00 level=INFO msg="Pulled from remote"
 time=2026-02-20T14:56:32.603-08:00 level=INFO msg="🔍 Checking JSONL content hash AFTER pull (fix: auto-pull-not-pulling)"
 time=2026-02-20T14:56:32.604-08:00 level=INFO msg="Skipping: JSONL content unchanged" mode=auto-import
+time=2026-02-20T14:56:48.360-08:00 level=INFO msg="File change detected" path=/Users/melchiahmauck/dev/tools/sidebar_tui/.beads/issues.jsonl
+time=2026-02-20T14:56:49.361-08:00 level=INFO msg="Import triggered by file change"
+time=2026-02-20T14:56:49.362-08:00 level=INFO msg="Starting auto-import" mode=auto-import
+time=2026-02-20T14:56:49.382-08:00 level=INFO msg="WARNING: Uncommitted local changes detected" path=/Users/melchiahmauck/dev/tools/sidebar_tui/.beads/issues.jsonl
+time=2026-02-20T14:56:49.382-08:00 level=INFO msg="   Pulling from remote may overwrite local unpushed changes."
+time=2026-02-20T14:56:49.382-08:00 level=INFO msg="   Consider running 'bd sync' to commit and push your changes first."
+time=2026-02-20T14:56:50.035-08:00 level=INFO msg="Pulled from remote"
+time=2026-02-20T14:56:50.035-08:00 level=INFO msg="🔍 Checking JSONL content hash AFTER pull (fix: auto-pull-not-pulling)"
+time=2026-02-20T14:56:50.035-08:00 level=INFO msg="Skipping: JSONL content unchanged" mode=auto-import
+time=2026-02-20T14:56:57.023-08:00 level=INFO msg="JSONL removed/renamed, re-establishing watch"
+time=2026-02-20T14:56:57.075-08:00 level=INFO msg="Successfully re-established JSONL watch" delay=50ms
+time=2026-02-20T14:56:57.075-08:00 level=INFO msg="JSONL file created" path=/Users/melchiahmauck/dev/tools/sidebar_tui/.beads/issues.jsonl
+time=2026-02-20T14:56:58.077-08:00 level=INFO msg="Import triggered by file change"
+time=2026-02-20T14:56:58.078-08:00 level=INFO msg="Starting auto-import" mode=auto-import
+time=2026-02-20T14:56:58.100-08:00 level=INFO msg="File change detected" path=/Users/melchiahmauck/dev/tools/sidebar_tui/.beads/issues.jsonl
+time=2026-02-20T14:56:58.750-08:00 level=INFO msg="Pulled from remote"
+time=2026-02-20T14:56:58.750-08:00 level=INFO msg="🔍 Checking JSONL content hash AFTER pull (fix: auto-pull-not-pulling)"
+time=2026-02-20T14:56:58.751-08:00 level=INFO msg="Skipping: JSONL content unchanged" mode=auto-import
+time=2026-02-20T14:56:59.102-08:00 level=INFO msg="Import triggered by file change"
+time=2026-02-20T14:56:59.104-08:00 level=INFO msg="Starting auto-import" mode=auto-import
+time=2026-02-20T14:56:59.883-08:00 level=INFO msg="Pulled from remote"
+time=2026-02-20T14:56:59.883-08:00 level=INFO msg="🔍 Checking JSONL content hash AFTER pull (fix: auto-pull-not-pulling)"
+time=2026-02-20T14:56:59.883-08:00 level=INFO msg="Skipping: JSONL content unchanged" mode=auto-import
