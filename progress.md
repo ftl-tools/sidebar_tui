@@ -51,3 +51,7 @@ Reviewed sidebar_tui-cj6v (CI/release workflows, self-update, npm packages, curl
 ## 2026-02-20 - Fixed Three release.yml Bugs (sidebar_tui-3ktn, sidebar_tui-f9pv, sidebar_tui-mlje)
 
 Fixed all three release.yml bugs identified in the prior review: (1) changed `x86_64-apple-darwin` runner from non-existent `macos-15-large` to `macos-13`; (2) added `publish-npm` to the `needs` list of `publish-release` so the GitHub Release is only undrafted after npm packages are published; (3) added `aarch64-unknown-linux-musl` build target to the release matrix (using `cross`) and added it to the `PLATFORM_MAP` in the `publish-npm` step, matching the existing `npm/sidebar-tui-linux-arm64` package. All 414 lib tests pass. Closed sidebar_tui-3ktn, sidebar_tui-f9pv, sidebar_tui-mlje. Review issue sidebar_tui-209v remains open.
+
+## 2026-02-20 - Reviewed release.yml Fixes; Found Windows zip Bug
+
+Reviewed sidebar_tui-209v (three release.yml bug fixes): all 414 lib tests pass; all three fixes confirmed correct — macos-13 runner, publish-release dependency ordering, aarch64-unknown-linux-musl in matrix and PLATFORM_MAP. Found one additional pre-existing bug: the `publish-npm` job's binary injection loop only handles `.tar.gz` archives but the Windows build produces a `.zip`, so `sidebar-tui-win32-x64` npm package gets published empty. Created sidebar_tui-ixtg to fix this and sidebar_tui-ejob to review the fix. Closed sidebar_tui-209v.
