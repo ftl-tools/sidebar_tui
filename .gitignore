@@ -1,3 +1,6 @@
 references/
 /target
 session_logs/
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

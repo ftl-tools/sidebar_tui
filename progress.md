@@ -1,5 +1,9 @@
 # Progress Logs
 
+## 2026-02-20 - Built VitePress Docs Site (sidebar_tui-ev72)
+
+Built the VitePress marketing/docs site in `docs/`. The home page has a hero section with an ASCII-art placeholder that automatically swaps to an autoplay video when `docs/public/hero/demo.mp4` exists (recorded via `vhs docs/demo.tape`), plus a code-group install section covering curl, Homebrew, npm, bun, and AUR. Guide pages cover quick-start, installation, keybindings, and workspaces. The site uses a dark purple theme (ANSI 99 `#875fff` brand color) matching the TUI. Added `package.json` with `"type": "module"` (required by VitePress ESM), a `deploy-docs.yml` GitHub Pages workflow, and `docs/demo.tape` for recording the hero video with VHS (`brew install vhs && vhs docs/demo.tape`). `npm run docs:build` produces a clean build. Closed sidebar_tui-ev72.
+
 ## 2026-02-20 - Added E2E Tests for Zoom Ctrl+B, Create Mode Unzoom, and Minimum Terminal Size (sidebar_tui-87ia, sidebar_tui-s009, sidebar_tui-gyml)
 
 Added three E2E tests to cover remaining spec gaps: `test_zoom_ctrl_b_unzooms_and_focuses_sidebar` verifies that pressing Ctrl+B while zoomed restores the sidebar and focuses it (border color 99); `test_zoom_create_mode_unzooms_automatically` verifies that pressing Ctrl+N while zoomed unzooms and shows create mode; `test_minimum_terminal_size_64x24` resizes the PTY to 64x24 via ptyprocess and sends SIGWINCH, then verifies the TUI renders without crashing. All 88 E2E tests and 414 lib tests pass. Closed sidebar_tui-87ia, sidebar_tui-s009, sidebar_tui-gyml.
