@@ -52,6 +52,10 @@ Reviewed sidebar_tui-cj6v (CI/release workflows, self-update, npm packages, curl
 
 Fixed all three release.yml bugs identified in the prior review: (1) changed `x86_64-apple-darwin` runner from non-existent `macos-15-large` to `macos-13`; (2) added `publish-npm` to the `needs` list of `publish-release` so the GitHub Release is only undrafted after npm packages are published; (3) added `aarch64-unknown-linux-musl` build target to the release matrix (using `cross`) and added it to the `PLATFORM_MAP` in the `publish-npm` step, matching the existing `npm/sidebar-tui-linux-arm64` package. All 414 lib tests pass. Closed sidebar_tui-3ktn, sidebar_tui-f9pv, sidebar_tui-mlje. Review issue sidebar_tui-209v remains open.
 
+## 2026-02-20 - Reviewed Windows zip Binary Injection Fix (sidebar_tui-ejob)
+
+Reviewed sidebar_tui-ejob (Windows zip binary injection fix): all 414 lib tests pass; the `elif` branch for `.zip` archives correctly runs `unzip -q` to extract the archive and copies `sb.exe` into the win32-x64 npm package directory. The fix is clean and correct — no `chmod +x` is needed for Windows executables. Closed sidebar_tui-ejob.
+
 ## 2026-02-20 - Fixed Windows zip Binary Injection in publish-npm (sidebar_tui-ixtg)
 
 Fixed the pre-existing bug where the `publish-npm` binary injection loop only handled `.tar.gz` archives, leaving the `sidebar-tui-win32-x64` npm package empty on publish. Added an `elif` branch for `.zip` files that runs `unzip -q` (available on ubuntu-latest runners) and copies `sb.exe` into the win32-x64 package directory. All 414 lib tests pass. Closed sidebar_tui-ixtg; sidebar_tui-ejob (review) remains open.
