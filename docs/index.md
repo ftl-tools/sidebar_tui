@@ -45,7 +45,7 @@ Works on Windows, WSL, Linux, and MacOS.
 ::: code-group
 
 ```sh [curl]
-curl -fsSL https://ftl-tools.github.io/sidebar-tui/install.sh | sh
+curl -fsSL https://ftl-tools.github.io/sidebar_tui/install.sh | sh
 ```
 
 ```sh [Homebrew]
