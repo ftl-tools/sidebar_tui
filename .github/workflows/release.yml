@@ -240,6 +240,12 @@ jobs:
         run: |
           for pkg_dir in npm/sidebar-tui-*; do
             [ -d "$pkg_dir" ] || continue
+            PKG_NAME=$(node -e "console.log(require('./${pkg_dir}/package.json').name)")
+            PKG_VERSION=$(node -e "console.log(require('./${pkg_dir}/package.json').version)")
+            if npm view "${PKG_NAME}@${PKG_VERSION}" version &>/dev/null; then
+              echo "Skipping $pkg_dir — ${PKG_NAME}@${PKG_VERSION} already published."
+              continue
+            fi
             echo "Publishing $pkg_dir..."
             npm publish "./$pkg_dir" --access public
           done
@@ -247,7 +253,14 @@ jobs:
       - name: Publish main package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish ./npm/sidebar-tui --access public
+        run: |
+          PKG_NAME=$(node -e "console.log(require('./npm/sidebar-tui/package.json').name)")
+          PKG_VERSION=$(node -e "console.log(require('./npm/sidebar-tui/package.json').version)")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version &>/dev/null; then
+            echo "Skipping — ${PKG_NAME}@${PKG_VERSION} already published."
+          else
+            npm publish ./npm/sidebar-tui --access public
+          fi
 
   # ──────────────────────────────────────────────────
   # Job 4: Publish (undraft) the release
