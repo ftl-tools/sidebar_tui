@@ -4,6 +4,8 @@ export default defineConfig({
   title: "Sidebar TUI",
   description:
     "Manage multiple terminal sessions without leaving your terminal.",
+  // Required for GitHub Pages project sites (served at /sidebar_tui/, not /)
+  base: "/sidebar_tui/",
   // 'dark' allows toggling; 'force-dark' disables the toggle and locks to dark mode
   appearance: "force-dark",
   cleanUrls: true,
