@@ -1,6 +1,6 @@
 {
   "name": "sidebar-tui-darwin-x64",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "The macOS x64 (Intel) binary for sidebar-tui.",
   "os": ["darwin"],
   "cpu": ["x64"],

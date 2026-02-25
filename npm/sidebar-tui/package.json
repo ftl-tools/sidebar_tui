@@ -1,6 +1,6 @@
 {
   "name": "sidebar-tui",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "A terminal UI sidebar for managing terminal sessions",
   "keywords": ["terminal", "tui", "session", "sidebar"],
   "homepage": "https://github.com/melchiahmauck/sidebar_tui",
@@ -13,11 +13,11 @@
     "sb": "bin/sb"
   },
   "optionalDependencies": {
-    "sidebar-tui-darwin-arm64": "0.1.9",
-    "sidebar-tui-darwin-x64": "0.1.9",
-    "sidebar-tui-linux-x64": "0.1.9",
-    "sidebar-tui-linux-arm64": "0.1.9",
-    "sidebar-tui-win32-x64": "0.1.9"
+    "sidebar-tui-darwin-arm64": "0.1.11",
+    "sidebar-tui-darwin-x64": "0.1.11",
+    "sidebar-tui-linux-x64": "0.1.11",
+    "sidebar-tui-linux-arm64": "0.1.11",
+    "sidebar-tui-win32-x64": "0.1.11"
   },
   "engines": {
     "node": ">=16"

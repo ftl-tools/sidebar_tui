@@ -1,6 +1,6 @@
 {
   "name": "sidebar-tui-linux-x64",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "The Linux x64 binary for sidebar-tui.",
   "os": ["linux"],
   "cpu": ["x64"],

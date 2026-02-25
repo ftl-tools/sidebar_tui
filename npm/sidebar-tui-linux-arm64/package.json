@@ -1,6 +1,6 @@
 {
   "name": "sidebar-tui-linux-arm64",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "The Linux ARM64 binary for sidebar-tui.",
   "os": ["linux"],
   "cpu": ["arm64"],
