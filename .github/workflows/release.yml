@@ -241,13 +241,13 @@ jobs:
           for pkg_dir in npm/sidebar-tui-*; do
             [ -d "$pkg_dir" ] || continue
             echo "Publishing $pkg_dir..."
-            npm publish "$pkg_dir" --access public
+            npm publish "./$pkg_dir" --access public
           done
 
       - name: Publish main package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish npm/sidebar-tui --access public
+        run: npm publish ./npm/sidebar-tui --access public
 
   # ──────────────────────────────────────────────────
   # Job 4: Publish (undraft) the release
