@@ -1,6 +1,6 @@
 {
   "name": "sidebar-tui-darwin-arm64",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "The macOS ARM64 (Apple Silicon) binary for sidebar-tui.",
   "os": [
     "darwin"
