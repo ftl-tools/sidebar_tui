@@ -267,7 +267,7 @@ jobs:
   # ──────────────────────────────────────────────────
   publish-release:
     name: Publish GitHub Release
-    needs: [create-release, build-release, publish-npm]
+    needs: [create-release, build-release]
     runs-on: ubuntu-latest
     steps:
       - name: Undraft release
@@ -284,7 +284,7 @@ jobs:
   # ──────────────────────────────────────────────────
   publish-homebrew:
     name: Update Homebrew tap
-    needs: [create-release, build-release, publish-release]
+    needs: [create-release, publish-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -378,7 +378,7 @@ jobs:
   # ──────────────────────────────────────────────────
   publish-aur:
     name: Publish to AUR
-    needs: [create-release, build-release, publish-release]
+    needs: [create-release, publish-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
