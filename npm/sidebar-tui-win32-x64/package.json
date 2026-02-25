@@ -1,9 +1,13 @@
 {
   "name": "sidebar-tui-win32-x64",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "The Windows x64 binary for sidebar-tui.",
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "preferUnplugged": true,
   "license": "MIT",
   "repository": {
