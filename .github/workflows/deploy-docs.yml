@@ -7,6 +7,9 @@ on:
       - 'docs/**'
       - 'package.json'
       - 'package-lock.json'
+    # Also redeploy on releases so the install.sh served by Pages stays in sync
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 permissions:
