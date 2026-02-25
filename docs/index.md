@@ -64,6 +64,4 @@ bun add -g sidebar-tui
 paru -S sidebar-tui-bin
 ```
 
-## Launch
-
 Then run `sb` to launch.

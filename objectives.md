@@ -199,35 +199,41 @@ The workspace's saved state (last focused pane, last selected session, scroll po
 ## Distribution
 
 ### Releases
+
 - Feature branches → PRs → `main`; CI runs tests on every PR
 - Release by pushing a version tag: `git tag v0.2.0 && git push --tags`
 - GitHub Actions builds all platform binaries, creates a GitHub Release, publishes to npm
 
 ### Updates
+
 - Binary checks GitHub Releases API once per day (cached) and self-updates on next run (`self_update` crate)
 - If installed via Homebrew, skip self-update and print: `"sb v0.2.0 available — run 'brew upgrade sb' to update"`
 
 ### Windows
+
 - Daemon IPC: TCP on localhost (`127.0.0.1:PORT`, port stored in a lockfile) replacing Unix socket
 - Supported from initial release
 
 ### Install methods
-| Method | Command |
-|---|---|
-| curl | `curl -fsSL https://... \| bash` |
-| Homebrew | `brew install <tap>/sb` |
-| npm | `npm install -g sidebar-tui` |
-| bun | `bun add -g sidebar-tui` |
-| AUR | `paru -S sidebar-tui` |
+
+| Method   | Command                          |
+| -------- | -------------------------------- |
+| curl     | `curl -fsSL https://... \| bash` |
+| Homebrew | `brew install <tap>/sb`          |
+| npm      | `npm install -g sidebar-tui`     |
+| bun      | `bun add -g sidebar-tui`         |
+| AUR      | `paru -S sidebar-tui`            |
 
 ### One-time manual setup (human required)
-| Task | Why it can't be automated |
-|---|---|
-| Make the GitHub repo public | Requires GitHub account action |
-| Create an npm account + generate publish token | External account |
-| Create an AUR account + upload SSH public key | External account, SSH key pair |
-| Create `ftl-tools/homebrew-sidebar-tui` GitHub repo (the Homebrew tap) | Requires GitHub account action; the repo must exist before CI can push to it |
-| Create a GitHub PAT and add secrets to repo settings | `NPM_TOKEN`, `AUR_SSH_PRIVATE_KEY`, `AUR_USERNAME`, `AUR_EMAIL`, `HOMEBREW_TAP_GITHUB_TOKEN` |
+
+| Task                                                                   | Why it can't be automated                                                                    |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Create an npm account + generate publish token                         | External account                                                                             |
+| Create an AUR account + upload SSH public key                          | External account, SSH key pair                                                               |
+| Create `ftl-tools/homebrew-sidebar-tui` GitHub repo (the Homebrew tap) | Requires GitHub account action; the repo must exist before CI can push to it                 |
+| Create a GitHub PAT and add secrets to repo settings                   | `NPM_TOKEN`, `AUR_SSH_PRIVATE_KEY`, `AUR_USERNAME`, `AUR_EMAIL`, `HOMEBREW_TAP_GITHUB_TOKEN` |
+
+To generate new NPM token: https://www.npmjs.com/settings/melchiah-mauck/tokens/granular-access-tokens/new
 
 ## Order
 

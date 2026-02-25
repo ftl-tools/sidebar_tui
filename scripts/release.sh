@@ -20,9 +20,9 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Ensure working tree is clean
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Error: working tree has uncommitted changes. Commit or stash them first."
+# Ensure nothing is staged that would pollute the version bump commit
+if ! git diff --cached --quiet; then
+  echo "Error: there are staged changes. Unstage them before releasing."
   exit 1
 fi
 
