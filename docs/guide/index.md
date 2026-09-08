@@ -2,6 +2,14 @@
 
 sidebar-tui is a terminal session manager that lives in a sidebar inside your terminal. You get a persistent list of named sessions on the left and a full terminal on the right — no window switching, no context loss.
 
+## Layout
+
+The 28-column sidebar contains the workspace title and scrollable session list, followed by a horizontal divider and a column of contextual hints. Hints, confirmations, and temporary messages stay inside the sidebar; the detach/exit path sits below them.
+
+The terminal fills the entire right side, from the first row to the last, without a frame or padding. Changing hints does not resize the terminal or disturb its output. The sidebar outline indicates focus. Zoom hides the sidebar and its hints together; toggle focus to bring them back. Workspace and help views use the right side while their hints remain on the left.
+
+On short screens, hints are clipped to preserve session-list space and the exit path. Press <kbd>?</kbd> from the sidebar for the full command reference.
+
 ## Launch
 
 ```sh

@@ -33,6 +33,10 @@ paru -S sidebar-tui-bin
 
 :::
 
+## Development install
+
+From a source checkout, `./install.sh` increments the patch version, installs `sb` locally, and also installs it in the running `elate_container_1` Docker container. The container copy is placed at `/usr/local/bin/sb`.
+
 ## Verify
 
 ```sh

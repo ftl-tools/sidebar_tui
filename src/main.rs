@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::Write as IoWrite;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 #[cfg(windows)]
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
-use crossterm::event::{self, Event, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind};
 use crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -20,16 +20,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use sidebar_tui::colors;
 use sidebar_tui::daemon::{
-    self, ClientMessage, DaemonClient, DaemonResponse, IpcStream, MessageReader, get_socket_path,
-    ensure_runtime_dir, decode_message, encode_message,
+    self, ClientMessage, DaemonClient, DaemonResponse, IpcStream, MessageReader, decode_message,
+    encode_message, ensure_runtime_dir, get_socket_path,
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
-use sidebar_tui::input::{key_to_bytes, encode_mouse_scroll};
+use sidebar_tui::input::{encode_mouse_scroll, key_to_bytes};
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
-use sidebar_tui::state::{AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode, WorkspaceOverlayState};
+use sidebar_tui::state::{
+    AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode,
+    WorkspaceOverlayState,
+};
 use sidebar_tui::terminal::Terminal;
-use sidebar_tui::colors;
 use sidebar_tui::updater;
 
 /// Version from Cargo.toml
@@ -147,9 +150,16 @@ fn cmd_list() -> Result<()> {
     if sessions.is_empty() {
         println!("No active sessions");
     } else {
-        println!("{:<20} {:<10} {:>5}x{:<5}", "NAME", "STATUS", "ROWS", "COLS");
+        println!(
+            "{:<20} {:<10} {:>5}x{:<5}",
+            "NAME", "STATUS", "ROWS", "COLS"
+        );
         for session in sessions {
-            let status = if session.is_attached { "attached" } else { "detached" };
+            let status = if session.is_attached {
+                "attached"
+            } else {
+                "detached"
+            };
             println!(
                 "{:<20} {:<10} {:>5}x{:<5}",
                 session.name, status, session.rows, session.cols
@@ -176,15 +186,23 @@ fn cmd_stale() -> Result<()> {
     if sessions.is_empty() {
         println!("No stale sessions found");
     } else {
-        println!("{:<20} {:<30} {:>5}x{:<5}", "NAME", "WORKING DIR", "ROWS", "COLS");
+        println!(
+            "{:<20} {:<30} {:>5}x{:<5}",
+            "NAME", "WORKING DIR", "ROWS", "COLS"
+        );
         for session in sessions {
-            let cwd = session.cwd.map(|p| p.display().to_string()).unwrap_or_else(|| "-".to_string());
+            let cwd = session
+                .cwd
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "-".to_string());
             println!(
                 "{:<20} {:<30} {:>5}x{:<5}",
                 session.name, cwd, session.rows, session.cols
             );
         }
-        println!("\nUse 'sb restore <name>' to restore a session, or 'sb forget <name>' to delete.");
+        println!(
+            "\nUse 'sb restore <name>' to restore a session, or 'sb forget <name>' to delete."
+        );
     }
 
     Ok(())
@@ -194,7 +212,10 @@ fn cmd_stale() -> Result<()> {
 fn cmd_restore(session_name: &str) -> Result<()> {
     let mut client = connect_to_daemon()?;
     client.restore_stale_session(session_name)?;
-    println!("Restored session '{}'. Use 'sb attach {}' to connect.", session_name, session_name);
+    println!(
+        "Restored session '{}'. Use 'sb attach {}' to connect.",
+        session_name, session_name
+    );
     Ok(())
 }
 
@@ -269,8 +290,8 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     // Connect to daemon: on Unix use Unix socket, on Windows use TCP via lockfile port.
     let socket_path = get_socket_path();
     #[cfg(unix)]
-    let mut stream: IpcStream = UnixStream::connect(&socket_path)
-        .context("Failed to connect to daemon")?;
+    let mut stream: IpcStream =
+        UnixStream::connect(&socket_path).context("Failed to connect to daemon")?;
     #[cfg(windows)]
     let mut stream: IpcStream = {
         let port = std::fs::read_to_string(&socket_path)
@@ -282,15 +303,15 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     };
 
     // Set read timeout for non-blocking reads
-    stream.set_read_timeout(Some(Duration::from_millis(1)))
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1)))
         .context("Failed to set read timeout")?;
 
     // Initialize TUI with mouse capture enabled so scroll wheel scrolls terminal
     // scrollback history rather than sending arrow keys to the shell.
     // Users can disable mouse capture (for native text selection) with Ctrl+S.
     let mut ratatui_term = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)
-        .context("Failed to enable mouse capture")?;
+    execute!(std::io::stdout(), EnableMouseCapture).context("Failed to enable mouse capture")?;
 
     let result = run_attached(&mut ratatui_term, &mut stream, session_name);
 
@@ -458,8 +479,8 @@ fn send_daemon_message(stream: &mut IpcStream, msg: ClientMessage) -> Result<Dae
     stream.flush()?;
     // Use a longer timeout for synchronous operations
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let response: DaemonResponse = decode_message(stream)
-        .context("Failed to read daemon response")?;
+    let response: DaemonResponse =
+        decode_message(stream).context("Failed to read daemon response")?;
     Ok(response)
 }
 
@@ -471,14 +492,18 @@ fn send_daemon_message(stream: &mut IpcStream, msg: ClientMessage) -> Result<Dae
 /// this, `send_daemon_message` would return an Output message instead of the expected
 /// response, causing session switches to silently fail and session A content to bleed
 /// into session B's terminal.
-fn send_daemon_message_sync(stream: &mut IpcStream, msg: ClientMessage, app: &mut DaemonApp) -> Result<DaemonResponse> {
+fn send_daemon_message_sync(
+    stream: &mut IpcStream,
+    msg: ClientMessage,
+    app: &mut DaemonApp,
+) -> Result<DaemonResponse> {
     let encoded = encode_message(&msg)?;
     stream.write_all(&encoded)?;
     stream.flush()?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     loop {
-        let response: DaemonResponse = decode_message(stream)
-            .context("Failed to read daemon response")?;
+        let response: DaemonResponse =
+            decode_message(stream).context("Failed to read daemon response")?;
         match response {
             // In-flight output from the old session: apply to the current terminal
             // (still session A at this point) and keep waiting for the real response.
@@ -555,7 +580,10 @@ fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
                 app.process_output(&data);
             }
         }
-        DaemonResponse::Previewed { terminal_state: Some(state_bytes), .. } => {
+        DaemonResponse::Previewed {
+            terminal_state: Some(state_bytes),
+            ..
+        } => {
             // Update preview - may be stale if we're about to switch sessions
             app.process_output(&state_bytes);
         }
@@ -669,12 +697,11 @@ fn run_attached(
     stream: &mut IpcStream,
     requested_session: Option<&str>,
 ) -> Result<()> {
-    // Get initial terminal size, accounting for sidebar, horizontal padding, and borders
+    // Get initial terminal size; only the sidebar consumes terminal columns.
     let size = ratatui_term.size()?;
-    // Subtract sidebar width (0 when zoomed), 2*h_padding (left + right), and 2 for terminal border
     let mut term_cols = compute_term_cols(size.width, false);
-    // Subtract 2 for terminal border (top + bottom), and hint bar height (1)
-    let mut term_rows = size.height.saturating_sub(3);
+    // The unframed terminal uses every row; sidebar hints never resize it.
+    let mut term_rows = size.height;
 
     // Get current working directory
     let cwd = env::current_dir().ok();
@@ -682,7 +709,10 @@ fn run_attached(
     // Load workspace info from daemon to get the active workspace name
     let workspace_response = send_daemon_message(stream, ClientMessage::ListWorkspaces)?;
     let (workspaces_list, active_workspace_name) = match workspace_response {
-        DaemonResponse::Workspaces { workspaces, active_workspace } => (workspaces, active_workspace),
+        DaemonResponse::Workspaces {
+            workspaces,
+            active_workspace,
+        } => (workspaces, active_workspace),
         DaemonResponse::Error { message } => {
             bail!("Failed to list workspaces: {}", message);
         }
@@ -690,7 +720,10 @@ fn run_attached(
             bail!("Unexpected workspace response: {:?}", other);
         }
     };
-    let _ = workspaces_list; // Will be used in workspace overlay later
+    let workspace_names: Vec<String> = workspaces_list
+        .iter()
+        .map(|workspace| workspace.name.clone())
+        .collect();
 
     // Load session list from daemon
     let session_list_response = send_daemon_message(stream, ClientMessage::List)?;
@@ -721,15 +754,21 @@ fn run_attached(
         sorted_stale.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
         for stale in &sorted_stale {
-            let restore_response = send_daemon_message(stream, ClientMessage::RestoreStale {
-                session_name: stale.name.clone(),
-            })?;
+            let restore_response = send_daemon_message(
+                stream,
+                ClientMessage::RestoreStale {
+                    session_name: stale.name.clone(),
+                },
+            )?;
             match restore_response {
                 DaemonResponse::Restored { .. } => {
                     // Successfully restored
                 }
                 DaemonResponse::Error { message } => {
-                    eprintln!("Warning: Failed to restore session '{}': {}", stale.name, message);
+                    eprintln!(
+                        "Warning: Failed to restore session '{}': {}",
+                        stale.name, message
+                    );
                 }
                 _ => {}
             }
@@ -774,17 +813,22 @@ fn run_attached(
     // Only attach if we have a session to attach to
     let mut app = if let Some(session_name) = session_to_attach {
         // Send attach message
-        let attach_response = send_daemon_message(stream, ClientMessage::Attach {
-            session_name: session_name.clone(),
-            rows: term_rows,
-            cols: term_cols,
-            cwd: cwd.clone(),
-        })?;
+        let attach_response = send_daemon_message(
+            stream,
+            ClientMessage::Attach {
+                session_name: session_name.clone(),
+                rows: term_rows,
+                cols: term_cols,
+                cwd: cwd.clone(),
+            },
+        )?;
 
         let terminal_state = match attach_response {
-            DaemonResponse::Attached { session_name: _, is_new, terminal_state } => {
-                (is_new, terminal_state)
-            }
+            DaemonResponse::Attached {
+                session_name: _,
+                is_new,
+                terminal_state,
+            } => (is_new, terminal_state),
             DaemonResponse::Error { message } => {
                 bail!("Failed to attach: {}", message);
             }
@@ -810,6 +854,7 @@ fn run_attached(
         // Create app with session list
         let mut app = DaemonApp::new(term_rows, term_cols, &session_name, initial_sessions);
         app.app_state.workspace_name = active_workspace_name.clone();
+        app.app_state.workspaces = workspace_names.clone();
 
         // Restore terminal state if reattaching
         if let Some(state_bytes) = terminal_state.1 {
@@ -821,13 +866,12 @@ fn run_attached(
         // Welcome state - no sessions to attach to
         let mut app = DaemonApp::new_welcome_state(term_rows, term_cols);
         app.app_state.workspace_name = active_workspace_name.clone();
+        app.app_state.workspaces = workspace_names.clone();
         app
     };
 
     let mut last_size = (size.width, size.height);
-    // Track hint bar height separately so we can detect when it changes (e.g., wraps to 2 lines)
     // and resize the PTY accordingly without a full terminal resize event.
-    let mut last_hint_bar_height: u16 = 1;
 
     // Set stream to non-blocking for the main loop
     stream.set_read_timeout(Some(Duration::from_millis(10)))?;
@@ -839,7 +883,8 @@ fn run_attached(
         // Drain all available messages from the socket before rendering.
         // This batches multiple output messages (e.g., during paste) into a single render,
         // significantly improving performance compared to render-per-message.
-        let drain_result = drain_main_loop_messages(&mut msg_reader, stream, &mut app, term_rows, term_cols);
+        let drain_result =
+            drain_main_loop_messages(&mut msg_reader, stream, &mut app, term_rows, term_cols);
         match drain_result {
             MainLoopDrainResult::Continue => {}
             MainLoopDrainResult::ShuttingDown => break,
@@ -850,34 +895,15 @@ fn run_attached(
         // Expire timed messages before rendering
         app.tick_timed_message();
 
-        // Dynamically recompute hint bar height before each render.
-        // The hint bar can wrap to 2+ lines depending on the current mode/state, and if so the
-        // terminal pane must shrink to match the smaller available area.
-        {
-            let mut hb = hint_bar_for_state(&app.app_state);
-            if let Some((text, _)) = &app.timed_message {
-                hb.show_message(text);
-            }
-            let current_hint_bar_height = hb.calculate_height(last_size.0);
-            if current_hint_bar_height != last_hint_bar_height {
-                last_hint_bar_height = current_hint_bar_height;
-                term_rows = last_size.1.saturating_sub(2 + last_hint_bar_height);
-                app.resize(term_rows, term_cols);
-                let resize_msg = ClientMessage::Resize { rows: term_rows, cols: term_cols };
-                let encoded = encode_message(&resize_msg)?;
-                stream.write_all(&encoded)?;
-                stream.flush()?;
-            }
-        }
-
+        // Hints only change the sidebar list viewport, not PTY geometry.
         // Render the UI once after processing all available messages
         ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
 
         // Keep workspace overlay's visible_height in sync with actual terminal geometry.
         // This enables select_next() to scroll the list when the selection moves off-screen.
-        // Height = total rows - 1 (title row) - hint bar. Editing is done inline, no extra area.
+        // Height = total rows - 1 (title row). Editing is done inline, no extra area.
         if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
-            let list_h = last_size.1.saturating_sub(1 + last_hint_bar_height);
+            let list_h = last_size.1.saturating_sub(1);
             ov.visible_height = list_h as usize;
         }
 
@@ -885,8 +911,45 @@ fn run_attached(
         if event::poll(Duration::from_millis(16)).context("event poll failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) => {
-                    // Route key through state machine
-                    let result = app.app_state.handle_key(key);
+                    // Route key through state machine.
+                    let mut result = app.app_state.handle_key(key);
+                    let relative_workspace_focus =
+                        if matches!(result, EventResult::SwitchRelativeWorkspace { .. }) {
+                            Some(app.app_state.focus)
+                        } else {
+                            None
+                        };
+                    // Relative workspace shortcuts used to require opening the chooser. Resolve
+                    // them here against the daemon-provided stable workspace list for direct switching.
+                    if let EventResult::SwitchRelativeWorkspace { offset } = result {
+                        let workspaces = &app.app_state.workspaces;
+                        if !workspaces.is_empty() {
+                            let current = workspaces
+                                .iter()
+                                .position(|name| name == &app.app_state.workspace_name)
+                                .unwrap_or(0) as isize;
+                            let target =
+                                (current + offset).rem_euclid(workspaces.len() as isize) as usize;
+                            result = EventResult::SwitchWorkspace {
+                                name: workspaces[target].clone(),
+                            };
+                        } else {
+                            result = EventResult::Consumed;
+                        }
+                    }
+                    let requested_workspace_focus = relative_workspace_focus.or_else(|| {
+                        if matches!(result, EventResult::SwitchWorkspace { .. }) {
+                            Some(Focus::Sidebar)
+                        } else {
+                            None
+                        }
+                    });
+                    let workspace_action = match &result {
+                        EventResult::OpenWorkspaceCreate => Some('C'),
+                        EventResult::OpenWorkspaceRename => Some('R'),
+                        EventResult::OpenWorkspaceDelete => Some('K'),
+                        _ => None,
+                    };
 
                     match result {
                         EventResult::Quit => {
@@ -903,15 +966,23 @@ fn run_attached(
 
                             // Create new session via daemon (use sync variant to skip any
                             // remaining in-flight Output messages from the old session)
-                            let create_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                session_name: name.clone(),
-                                rows: term_rows,
-                                cols: term_cols,
-                                cwd: cwd.clone(),
-                            }, &mut app)?;
+                            let create_response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::Attach {
+                                    session_name: name.clone(),
+                                    rows: term_rows,
+                                    cols: term_cols,
+                                    cwd: cwd.clone(),
+                                },
+                                &mut app,
+                            )?;
 
                             match create_response {
-                                DaemonResponse::Attached { session_name: attached_name, is_new: _, terminal_state: new_state } => {
+                                DaemonResponse::Attached {
+                                    session_name: attached_name,
+                                    is_new: _,
+                                    terminal_state: new_state,
+                                } => {
                                     // Add session to local state
                                     app.app_state.add_session(Session::attached(&attached_name));
                                     app.session_name = attached_name;
@@ -928,7 +999,9 @@ fn run_attached(
                                     // For agent sessions, send the claude command
                                     if session_type == SessionType::Agent {
                                         let claude_cmd = b"claude\n";
-                                        let input_msg = ClientMessage::Input { data: claude_cmd.to_vec() };
+                                        let input_msg = ClientMessage::Input {
+                                            data: claude_cmd.to_vec(),
+                                        };
                                         let encoded = encode_message(&input_msg)?;
                                         stream.write_all(&encoded)?;
                                         stream.flush()?;
@@ -947,9 +1020,13 @@ fn run_attached(
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                             // Kill session via daemon
-                            let kill_response = send_daemon_message_sync(stream, ClientMessage::Kill {
-                                session_name: name.clone(),
-                            }, &mut app)?;
+                            let kill_response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::Kill {
+                                    session_name: name.clone(),
+                                },
+                                &mut app,
+                            )?;
 
                             match kill_response {
                                 DaemonResponse::Killed { .. } => {
@@ -960,21 +1037,33 @@ fn run_attached(
                                     if app.session_name == name {
                                         if let Some(session) = app.app_state.sessions.first() {
                                             // Switch to first available session
-                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                                session_name: session.name.clone(),
-                                                rows: term_rows,
-                                                cols: term_cols,
-                                                cwd: cwd.clone(),
-                                            }, &mut app)?;
+                                            let switch_response = send_daemon_message_sync(
+                                                stream,
+                                                ClientMessage::Attach {
+                                                    session_name: session.name.clone(),
+                                                    rows: term_rows,
+                                                    cols: term_cols,
+                                                    cwd: cwd.clone(),
+                                                },
+                                                &mut app,
+                                            )?;
 
-                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                            if let DaemonResponse::Attached {
+                                                session_name: attached_name,
+                                                terminal_state: new_state,
+                                                ..
+                                            } = switch_response
+                                            {
                                                 app.session_name = attached_name.clone();
-                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                app.term_emulator =
+                                                    Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
                                                 }
                                                 // Restore scroll position for the newly attached session
-                                                if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                                if let Some(&saved_offset) =
+                                                    app.session_scroll_offsets.get(&attached_name)
+                                                {
                                                     app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
@@ -998,15 +1087,21 @@ fn run_attached(
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                             // Rename session via daemon
-                            let rename_response = send_daemon_message_sync(stream, ClientMessage::Rename {
-                                old_name: old_name.clone(),
-                                new_name: new_name.clone(),
-                            }, &mut app)?;
+                            let rename_response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::Rename {
+                                    old_name: old_name.clone(),
+                                    new_name: new_name.clone(),
+                                },
+                                &mut app,
+                            )?;
 
                             match rename_response {
                                 DaemonResponse::Renamed { .. } => {
                                     // Update scroll offset HashMap key for renamed session
-                                    if let Some(offset) = app.session_scroll_offsets.remove(&old_name) {
+                                    if let Some(offset) =
+                                        app.session_scroll_offsets.remove(&old_name)
+                                    {
                                         app.session_scroll_offsets.insert(new_name.clone(), offset);
                                     }
                                     // Update current session name if it was renamed
@@ -1017,8 +1112,12 @@ fn run_attached(
                                 DaemonResponse::Error { message } => {
                                     eprintln!("Failed to rename session: {}", message);
                                     // Revert local state change
-                                    if let Some(session) = app.app_state.sessions.iter_mut()
-                                        .find(|s| s.name == new_name) {
+                                    if let Some(session) = app
+                                        .app_state
+                                        .sessions
+                                        .iter_mut()
+                                        .find(|s| s.name == new_name)
+                                    {
                                         session.name = old_name;
                                     }
                                 }
@@ -1033,7 +1132,8 @@ fn run_attached(
                                 // Save scroll position for current session before switching
                                 let current_scroll = app.term_emulator.get_scroll_offset();
                                 if current_scroll > 0 {
-                                    app.session_scroll_offsets.insert(app.session_name.clone(), current_scroll);
+                                    app.session_scroll_offsets
+                                        .insert(app.session_name.clone(), current_scroll);
                                 } else {
                                     app.session_scroll_offsets.remove(&app.session_name);
                                 }
@@ -1042,25 +1142,39 @@ fn run_attached(
                                 drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
                                 // Detach from current session
-                                let _ = send_daemon_message_sync(stream, ClientMessage::Detach, &mut app);
+                                let _ = send_daemon_message_sync(
+                                    stream,
+                                    ClientMessage::Detach,
+                                    &mut app,
+                                );
 
                                 // Attach to new session
-                                let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                    session_name: name.clone(),
-                                    rows: term_rows,
-                                    cols: term_cols,
-                                    cwd: cwd.clone(),
-                                }, &mut app)?;
+                                let switch_response = send_daemon_message_sync(
+                                    stream,
+                                    ClientMessage::Attach {
+                                        session_name: name.clone(),
+                                        rows: term_rows,
+                                        cols: term_cols,
+                                        cwd: cwd.clone(),
+                                    },
+                                    &mut app,
+                                )?;
 
                                 match switch_response {
-                                    DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } => {
+                                    DaemonResponse::Attached {
+                                        session_name: attached_name,
+                                        terminal_state: new_state,
+                                        ..
+                                    } => {
                                         app.session_name = attached_name.clone();
                                         app.term_emulator = Terminal::new(term_rows, term_cols);
                                         if let Some(state_bytes) = new_state {
                                             app.process_output(&state_bytes);
                                         }
                                         // Restore scroll position for the newly attached session
-                                        if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                        if let Some(&saved_offset) =
+                                            app.session_scroll_offsets.get(&attached_name)
+                                        {
                                             app.term_emulator.scroll_up(saved_offset);
                                         }
                                     }
@@ -1070,8 +1184,7 @@ fn run_attached(
                                     _ => {}
                                 }
                             }
-                            // Move switched session to top (most recently used)
-                            app.app_state.move_selected_to_top();
+                            // The old MRU reshuffle made numbered bindings unstable; preserve display order.
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
@@ -1100,7 +1213,10 @@ fn run_attached(
                             // Recalculate term_cols based on new zoom state
                             term_cols = compute_term_cols(last_size.0, app.app_state.zoomed);
                             app.resize(term_rows, term_cols);
-                            let resize_msg = ClientMessage::Resize { rows: term_rows, cols: term_cols };
+                            let resize_msg = ClientMessage::Resize {
+                                rows: term_rows,
+                                cols: term_cols,
+                            };
                             let encoded = encode_message(&resize_msg)?;
                             stream.write_all(&encoded)?;
                             stream.flush()?;
@@ -1110,75 +1226,172 @@ fn run_attached(
                                 app.show_timed_message("Unzoomed — sidebar visible");
                             }
                         }
-                        EventResult::OpenWorkspaceOverlay => {
+                        EventResult::OpenWorkspaceOverlay
+                        | EventResult::OpenWorkspaceCreate
+                        | EventResult::OpenWorkspaceRename
+                        | EventResult::OpenWorkspaceDelete => {
                             // Fetch fresh workspace list from daemon before opening overlay
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let ws_response = send_daemon_message_sync(stream, ClientMessage::ListWorkspaces, &mut app)?;
-                            let (workspaces, active) = if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
-                                let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+                            let ws_response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::ListWorkspaces,
+                                &mut app,
+                            )?;
+                            let (workspaces, active) = if let DaemonResponse::Workspaces {
+                                workspaces,
+                                active_workspace,
+                            } = ws_response
+                            {
+                                let names: Vec<String> =
+                                    workspaces.iter().map(|ws| ws.name.clone()).collect();
                                 (names, active_workspace)
                             } else {
-                                (app.app_state.workspaces.clone(), app.app_state.workspace_name.clone())
+                                (
+                                    app.app_state.workspaces.clone(),
+                                    app.app_state.workspace_name.clone(),
+                                )
                             };
                             app.app_state.workspaces = workspaces.clone();
                             app.app_state.workspace_name = active.clone();
-                            app.app_state.mode = AppMode::WorkspaceOverlay(
-                                WorkspaceOverlayState::new(workspaces, active)
-                            );
+                            let mut overlay = WorkspaceOverlayState::new(workspaces, active);
+                            // Uppercase workspace commands act on the current workspace without
+                            // forcing an extra chooser keystroke, while reusing its inline editors.
+                            match workspace_action {
+                                Some('C') => {
+                                    overlay.selected_index = 0;
+                                    overlay.drafting_workspace =
+                                        Some(sidebar_tui::state::RenamingState::new(
+                                            0,
+                                            "",
+                                            Focus::Sidebar,
+                                        ));
+                                }
+                                Some('R') => {
+                                    let name = overlay
+                                        .workspaces
+                                        .get(overlay.selected_index)
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    overlay.renaming =
+                                        Some(sidebar_tui::state::RenamingState::new(
+                                            0,
+                                            &name,
+                                            Focus::Sidebar,
+                                        ));
+                                }
+                                Some('K') => {
+                                    let name = overlay.active_workspace.clone();
+                                    app.app_state.mode =
+                                        AppMode::Confirming(sidebar_tui::state::ConfirmState::new(
+                                            sidebar_tui::state::ConfirmAction::DeleteWorkspace(
+                                                name,
+                                            ),
+                                            Focus::Sidebar,
+                                        ));
+                                    stream.set_read_timeout(Some(Duration::from_millis(10)))?;
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                            app.app_state.mode = AppMode::WorkspaceOverlay(overlay);
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::OpenMoveToWorkspaceOverlay { session_name } => {
                             // Fetch fresh workspace list from daemon before opening move overlay
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let ws_response = send_daemon_message_sync(stream, ClientMessage::ListWorkspaces, &mut app)?;
-                            let (workspaces, active) = if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
-                                let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+                            let ws_response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::ListWorkspaces,
+                                &mut app,
+                            )?;
+                            let (workspaces, active) = if let DaemonResponse::Workspaces {
+                                workspaces,
+                                active_workspace,
+                            } = ws_response
+                            {
+                                let names: Vec<String> =
+                                    workspaces.iter().map(|ws| ws.name.clone()).collect();
                                 (names, active_workspace)
                             } else {
-                                (app.app_state.workspaces.clone(), app.app_state.workspace_name.clone())
+                                (
+                                    app.app_state.workspaces.clone(),
+                                    app.app_state.workspace_name.clone(),
+                                )
                             };
                             app.app_state.workspaces = workspaces.clone();
-                            app.app_state.mode = AppMode::WorkspaceOverlay(
-                                WorkspaceOverlayState::new_move_mode(workspaces, active, session_name)
-                            );
+                            app.app_state.mode =
+                                AppMode::WorkspaceOverlay(WorkspaceOverlayState::new_move_mode(
+                                    workspaces,
+                                    active,
+                                    session_name,
+                                ));
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
                         EventResult::SwitchWorkspace { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
                             // Save current workspace state before switching
                             let current_ws = app.app_state.workspace_name.clone();
-                            let last_selected = app.app_state.sessions
+                            let last_selected = app
+                                .app_state
+                                .sessions
                                 .get(app.app_state.selected_index)
                                 .map(|s| s.name.clone());
                             let focused_pane = match app.app_state.focus {
                                 Focus::Sidebar => "sidebar".to_string(),
                                 Focus::Terminal => "terminal".to_string(),
                             };
-                            let _ = send_daemon_message_sync(stream, ClientMessage::SaveWorkspaceState {
-                                workspace_name: current_ws,
-                                last_selected_session: last_selected,
-                                last_focused_pane: focused_pane,
-                                sidebar_scroll_offset: app.app_state.scroll_offset,
-                            }, &mut app);
+                            let _ = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::SaveWorkspaceState {
+                                    workspace_name: current_ws,
+                                    last_selected_session: last_selected,
+                                    last_focused_pane: focused_pane,
+                                    sidebar_scroll_offset: app.app_state.scroll_offset,
+                                },
+                                &mut app,
+                            );
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
-                            let response = send_daemon_message_sync(stream, ClientMessage::SwitchWorkspace {
-                                name: name.clone(),
-                            }, &mut app)?;
+                            let response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::SwitchWorkspace { name: name.clone() },
+                                &mut app,
+                            )?;
                             match response {
-                                DaemonResponse::WorkspaceSwitched { name: new_ws, sessions: ws_sessions, last_selected_session, last_focused_pane, sidebar_scroll_offset } => {
+                                DaemonResponse::WorkspaceSwitched {
+                                    name: new_ws,
+                                    sessions: ws_sessions,
+                                    last_selected_session,
+                                    last_focused_pane,
+                                    sidebar_scroll_offset,
+                                } => {
                                     // Update sessions from the response
-                                    app.app_state.sessions = ws_sessions.iter()
+                                    app.app_state.sessions = ws_sessions
+                                        .iter()
                                         .map(|s| Session::attached(&s.name))
                                         .collect();
                                     app.app_state.workspace_name = new_ws;
 
                                     // Restore saved workspace state
                                     app.app_state.scroll_offset = sidebar_scroll_offset;
-                                    app.app_state.focus = if last_focused_pane == "sidebar" { Focus::Sidebar } else { Focus::Terminal };
+                                    // Direct/chooser switching has explicit focus semantics; only CLI-style
+                                    // restoration should inherit the target workspace's saved pane.
+                                    app.app_state.focus =
+                                        requested_workspace_focus.unwrap_or_else(|| {
+                                            if last_focused_pane == "sidebar" {
+                                                Focus::Sidebar
+                                            } else {
+                                                Focus::Terminal
+                                            }
+                                        });
 
                                     // Restore last selected session index
                                     if let Some(ref last_name) = last_selected_session {
-                                        if let Some(idx) = app.app_state.sessions.iter().position(|s| &s.name == last_name) {
+                                        if let Some(idx) = app
+                                            .app_state
+                                            .sessions
+                                            .iter()
+                                            .position(|s| &s.name == last_name)
+                                        {
                                             app.app_state.selected_index = idx;
                                         } else {
                                             app.app_state.selected_index = 0;
@@ -1190,31 +1403,55 @@ fn run_attached(
                                     // Save scroll position for current session before switching workspace
                                     let current_scroll = app.term_emulator.get_scroll_offset();
                                     if current_scroll > 0 {
-                                        app.session_scroll_offsets.insert(app.session_name.clone(), current_scroll);
+                                        app.session_scroll_offsets
+                                            .insert(app.session_name.clone(), current_scroll);
                                     } else {
                                         app.session_scroll_offsets.remove(&app.session_name);
                                     }
 
                                     // If current session is not in new workspace, switch to last selected or first available
                                     let target_session = last_selected_session
-                                        .filter(|name| app.app_state.sessions.iter().any(|s| &s.name == name))
-                                        .or_else(|| app.app_state.sessions.first().map(|s| s.name.clone()));
-                                    if !app.app_state.sessions.iter().any(|s| s.name == app.session_name) {
-                                        if let Some(first) = target_session.or_else(|| app.app_state.sessions.first().map(|s| s.name.clone())) {
-                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                                session_name: first.clone(),
-                                                rows: term_rows,
-                                                cols: term_cols,
-                                                cwd: cwd.clone(),
-                                            }, &mut app)?;
-                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                        .filter(|name| {
+                                            app.app_state.sessions.iter().any(|s| &s.name == name)
+                                        })
+                                        .or_else(|| {
+                                            app.app_state.sessions.first().map(|s| s.name.clone())
+                                        });
+                                    if !app
+                                        .app_state
+                                        .sessions
+                                        .iter()
+                                        .any(|s| s.name == app.session_name)
+                                    {
+                                        if let Some(first) = target_session.or_else(|| {
+                                            app.app_state.sessions.first().map(|s| s.name.clone())
+                                        }) {
+                                            let switch_response = send_daemon_message_sync(
+                                                stream,
+                                                ClientMessage::Attach {
+                                                    session_name: first.clone(),
+                                                    rows: term_rows,
+                                                    cols: term_cols,
+                                                    cwd: cwd.clone(),
+                                                },
+                                                &mut app,
+                                            )?;
+                                            if let DaemonResponse::Attached {
+                                                session_name: attached_name,
+                                                terminal_state: new_state,
+                                                ..
+                                            } = switch_response
+                                            {
                                                 app.session_name = attached_name.clone();
-                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                app.term_emulator =
+                                                    Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
                                                 }
                                                 // Restore scroll position for the newly attached session
-                                                if let Some(&saved_offset) = app.session_scroll_offsets.get(&attached_name) {
+                                                if let Some(&saved_offset) =
+                                                    app.session_scroll_offsets.get(&attached_name)
+                                                {
                                                     app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
@@ -1233,9 +1470,11 @@ fn run_attached(
                         }
                         EventResult::CreateWorkspace { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(stream, ClientMessage::CreateWorkspace {
-                                name: name.clone(),
-                            }, &mut app)?;
+                            let response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::CreateWorkspace { name: name.clone() },
+                                &mut app,
+                            )?;
                             match response {
                                 DaemonResponse::WorkspaceCreated { name: new_ws } => {
                                     // Add to local workspace list
@@ -1244,7 +1483,9 @@ fn run_attached(
                                         app.app_state.workspaces.sort();
                                     }
                                     // Update overlay state if still open
-                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                    if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                        app.app_state.mode
+                                    {
                                         ov.workspaces = app.app_state.workspaces.clone();
                                     }
                                 }
@@ -1257,14 +1498,23 @@ fn run_attached(
                         }
                         EventResult::RenameWorkspace { old_name, new_name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(stream, ClientMessage::RenameWorkspace {
-                                old_name: old_name.clone(),
-                                new_name: new_name.clone(),
-                            }, &mut app)?;
+                            let response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::RenameWorkspace {
+                                    old_name: old_name.clone(),
+                                    new_name: new_name.clone(),
+                                },
+                                &mut app,
+                            )?;
                             match response {
-                                DaemonResponse::WorkspaceRenamed { old_name: old, new_name: new } => {
+                                DaemonResponse::WorkspaceRenamed {
+                                    old_name: old,
+                                    new_name: new,
+                                } => {
                                     // Update local workspace list
-                                    if let Some(pos) = app.app_state.workspaces.iter().position(|w| w == &old) {
+                                    if let Some(pos) =
+                                        app.app_state.workspaces.iter().position(|w| w == &old)
+                                    {
                                         app.app_state.workspaces[pos] = new.clone();
                                         app.app_state.workspaces.sort();
                                     }
@@ -1272,12 +1522,16 @@ fn run_attached(
                                         app.app_state.workspace_name = new.clone();
                                     }
                                     // Update overlay state if still open
-                                    if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                    if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                        app.app_state.mode
+                                    {
                                         ov.workspaces = app.app_state.workspaces.clone();
                                         if ov.active_workspace == old {
                                             ov.active_workspace = new.clone();
                                         }
-                                        ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                        ov.selected_index = ov
+                                            .selected_index
+                                            .min(ov.workspaces.len().saturating_sub(1));
                                     }
                                 }
                                 DaemonResponse::Error { message } => {
@@ -1289,23 +1543,37 @@ fn run_attached(
                         }
                         EventResult::DeleteWorkspace { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(stream, ClientMessage::DeleteWorkspace {
-                                name: name.clone(),
-                            }, &mut app)?;
+                            let response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::DeleteWorkspace { name: name.clone() },
+                                &mut app,
+                            )?;
                             match response {
                                 DaemonResponse::WorkspaceDeleted { .. } => {
                                     // Refresh workspace list from daemon (handles auto-created Default)
-                                    let ws_response = send_daemon_message_sync(stream,
-                                        ClientMessage::ListWorkspaces, &mut app)?;
-                                    if let DaemonResponse::Workspaces { workspaces, active_workspace } = ws_response {
-                                        let names: Vec<String> = workspaces.into_iter().map(|w| w.name).collect();
+                                    let ws_response = send_daemon_message_sync(
+                                        stream,
+                                        ClientMessage::ListWorkspaces,
+                                        &mut app,
+                                    )?;
+                                    if let DaemonResponse::Workspaces {
+                                        workspaces,
+                                        active_workspace,
+                                    } = ws_response
+                                    {
+                                        let names: Vec<String> =
+                                            workspaces.into_iter().map(|w| w.name).collect();
                                         app.app_state.workspaces = names.clone();
                                         app.app_state.workspace_name = active_workspace.clone();
                                         // Update overlay state if still open
-                                        if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+                                        if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                            app.app_state.mode
+                                        {
                                             ov.workspaces = names;
                                             ov.active_workspace = active_workspace;
-                                            ov.selected_index = ov.selected_index.min(ov.workspaces.len().saturating_sub(1));
+                                            ov.selected_index = ov
+                                                .selected_index
+                                                .min(ov.workspaces.len().saturating_sub(1));
                                         }
                                     }
                                 }
@@ -1316,12 +1584,19 @@ fn run_attached(
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::MoveSessionToWorkspace { session_name, workspace_name } => {
+                        EventResult::MoveSessionToWorkspace {
+                            session_name,
+                            workspace_name,
+                        } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(stream, ClientMessage::MoveSessionToWorkspace {
-                                session_name: session_name.clone(),
-                                workspace_name: workspace_name.clone(),
-                            }, &mut app)?;
+                            let response = send_daemon_message_sync(
+                                stream,
+                                ClientMessage::MoveSessionToWorkspace {
+                                    session_name: session_name.clone(),
+                                    workspace_name: workspace_name.clone(),
+                                },
+                                &mut app,
+                            )?;
                             match response {
                                 DaemonResponse::SessionMoved { .. } => {
                                     // Remove session from local list (it's now in another workspace)
@@ -1329,15 +1604,25 @@ fn run_attached(
                                     // If we moved the current session away, switch to another
                                     if app.session_name == session_name {
                                         if let Some(next) = app.app_state.sessions.first() {
-                                            let switch_response = send_daemon_message_sync(stream, ClientMessage::Attach {
-                                                session_name: next.name.clone(),
-                                                rows: term_rows,
-                                                cols: term_cols,
-                                                cwd: cwd.clone(),
-                                            }, &mut app)?;
-                                            if let DaemonResponse::Attached { session_name: attached_name, terminal_state: new_state, .. } = switch_response {
+                                            let switch_response = send_daemon_message_sync(
+                                                stream,
+                                                ClientMessage::Attach {
+                                                    session_name: next.name.clone(),
+                                                    rows: term_rows,
+                                                    cols: term_cols,
+                                                    cwd: cwd.clone(),
+                                                },
+                                                &mut app,
+                                            )?;
+                                            if let DaemonResponse::Attached {
+                                                session_name: attached_name,
+                                                terminal_state: new_state,
+                                                ..
+                                            } = switch_response
+                                            {
                                                 app.session_name = attached_name;
-                                                app.term_emulator = Terminal::new(term_rows, term_cols);
+                                                app.term_emulator =
+                                                    Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
                                                 }
@@ -1355,6 +1640,12 @@ fn run_attached(
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
+                        EventResult::ReorderSession { .. } => {
+                            // The state machine already changed the visible stable order.
+                        }
+                        EventResult::SwitchRelativeWorkspace { .. } => {
+                            unreachable!("resolved before dispatch")
+                        }
                         EventResult::Consumed => {
                             // Event was consumed by UI state machine, nothing to forward
                         }
@@ -1370,8 +1661,7 @@ fn run_attached(
                                     let encoded = encode_message(&input_msg)?;
                                     stream.write_all(&encoded)?;
                                     stream.flush()?;
-                                    // Move active session to top (most recently used)
-                                    app.app_state.move_selected_to_top();
+                                    // Preserve stable displayed positions for numeric and reorder shortcuts.
                                 }
                             }
                         }
@@ -1380,17 +1670,9 @@ fn run_attached(
                 Event::Resize(width, height) => {
                     if (width, height) != last_size {
                         last_size = (width, height);
-                        // Account for sidebar (0 when zoomed), horizontal padding, and terminal border
+                        // No terminal border, padding, or bottom hints consume PTY cells.
                         term_cols = compute_term_cols(width, app.app_state.zoomed);
-                        // Account for terminal border (top + bottom), and dynamic hint bar height
-                        {
-                            let mut hb = hint_bar_for_state(&app.app_state);
-                            if let Some((text, _)) = &app.timed_message {
-                                hb.show_message(text);
-                            }
-                            last_hint_bar_height = hb.calculate_height(width);
-                        }
-                        term_rows = height.saturating_sub(2 + last_hint_bar_height);
+                        term_rows = height;
                         app.resize(term_rows, term_cols);
 
                         // Send resize to daemon
@@ -1410,16 +1692,20 @@ fn run_attached(
                     // Behavior depends on whether a full-screen app is running:
                     // - Normal terminal (shell prompt, etc.): scroll through TUI history
                     // - Full-screen app (vim, less, htop via alt screen): forward to PTY
-                    if matches!(app.app_state.mode, AppMode::Normal)
-                        && !app.session_name.is_empty()
+                    if matches!(app.app_state.mode, AppMode::Normal) && !app.session_name.is_empty()
                     {
                         match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                let scroll_up = matches!(mouse_event.kind, MouseEventKind::ScrollUp);
+                                let scroll_up =
+                                    matches!(mouse_event.kind, MouseEventKind::ScrollUp);
 
                                 if app.term_emulator.is_alt_screen() {
                                     // Full-screen app running — forward scroll to PTY as ANSI
-                                    let bytes = encode_mouse_scroll(scroll_up, mouse_event.column + 1, mouse_event.row + 1);
+                                    let bytes = encode_mouse_scroll(
+                                        scroll_up,
+                                        mouse_event.column + 1,
+                                        mouse_event.row + 1,
+                                    );
                                     let input_msg = ClientMessage::Input { data: bytes };
                                     let encoded = encode_message(&input_msg)?;
                                     stream.write_all(&encoded)?;
@@ -1427,8 +1713,10 @@ fn run_attached(
                                 } else {
                                     // Normal terminal — scroll TUI history with velocity throttling
                                     let now = std::time::Instant::now();
-                                    let since_last_action = now.duration_since(app.last_scroll_time).as_millis();
-                                    let since_last_event = now.duration_since(app.last_scroll_event_time).as_millis();
+                                    let since_last_action =
+                                        now.duration_since(app.last_scroll_time).as_millis();
+                                    let since_last_event =
+                                        now.duration_since(app.last_scroll_event_time).as_millis();
 
                                     let is_fast = since_last_event < SCROLL_FAST_THRESHOLD_MS;
                                     app.last_scroll_event_time = now;
@@ -1491,17 +1779,72 @@ fn run_attached(
 /// Sidebar width in characters
 pub const SIDEBAR_WIDTH: u16 = 28;
 
-/// Horizontal padding on left and right of terminal view (1 character each side per spec)
-pub const TERMINAL_H_PADDING: u16 = 1;
-
 /// Compute the number of terminal columns given the total screen width and zoom state.
 /// When zoomed, the sidebar is hidden so the terminal gets the full width.
 pub fn compute_term_cols(screen_width: u16, zoomed: bool) -> u16 {
     let sidebar = if zoomed { 0 } else { SIDEBAR_WIDTH };
-    screen_width
-        .saturating_sub(sidebar)
-        .saturating_sub(TERMINAL_H_PADDING * 2)
-        .saturating_sub(2)
+    screen_width.saturating_sub(sidebar)
+}
+
+/// Split only horizontally so contextual hints cannot change terminal geometry.
+fn app_layout(area: Rect, zoomed: bool) -> (Rect, Rect) {
+    let chunks = Layout::horizontal([
+        Constraint::Length(if zoomed { 0 } else { SIDEBAR_WIDTH }),
+        Constraint::Min(0),
+    ])
+    .split(area);
+    (chunks[0], chunks[1])
+}
+
+/// Keep hints inside the sidebar frame, separated from its scrollable list.
+fn render_sidebar_hints(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    hints: sidebar_tui::hint_bar::HintBar,
+) -> Rect {
+    let hint_height = hints
+        .calculate_height(area.width.saturating_sub(2))
+        .min(area.height.saturating_sub(8));
+    let list_area = Rect {
+        height: area
+            .height
+            .saturating_sub(hint_height + u16::from(hint_height > 0)),
+        ..area
+    };
+    if area.width == 0 || area.height == 0 {
+        return list_area;
+    }
+    render_sidebar_with_state(frame, list_area, state);
+    if hint_height > 0 {
+        let focused = state.focus == Focus::Sidebar || state.mode.is_text_input();
+        let style = Style::default().fg(if focused {
+            colors::FOCUSED_BORDER
+        } else {
+            colors::DARK_GREY
+        });
+        let hint_area = Rect::new(
+            area.x,
+            list_area.bottom().saturating_sub(1),
+            area.width,
+            hint_height + 2,
+        );
+        let block = Block::default().borders(Borders::ALL).border_style(style);
+        let inner = block.inner(hint_area);
+        frame.render_widget(block, hint_area);
+        frame.render_widget(
+            Paragraph::new("├").style(style),
+            Rect::new(area.x, hint_area.y, 1, 1),
+        );
+        if area.width > 1 {
+            frame.render_widget(
+                Paragraph::new("┤").style(style),
+                Rect::new(area.right() - 1, hint_area.y, 1, 1),
+            );
+        }
+        frame.render_widget(hints, inner);
+    }
+    list_area
 }
 
 /// Render the application UI with daemon-connected terminal emulator.
@@ -1512,49 +1855,39 @@ fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     if let Some((text, _)) = &app.timed_message {
         hint_bar.show_message(text);
     }
-    let hint_bar_height = hint_bar.calculate_height(frame.area().width);
-
-    // Create vertical layout: main content + hint bar
-    let vertical_chunks = Layout::vertical([
-        Constraint::Min(0),  // Main content
-        Constraint::Length(hint_bar_height),  // Hint bar
-    ])
-    .split(frame.area());
-
-    let main_area = vertical_chunks[0];
-    let hint_bar_area = vertical_chunks[1];
+    let (sidebar_area, main_area) = app_layout(frame.area(), app.app_state.zoomed);
+    let sidebar_area = render_sidebar_hints(frame, sidebar_area, &app.app_state, hint_bar);
 
     if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
-        // Full-screen workspace overlay replaces sidebar and terminal panes.
+        // The chooser occupies the right side; hints stay in the sidebar.
         render_workspace_overlay(frame, main_area, overlay);
+    } else if matches!(app.app_state.mode, AppMode::Help) {
+        render_keybinding_help(frame, main_area);
     } else if app.app_state.zoomed {
         // Zoomed mode: terminal takes the full main area (sidebar is hidden).
         // This allows clean text selection of terminal-only content (e.g. in VSCode).
-        render_terminal_emulator_with_state(frame, main_area, &mut app.term_emulator, &app.app_state);
+        render_terminal_emulator_with_state(
+            frame,
+            main_area,
+            &mut app.term_emulator,
+            &app.app_state,
+        );
     } else {
-        // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
-        let horizontal_chunks = Layout::horizontal([
-            Constraint::Length(SIDEBAR_WIDTH),
-            Constraint::Fill(1),
-        ])
-        .split(main_area);
-
-        let sidebar_area = horizontal_chunks[0];
-        render_sidebar_with_state(frame, sidebar_area, &app.app_state);
-
-        // Render terminal at full area - padding is applied inside the border by render function
-        let terminal_area = horizontal_chunks[1];
-        render_terminal_emulator_with_state(frame, terminal_area, &mut app.term_emulator, &app.app_state);
+        render_terminal_emulator_with_state(
+            frame,
+            main_area,
+            &mut app.term_emulator,
+            &app.app_state,
+        );
 
         // Set cursor position: if in drafting/renaming mode, show cursor in sidebar
         // Otherwise, the terminal emulator handles its own cursor
-        if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(&app.app_state, sidebar_area) {
+        if let Some((cursor_x, cursor_y)) =
+            get_sidebar_cursor_position(&app.app_state, sidebar_area)
+        {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
-
-    // Render hint bar
-    frame.render_widget(hint_bar, hint_bar_area);
 }
 
 /// Render the static UI layout (for tests without PTY).
@@ -1566,56 +1899,32 @@ pub fn render(frame: &mut Frame) {
 
 /// Render the static UI layout with specific app state.
 pub fn render_with_state(frame: &mut Frame, state: &AppState) {
-    // Calculate hint bar height first
-    let hint_bar = hint_bar_for_state(state);
-    let hint_bar_height = hint_bar.calculate_height(frame.area().width);
-
-    // Create vertical layout: main content + hint bar
-    let vertical_chunks = Layout::vertical([
-        Constraint::Min(0),  // Main content
-        Constraint::Length(hint_bar_height),  // Hint bar
-    ])
-    .split(frame.area());
-
-    let main_area = vertical_chunks[0];
-    let hint_bar_area = vertical_chunks[1];
+    let (sidebar_area, main_area) = app_layout(frame.area(), state.zoomed);
+    let sidebar_area = render_sidebar_hints(frame, sidebar_area, state, hint_bar_for_state(state));
 
     if let AppMode::WorkspaceOverlay(ref overlay) = state.mode {
-        // Full-screen workspace overlay replaces sidebar and terminal panes.
+        // The chooser occupies the right side; hints stay in the sidebar.
         render_workspace_overlay(frame, main_area, overlay);
+    } else if matches!(state.mode, AppMode::Help) {
+        render_keybinding_help(frame, main_area);
     } else {
-        // Create horizontal layout for main area: sidebar (28 chars) + terminal view (rest)
-        let horizontal_chunks = Layout::horizontal([
-            Constraint::Length(SIDEBAR_WIDTH),
-            Constraint::Fill(1),
-        ])
-        .split(main_area);
-
-        let sidebar_area = horizontal_chunks[0];
-        render_sidebar_with_state(frame, sidebar_area, state);
-
-        // Render terminal at full area - padding is applied inside the border by render function
-        let terminal_area = horizontal_chunks[1];
-        render_terminal_view_with_state(frame, terminal_area, state);
+        render_terminal_view_with_state(frame, main_area, state);
 
         // Set cursor position for drafting/renaming modes
         if let Some((cursor_x, cursor_y)) = get_sidebar_cursor_position(state, sidebar_area) {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
-
-    // Render hint bar
-    frame.render_widget(hint_bar, hint_bar_area);
 }
 
-/// Shrink a rect by horizontal padding only (left and right sides)
-fn pad_rect_horizontal(rect: Rect, padding: u16) -> Rect {
-    Rect {
-        x: rect.x.saturating_add(padding),
-        y: rect.y,
-        width: rect.width.saturating_sub(padding * 2),
-        height: rect.height,
-    }
+/// Render the discoverable command reference requested by `?`.
+fn render_keybinding_help(frame: &mut Frame, area: Rect) {
+    let help = Paragraph::new(
+        "Sidebar commands\n\n↑/↓ j/k  Browse windows     Enter/Toggle  Focus window\n1-9       Highlight window   n/p           Next/previous window\nl         Last window        c/a           New terminal/agent\nr/,       Rename window      &/Delete      Delete window\nm         Move window        s             Workspaces\nC/R/K     Create/rename/delete workspace\nP/N       Previous/next workspace\nz         Hide sidebar       S             Mouse/text selection\nd         Detach             Esc/q         Cancel browsing\n\nGlobal: Ctrl+Space, Ctrl+B, Cmd+Space, Cmd+B toggle focus\nAlt+1-9 and Alt+arrows switch directly; Alt+Shift+Left/Right reorders.\n\nPress Esc, q, or ? to close."
+    )
+    .block(Block::default().title(" Keybindings ").borders(Borders::ALL))
+    .style(Style::default().fg(colors::WHITE));
+    frame.render_widget(help, area);
 }
 
 /// Render sidebar with specific application state.
@@ -1624,63 +1933,36 @@ fn render_sidebar_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(sidebar, area);
 }
 
-/// Render terminal view placeholder with focus-aware border colors.
+/// Render the edge-to-edge terminal placeholder.
 fn render_terminal_view_with_state(frame: &mut Frame, area: Rect, state: &AppState) {
     // During drafting mode, terminal pane should be blank and non-interactive
     let is_drafting = matches!(state.mode, AppMode::Drafting(_));
 
-    // Terminal border color depends on focus (but always unfocused during drafting)
-    let border_color = if !is_drafting && state.focus == Focus::Terminal {
-        colors::FOCUSED_BORDER
-    } else {
-        colors::DARK_GREY
-    };
-
-    let terminal_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-
-    let inner_area = terminal_block.inner(area);
-    frame.render_widget(terminal_block, area);
-
-    // Apply horizontal padding inside the border
-    let padded_inner = pad_rect_horizontal(inner_area, TERMINAL_H_PADDING);
-
+    // The old frame and padding wasted terminal cells; render edge to edge.
     // During drafting, show blank terminal. Otherwise show placeholder.
     if !is_drafting {
         let terminal_placeholder = Paragraph::new("Terminal view (see hint bar for keybindings)")
             .style(Style::default().fg(colors::WHITE));
-        frame.render_widget(terminal_placeholder, padded_inner);
+        frame.render_widget(terminal_placeholder, area);
     }
 }
 
-/// Render the terminal emulator with focus-aware border colors.
-fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &mut Terminal, state: &AppState) {
+/// Render the terminal emulator without a frame or padding.
+fn render_terminal_emulator_with_state(
+    frame: &mut Frame,
+    area: Rect,
+    term: &mut Terminal,
+    state: &AppState,
+) {
     // During drafting mode, terminal pane should be blank and non-interactive
     let is_drafting = matches!(state.mode, AppMode::Drafting(_));
 
-    // Terminal border color depends on focus (but always unfocused during drafting)
-    let border_color = if !is_drafting && state.focus == Focus::Terminal {
-        colors::FOCUSED_BORDER
-    } else {
-        colors::DARK_GREY
-    };
-
-    let terminal_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-
-    let inner_area = terminal_block.inner(area);
-    frame.render_widget(terminal_block, area);
-
-    // Apply horizontal padding inside the border
-    let padded_inner = pad_rect_horizontal(inner_area, TERMINAL_H_PADDING);
-
+    // Match the PTY's full-height, borderless geometry exactly.
     // During drafting, show blank terminal. Otherwise render terminal content.
     if !is_drafting {
-        // Render the terminal emulator content with cursor inside the border + padding
+        // Render the terminal emulator content and cursor in the full right pane.
         // Note: cursor position is handled by get_sidebar_cursor_position during drafting/renaming
-        if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, padded_inner) {
+        if let Some((cursor_x, cursor_y)) = term.render_with_cursor(frame, area) {
             // Only set terminal cursor if not in text input mode (drafting/renaming)
             if !state.mode.is_text_input() {
                 frame.set_cursor_position((cursor_x, cursor_y));
@@ -1689,7 +1971,7 @@ fn render_terminal_emulator_with_state(frame: &mut Frame, area: Rect, term: &mut
     }
 }
 
-/// Render the workspace overlay as a floating window centered on screen.
+/// Render the workspace chooser in the right-hand pane.
 fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOverlayState) {
     // Full-screen overlay: clear the area and fill it.
     frame.render_widget(Clear, area);
@@ -1701,10 +1983,7 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
     };
 
     // Layout: title row (1) + list (rest). Editing is done inline in the list.
-    let chunks = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ]).split(area);
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let (title_area, list_area) = (chunks[0], chunks[1]);
 
     // Render title: "Workspaces" in purple, left aligned with 1 char of left padding
@@ -1735,7 +2014,11 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
                 ListItem::new(Line::from(Span::styled(display, style)))
             } else {
                 // Workspace row (shift index by 1 when a draft row exists above)
-                let workspace_index = if is_drafting { virtual_index - 1 } else { virtual_index };
+                let workspace_index = if is_drafting {
+                    virtual_index - 1
+                } else {
+                    virtual_index
+                };
                 let name = &overlay.workspaces[workspace_index];
                 let is_active = *name == overlay.active_workspace;
 
@@ -1768,22 +2051,37 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
         let indicator_style = Style::default().fg(Color::Indexed(238));
         if visible_start > 0 && list_area.height > 0 {
             let top_line = Line::from(Span::styled("...", indicator_style));
-            frame.render_widget(Paragraph::new(top_line), Rect::new(list_area.x + 1, list_area.y, list_area.width.saturating_sub(1), 1));
+            frame.render_widget(
+                Paragraph::new(top_line),
+                Rect::new(
+                    list_area.x + 1,
+                    list_area.y,
+                    list_area.width.saturating_sub(1),
+                    1,
+                ),
+            );
         }
         if visible_end < total_count && list_area.height > 0 {
             let bot_y = list_area.y + list_area.height.saturating_sub(1);
             let bot_line = Line::from(Span::styled("...", indicator_style));
-            frame.render_widget(Paragraph::new(bot_line), Rect::new(list_area.x + 1, bot_y, list_area.width.saturating_sub(1), 1));
+            frame.render_widget(
+                Paragraph::new(bot_line),
+                Rect::new(list_area.x + 1, bot_y, list_area.width.saturating_sub(1), 1),
+            );
         }
     }
 
     // Set cursor position for inline text editing.
     // All workspace rows have a 3-char prefix (" * " or "   "), so cursor_x = list_area.x + 3 + cursor_position.
-    let selected_row_in_view = overlay.selected_index >= visible_start && overlay.selected_index < visible_end;
+    let selected_row_in_view =
+        overlay.selected_index >= visible_start && overlay.selected_index < visible_end;
     if selected_row_in_view {
         let row = (overlay.selected_index - visible_start) as u16;
         let cursor_pos = if is_drafting && overlay.selected_index == 0 {
-            overlay.drafting_workspace.as_ref().map(|d| d.cursor_position)
+            overlay
+                .drafting_workspace
+                .as_ref()
+                .map(|d| d.cursor_position)
         } else if overlay.renaming.is_some() {
             overlay.renaming.as_ref().map(|r| r.cursor_position)
         } else {
@@ -1803,10 +2101,10 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use sidebar_tui::colors;
-    use ratatui::Terminal;
 
     #[test]
     fn test_sidebar_header_shows_title() {
@@ -1860,9 +2158,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Workspace name title starts inside the border + padding (position 2, row 1)
-        // Check the first character's foreground color
-        let cell = &buffer[(2, 1)];
+        // Workspace name starts at position 2 in the top frame.
+        let cell = &buffer[(2, 0)];
         assert_eq!(
             cell.fg,
             colors::PURPLE,
@@ -1880,16 +2177,14 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Title should start after left border + padding on row 1 (inside border)
-        // With 1 char padding, content starts at x=2
-        // Extract content row within sidebar (after left border and padding)
+        // Extract the frame title after its leading padding cell.
         let mut title_content = String::new();
         for x in 2..(SIDEBAR_WIDTH - 1) {
-            let cell = &buffer[(x, 1)];
+            let cell = &buffer[(x, 0)];
             title_content.push_str(cell.symbol());
         }
 
-        // The workspace name should start at the beginning (left-aligned after padding)
+        // The workspace name should start at the beginning of the frame title.
         assert!(
             title_content.starts_with("Default"),
             "Title should be left-aligned workspace name, got: '{}'",
@@ -1939,7 +2234,7 @@ mod tests {
             last_cell.symbol()
         );
 
-        // After sidebar is padding, which has no border styling
+        // Immediately after the sidebar is unframed terminal content.
         let after_cell = &buffer[(first_after_sidebar, 0)];
         assert_ne!(
             after_cell.fg,
@@ -1950,74 +2245,25 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_view_has_border() {
+    fn test_terminal_view_has_no_border() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-
         terminal.draw(render).unwrap();
-
         let buffer = terminal.backend().buffer();
-
-        // Terminal view starts right after sidebar (padding is inside the border)
-        let term_start_x = SIDEBAR_WIDTH;
-        let corner = &buffer[(term_start_x, 0)];
-
-        // Check top-left corner of terminal has border character
-        assert!(
-            corner.symbol() == "┌" || corner.symbol() == "╭",
-            "Terminal top-left should have border corner, got: {}",
-            corner.symbol()
-        );
-
-        // In default state, sidebar is focused so terminal border should be DARK_GREY (unfocused)
-        assert_eq!(
-            corner.fg,
-            colors::DARK_GREY,
-            "Terminal border should have dark grey foreground when unfocused, got: {:?}",
-            corner.fg
-        );
+        // The terminal starts with content, not a frame corner.
+        assert_eq!(buffer[(SIDEBAR_WIDTH, 0)].symbol(), "T");
+        assert_eq!(buffer[(79, 23)].bg, Color::Reset);
     }
 
     #[test]
-    fn test_terminal_padding_is_inside_border() {
+    fn test_terminal_uses_all_available_columns() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-
         terminal.draw(render).unwrap();
-
         let buffer = terminal.backend().buffer();
-
-        // Terminal border should start right after sidebar (no gap for padding)
-        let border_x = SIDEBAR_WIDTH;
-        let border_cell = &buffer[(border_x, 0)];
-        assert!(
-            border_cell.symbol() == "┌" || border_cell.symbol() == "╭",
-            "Terminal border should start at column {}, got: {}",
-            border_x,
-            border_cell.symbol()
-        );
-
-        // Content (placeholder text) should start after border + padding
-        // Border is at column 28, so content starts at 28 + 1 (border) + 2 (padding) = 31
-        let content_start_x = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
-        let content_cell = &buffer[(content_start_x, 1)];
-        // The placeholder text "Terminal view..." should start here
-        assert_eq!(
-            content_cell.symbol(), "T",
-            "Terminal content should start at column {} (inside border + padding), got: '{}'",
-            content_start_x,
-            content_cell.symbol()
-        );
-
-        // Position between border and content should be empty (padding)
-        let padding_x = SIDEBAR_WIDTH + 1; // First padding column after border
-        let padding_cell = &buffer[(padding_x, 1)];
-        assert_eq!(
-            padding_cell.symbol().trim(), "",
-            "Padding area at column {} should be empty space, got: '{}'",
-            padding_x,
-            padding_cell.symbol()
-        );
+        assert_eq!(buffer[(SIDEBAR_WIDTH, 0)].symbol(), "T");
+        assert_eq!(compute_term_cols(80, false), 52);
+        assert_eq!(compute_term_cols(80, true), 80);
     }
 
     #[test]
@@ -2069,27 +2315,26 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_width_excludes_sidebar_padding_and_border() {
-        // When window is 100 wide, terminal should be 100 - 28 (sidebar) - 2 (h_padding * 2) - 2 (border) = 68
-        // TERMINAL_H_PADDING = 1, so h_padding * 2 = 2
+    fn test_terminal_width_excludes_only_sidebar() {
+        // Only the sidebar consumes columns: 100 - 28 = 72.
         let window_width: u16 = 100;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
-        assert_eq!(term_cols, 68);
+        let term_cols = compute_term_cols(window_width, false);
+        assert_eq!(term_cols, 72);
     }
 
     #[test]
     fn test_terminal_width_handles_small_window() {
-        // When window is smaller than sidebar + h_padding + border, terminal width should be 0 (saturating sub)
+        // When the screen is narrower than the sidebar, terminal width saturates to zero.
         let window_width: u16 = 15;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+        let term_cols = compute_term_cols(window_width, false);
         assert_eq!(term_cols, 0);
     }
 
     #[test]
     fn test_terminal_width_at_boundary() {
-        // When window is exactly sidebar width + h_padding + border, terminal should be 0
-        let window_width: u16 = SIDEBAR_WIDTH + TERMINAL_H_PADDING * 2 + 2;
-        let term_cols = window_width.saturating_sub(SIDEBAR_WIDTH).saturating_sub(TERMINAL_H_PADDING * 2).saturating_sub(2);
+        // No terminal columns remain at exactly the sidebar width.
+        let window_width: u16 = SIDEBAR_WIDTH;
+        let term_cols = compute_term_cols(window_width, false);
         assert_eq!(term_cols, 0);
     }
 
@@ -2258,13 +2503,12 @@ mod tests {
     #[test]
     fn test_mouse_scroll_position_translation() {
         // Test that screen coordinates are correctly translated to terminal-relative coordinates
-        // Terminal content starts after: sidebar (28) + border (1) + padding (1) = 30
-        // Screen column 32 should become terminal column 3
-        // (32 - 30 + 1 = 3)
-        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+        // Terminal content starts immediately after the 28-column sidebar.
+        // Screen column 32 becomes one-indexed terminal column 5.
+        let term_content_start = SIDEBAR_WIDTH;
         let screen_col: u16 = 32;
         let term_col = screen_col - term_content_start + 1;
-        assert_eq!(term_col, 3);
+        assert_eq!(term_col, 5);
     }
 
     #[test]
@@ -2277,19 +2521,22 @@ mod tests {
 
     #[test]
     fn test_mouse_scroll_in_sidebar_area_is_ignored() {
-        // Events in sidebar/border/padding area should be ignored
-        // Terminal content starts after: sidebar (28) + border (1) + padding (1) = 30
-        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
-        let mouse_column: u16 = 29; // Inside terminal border/padding area (before column 30)
+        // Events to the left of the terminal content belong to the sidebar.
+        // Terminal content starts immediately after the 28-column sidebar.
+        let term_content_start = SIDEBAR_WIDTH;
+        let mouse_column: u16 = 27; // Last sidebar column.
         let should_handle = mouse_column >= term_content_start;
-        assert!(!should_handle, "Scroll in sidebar/border/padding area should be ignored");
+        assert!(
+            !should_handle,
+            "Scroll coordinates inside the sidebar are outside terminal content"
+        );
     }
 
     #[test]
     fn test_mouse_scroll_in_terminal_area_is_handled() {
         // Events in terminal content area should be handled
-        // Terminal content starts after: sidebar + border (1) + padding
-        let term_content_start = SIDEBAR_WIDTH + 1 + TERMINAL_H_PADDING;
+        // Terminal content starts after the sidebar, with no border or padding.
+        let term_content_start = SIDEBAR_WIDTH;
         let mouse_column: u16 = 35; // Inside terminal content area
         let should_handle = mouse_column >= term_content_start;
         assert!(should_handle, "Scroll in terminal area should be handled");
@@ -2301,7 +2548,7 @@ mod tests {
         // regardless of focus should scroll the terminal pane's visible history."
         // This test documents that focus is NOT a condition for mouse scroll handling.
         // The only conditions are: Normal mode, mouse in terminal area, session exists.
-        use sidebar_tui::state::{AppMode, Focus, AppState};
+        use sidebar_tui::state::{AppMode, AppState, Focus};
 
         let mut state = AppState {
             mode: AppMode::Normal,
@@ -2310,8 +2557,7 @@ mod tests {
 
         // Scroll should work when sidebar is focused
         state.focus = Focus::Sidebar;
-        let should_scroll_sidebar_focused =
-            matches!(state.mode, AppMode::Normal); // Focus NOT checked
+        let should_scroll_sidebar_focused = matches!(state.mode, AppMode::Normal); // Focus NOT checked
         assert!(
             should_scroll_sidebar_focused,
             "Scroll should work when sidebar is focused"
@@ -2327,7 +2573,56 @@ mod tests {
     }
 
     #[test]
-    fn test_hint_bar_rendered_at_bottom() {
+    fn test_hint_changes_leave_terminal_cells_and_geometry_unchanged() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut app = DaemonApp::new_welcome_state(24, 52);
+        app.term_emulator.process(b"\x1b[1;1HA\x1b[24;52HZ");
+        terminal
+            .draw(|frame| render_daemon_app(frame, &mut app))
+            .unwrap();
+        let before = terminal.backend().buffer().clone();
+        assert_eq!(before[(28, 0)].symbol(), "A");
+        assert_eq!(before[(79, 23)].symbol(), "Z");
+        for focus in [Focus::Terminal, Focus::Sidebar] {
+            app.app_state.focus = focus;
+            app.timed_message = None;
+            terminal
+                .draw(|frame| render_daemon_app(frame, &mut app))
+                .unwrap();
+            for y in 0..24 {
+                for x in 28..80 {
+                    assert_eq!(terminal.backend().buffer()[(x, y)], before[(x, y)]);
+                }
+            }
+            app.show_timed_message("A longer temporary message that wraps inside the sidebar");
+            terminal
+                .draw(|frame| render_daemon_app(frame, &mut app))
+                .unwrap();
+            for y in 0..24 {
+                for x in 28..80 {
+                    assert_eq!(terminal.backend().buffer()[(x, y)], before[(x, y)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_sidebar_hints_geometry_and_tiny_screens() {
+        for width in [0, 1, 15, 28, 40, 80] {
+            for height in [0, 1, 4, 10, 24] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(render).unwrap();
+                let (_, right) = app_layout(Rect::new(0, 0, width, height), false);
+                assert_eq!(right.height, height);
+                assert_eq!(right.width, compute_term_cols(width, false));
+            }
+        }
+        let (_, zoomed) = app_layout(Rect::new(0, 0, 80, 24), true);
+        assert_eq!(zoomed, Rect::new(0, 0, 80, 24));
+    }
+
+    #[test]
+    fn test_hint_column_rendered_inside_sidebar() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2335,13 +2630,12 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Hint bar should be at the bottom with DARK_GREY background
-        // Last row (y=23) should have hint bar background
-        let cell = &buffer[(0, 23)];
+        // The hint column remains inside the frame without painting a background.
+        let cell = &buffer[(1, 22)];
         assert_eq!(
             cell.bg,
-            colors::DARK_GREY,
-            "Hint bar should have dark grey background, got: {:?}",
+            Color::Reset,
+            "Hint text should preserve the terminal background, got: {:?}",
             cell.bg
         );
     }
@@ -2374,10 +2668,10 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // Should show quit path on the right
+        // The exit path is pinned below the contextual hints.
         assert!(
-            content.contains("Quit"),
-            "Hint bar should show quit path, got: {}",
+            content.contains("Detach"),
+            "Hint bar should show detach path, got: {}",
             content
         );
     }
@@ -2386,21 +2680,9 @@ mod tests {
     fn test_hint_bar_has_correct_keybinding_colors() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-
         terminal.draw(render).unwrap();
-
         let buffer = terminal.backend().buffer();
-
-        // Find the 'n' keybinding on the hint bar (last row)
-        let last_row = 23;
-        for x in 0..buffer.area().width {
-            let cell = &buffer[(x, last_row)];
-            if cell.symbol() == "n" && cell.fg == colors::PURPLE {
-                // Found a purple 'n' keybinding
-                return;
-            }
-        }
-        panic!("Hint bar should have purple keybindings");
+        assert!((2..23).any(|y| buffer[(1, y)].fg == colors::PURPLE));
     }
 
     #[test]
@@ -2415,21 +2697,23 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // When terminal is focused, hint bar should show "ctrl + b Sidebar" binding
+        // Terminal focus exposes the global sidebar toggle.
         assert!(
-            content.contains("ctrl + b"),
+            content.contains("ctrl + space/b"),
             "Hint bar should show 'ctrl + b' binding when terminal is focused, got: {}",
             content
         );
     }
 
     #[test]
-    fn test_terminal_focused_border_color() {
+    fn test_terminal_focus_indicated_by_sidebar_outline() {
         use sidebar_tui::state::AppState;
 
         let backend = TestBackend::new(80, 24);
@@ -2440,19 +2724,14 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be FOCUSED_BORDER (55, purple) when focused (starts right after sidebar)
-        let term_start_x = SIDEBAR_WIDTH;
-        let corner = &buffer[(term_start_x, 0)];
-        assert_eq!(
-            corner.fg,
-            colors::FOCUSED_BORDER,
-            "Terminal border should be color 55 (purple) when focused, got: {:?}",
-            corner.fg
-        );
+        // Focus is indicated by the sidebar alone, never a terminal frame.
+        assert_eq!(buffer[(SIDEBAR_WIDTH, 0)].symbol(), "T");
 
         // Sidebar border should be DARK_GREY when unfocused
         let sidebar_corner = &buffer[(0, 0)];
@@ -2476,7 +2755,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2490,7 +2771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_drafting_mode_terminal_border_is_dark_grey() {
+    fn test_drafting_mode_terminal_is_unframed() {
         use sidebar_tui::state::{AppState, DraftingState, SessionType};
 
         let backend = TestBackend::new(80, 24);
@@ -2501,19 +2782,14 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
 
-        // Terminal border should be DARK_GREY during drafting (starts right after sidebar)
-        let term_start_x = SIDEBAR_WIDTH;
-        let corner = &buffer[(term_start_x, 0)];
-        assert_eq!(
-            corner.fg,
-            colors::DARK_GREY,
-            "Terminal border should be dark grey during drafting, got: {:?}",
-            corner.fg
-        );
+        assert_eq!(buffer[(SIDEBAR_WIDTH, 0)].symbol(), " ");
+        assert_eq!(buffer[(SIDEBAR_WIDTH, 0)].bg, Color::Reset);
     }
 
     #[test]
@@ -2528,7 +2804,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
 
@@ -2554,7 +2832,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2580,11 +2860,15 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::CreateMode { previous_focus: Focus::Sidebar },
+            mode: AppMode::CreateMode {
+                previous_focus: Focus::Sidebar,
+            },
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2612,7 +2896,9 @@ mod tests {
         let mut state = AppState::with_sessions(vec![Session::new("test")]);
         state.mode = AppMode::Renaming(RenamingState::new(0, "test", Focus::Sidebar));
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2632,7 +2918,7 @@ mod tests {
 
     #[test]
     fn test_quit_confirmation_shows_prompt_message() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2642,7 +2928,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2657,7 +2945,7 @@ mod tests {
 
     #[test]
     fn test_quit_confirmation_shows_yes_no_bindings() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2667,7 +2955,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2686,8 +2976,8 @@ mod tests {
     }
 
     #[test]
-    fn test_quit_confirmation_has_dark_grey_background() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+    fn test_quit_confirmation_has_no_background() {
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2697,72 +2987,84 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
 
-        // Quit confirmation is NOT important, so hint bar background should be dark grey
+        // Hint text no longer paints a solid background, regardless of confirmation type.
         let last_row = 23;
-        let cell = &buffer[(0, last_row)];
+        let cell = &buffer[(1, last_row - 1)];
         assert_eq!(
             cell.bg,
-            colors::DARK_GREY,
-            "Quit confirmation hint bar should have dark grey background, got: {:?}",
+            ratatui::style::Color::Reset,
+            "Quit confirmation hint should preserve the terminal background, got: {:?}",
             cell.bg
         );
     }
 
     #[test]
     fn test_delete_confirmation_shows_prompt_message() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction, Session};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Session};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut state = AppState::with_sessions(vec![Session::new("test")]);
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+        state.mode = AppMode::Confirming(ConfirmState::new(
+            ConfirmAction::DeleteSession(0),
+            Focus::Sidebar,
+        ));
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
         // Should show delete confirmation message
         assert!(
-            content.contains("Delete this session permanently?"),
+            content.contains("Delete this session") && content.contains("permanently?"),
             "Hint bar should show delete confirmation message, got: {}",
             content
         );
     }
 
     #[test]
-    fn test_delete_confirmation_has_red_background() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction, Session};
+    fn test_delete_confirmation_has_no_background() {
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Session};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut state = AppState::with_sessions(vec![Session::new("test")]);
-        state.mode = AppMode::Confirming(ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar));
+        state.mode = AppMode::Confirming(ConfirmState::new(
+            ConfirmAction::DeleteSession(0),
+            Focus::Sidebar,
+        ));
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
 
-        // Delete confirmation IS important, so hint bar background should be dark red (88)
+        // Destructive confirmations retain their text but no longer add a colored fill.
         let last_row = 23;
-        let cell = &buffer[(0, last_row)];
+        let cell = &buffer[(1, last_row - 1)];
         assert_eq!(
             cell.bg,
-            colors::DARK_RED,
-            "Delete confirmation hint bar should have dark red background, got: {:?}",
+            ratatui::style::Color::Reset,
+            "Delete confirmation hint should preserve the terminal background, got: {:?}",
             cell.bg
         );
     }
 
     #[test]
     fn test_confirmation_quit_path_shows_n_to_quit() {
-        use sidebar_tui::state::{AppState, ConfirmState, ConfirmAction};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2772,7 +3074,9 @@ mod tests {
             ..Default::default()
         };
 
-        terminal.draw(|frame| render_with_state(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render_with_state(frame, &state))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
@@ -2852,17 +3156,23 @@ mod tests {
         let mut app = DaemonApp::new(24, 80, "test", vec![]);
 
         // These should all be safely ignored
-        handle_drained_response(DaemonResponse::Attached {
-            session_name: "test".to_string(),
-            is_new: true,
-            terminal_state: None,
-        }, &mut app);
+        handle_drained_response(
+            DaemonResponse::Attached {
+                session_name: "test".to_string(),
+                is_new: true,
+                terminal_state: None,
+            },
+            &mut app,
+        );
 
         handle_drained_response(DaemonResponse::Detached, &mut app);
 
-        handle_drained_response(DaemonResponse::Error {
-            message: "test error".to_string(),
-        }, &mut app);
+        handle_drained_response(
+            DaemonResponse::Error {
+                message: "test error".to_string(),
+            },
+            &mut app,
+        );
 
         // Terminal should still be empty (no output processed)
         let contents = app.term_emulator.contents();
@@ -2877,7 +3187,9 @@ mod tests {
     fn test_handle_main_loop_response_output() {
         // Test that Output messages are processed correctly
         let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Output { data: b"hello".to_vec() };
+        let response = DaemonResponse::Output {
+            data: b"hello".to_vec(),
+        };
 
         let result = handle_main_loop_response(response, &mut app, 24, 80);
         assert!(matches!(result, MainLoopDrainResult::Continue));
@@ -2898,7 +3210,9 @@ mod tests {
     fn test_handle_main_loop_response_error() {
         // Test that Error responses return error result
         let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Error { message: "test error".to_string() };
+        let response = DaemonResponse::Error {
+            message: "test error".to_string(),
+        };
 
         let result = handle_main_loop_response(response, &mut app, 24, 80);
         assert!(matches!(result, MainLoopDrainResult::Error(msg) if msg == "test error"));
@@ -2923,11 +3237,16 @@ mod tests {
         // Test that other responses are safely ignored with Continue
         let mut app = DaemonApp::new(24, 80, "test", vec![]);
 
-        let result = handle_main_loop_response(DaemonResponse::Attached {
-            session_name: "test".to_string(),
-            is_new: true,
-            terminal_state: None,
-        }, &mut app, 24, 80);
+        let result = handle_main_loop_response(
+            DaemonResponse::Attached {
+                session_name: "test".to_string(),
+                is_new: true,
+                terminal_state: None,
+            },
+            &mut app,
+            24,
+            80,
+        );
         assert!(matches!(result, MainLoopDrainResult::Continue));
 
         let result = handle_main_loop_response(DaemonResponse::Detached, &mut app, 24, 80);

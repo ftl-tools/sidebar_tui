@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install sidebar-tui (sb) locally and optionally on elate_container
+# Build and install sidebar-tui (sb) locally and optionally on elate_container_1
 
 set -e
 
@@ -24,40 +24,44 @@ cargo install --path . --force
 
 echo "Done. sb installed to ~/.cargo/bin/sb"
 
-# Check if elate_container is running
-if docker ps --filter "name=elate_container" --format "{{.Names}}" 2>/dev/null | grep -q "elate_container"; then
+CONTAINER_NAME="elate_container_1"
+# The old partial-name check matched elate_container_1 but then executed against
+# elate_container. Use one exact container name for detection and every command.
+if docker ps --format "{{.Names}}" 2>/dev/null | grep -Fxq "$CONTAINER_NAME"; then
     echo ""
-    echo "=== Installing on elate_container ==="
+    echo "=== Installing on $CONTAINER_NAME ==="
 
     CONTAINER_SRC_DIR="/tmp/sidebar_tui_src"
 
     # Create source directory in container
-    docker exec elate_container mkdir -p "$CONTAINER_SRC_DIR"
+    docker exec "$CONTAINER_NAME" mkdir -p "$CONTAINER_SRC_DIR"
 
     # Copy source files to container (excluding target directory and git)
     echo "Copying source files to container..."
     tar --exclude='target' --exclude='.git' --exclude='*.state' -cf - . | \
-        docker exec -i elate_container tar -xf - -C "$CONTAINER_SRC_DIR"
+        docker exec -i "$CONTAINER_NAME" tar -xf - -C "$CONTAINER_SRC_DIR"
 
     # Build in container
     echo "Building in container..."
-    docker exec -w "$CONTAINER_SRC_DIR" elate_container \
+    docker exec -w "$CONTAINER_SRC_DIR" "$CONTAINER_NAME" \
         bash -c 'source ~/.cargo/env && cargo build --release'
 
-    # Install to /usr/local/bin
+    # A direct copy over a running executable failed with "Text file busy".
+    # Stage the binary and atomically rename it so active sessions can keep running.
     echo "Installing to /usr/local/bin/sb in container..."
-    docker exec elate_container cp "$CONTAINER_SRC_DIR/target/release/sb" /usr/local/bin/sb
-    docker exec elate_container chmod +x /usr/local/bin/sb
+    docker exec "$CONTAINER_NAME" cp "$CONTAINER_SRC_DIR/target/release/sb" /usr/local/bin/sb.new
+    docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/sb.new
+    docker exec "$CONTAINER_NAME" mv -f /usr/local/bin/sb.new /usr/local/bin/sb
 
     # Clean up source directory
-    docker exec elate_container rm -rf "$CONTAINER_SRC_DIR"
+    docker exec "$CONTAINER_NAME" rm -rf "$CONTAINER_SRC_DIR"
 
     # Verify installation
-    VERSION=$(docker exec elate_container sb --version 2>/dev/null || echo "unknown")
-    echo "Done. sb installed on elate_container: $VERSION"
+    VERSION=$(docker exec "$CONTAINER_NAME" sb --version 2>/dev/null || echo "unknown")
+    echo "Done. sb installed on $CONTAINER_NAME: $VERSION"
 else
     echo ""
-    echo "Note: elate_container is not running. Skipping docker installation."
+    echo "Note: $CONTAINER_NAME is not running. Skipping docker installation."
 fi
 
 echo ""

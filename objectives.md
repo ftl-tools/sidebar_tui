@@ -38,36 +38,22 @@ Key properties of workspaces:
 
 - The minimum supported terminal size is 64 characters wide by 24 characters tall.
 - Running `sb` should open the TUI.
-- The TUI has three components: the sidebar pane, the terminal pane, and the hint bar. They should be laid out like so:
+- The terminal fills the whole right side, with no frame or padding. The 28-column sidebar contains the workspace title, scrollable session list, a horizontal divider, and a column of contextual hints:
   ```
-  ┌──────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
-  │ WorkspaceName            ││ (base) melchiahmauck@Melchiahs-MacBook-Air sidebar_tui % █           │
-  │ ...                      ││                                                                      │
-  │ Name of Terminal Session ││                                                                      │
-  │ Really, really long name ││                                                                      │
-  │ │for this specific       ││                                                                      │
-  │ └terminal session.       ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ Terminal Session         ││                                                                      │
-  │ ...                      ││                                                                      │
-  └──────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
-   ctrl + n New  ctrl + b Sidebar                                                │ ctrl + b -> q Quit
+  ┌──────────────────────────┐user@host project % █
+  │ WorkspaceName            │
+  │ Terminal Session         │
+  │ Another Session          │
+  │ ...                      │
+  ├──────────────────────────┤
+  │ctrl + space/b Sidebar    │
+  │alt + 1-9/←/→ Switch      │
+  │window                    │
+  │alt + ↑/↓ Switch workspace│
+  │toggle → d Detach         │
+  └──────────────────────────┘
   ```
+- Hint changes only alter the sidebar list viewport. They must not resize the PTY or invalidate unchanged terminal content.
 - On Mac, Windows, and Linux we use `ctrl` for the modifier key. This might change in the future, so below we refer to this as `mod`. In the TUI though we should show the actual keybinding. (Down the road if we vary this based on OS or if we allow users to customize it we whould still show the actual keybinding.)
 
 #### Sidebar Pane
@@ -106,9 +92,9 @@ Key properties of workspaces:
 
 - The terminal pane should take up all the remaining space to the right of the sidebar.
 - It should show the selected terminal session. This should be a fully functional terminal where I can run commands and see their output. Or even run command line applications like vi.
-- There should be one char of padding on the left and right of the terminal pane between the terminal content and the border.
+- Terminal content starts immediately to the right of the sidebar and uses every available row and column, including in zoom mode.
 - The terminal text should be white (color 255).
-- When the terminal is focused it should have a purple outline (color 99) and when it's not focused it should have a darker outline (color 238).
+- The terminal has no outline. The sidebar outline is the focus indicator.
 - Mouse scrolling when the Sidebar TUI is open at all, regardless of focus, scrolls the terminal pane's visible history by default. For full-screen terminal apps (those using alternate screen mode, like vim, less, htop), scroll events are forwarded to the app instead.
 - By default, mouse scroll mode is enabled. Use `mod + s` to toggle between mouse scroll mode and text selection mode (where native terminal text selection works but scroll wheel goes through as arrow keys).
 - When quitting the Sidebar TUI, restarting the computer, and reopening the Sidebar TUI, the terminal sessions should be restored to their previous state as best we can, with comand history, working directory, scrollable visible history, env vars, and anything else we can manage to save and restore.
@@ -138,18 +124,15 @@ Key properties of workspaces:
     - `esc` - Cancel: Remove the new, draft session row from the sidebar list and exit create mode. This should return focus to wherever it was before entering create mode.
 - Obviously other keybindings should not work when in create or draft mode. Only the ones listed above.
 
-#### Hint Bar
+#### Sidebar Hint Column
 
-- The whole bottom row(s) of the TUI should be a hint bar.
-- The background of the hint bar should be dark grey (color 238).
-- The hint bar should almost always show the currently available keybindings and actions given the current context.
-  - The text in the hint bar should be formatted like the example above, with the keybinding in purple (color 99), the description in white (color 255), and two spaces separating each keybinding from the next. The keybindings and descriptions should be left aligned.
-  - If the available keybindings are too long to fit on one line they should wrap to multiple lines. The hint bar should grow vertically as needed to accomidate this. A keybinding and its description should never be split across lines.
-- The right side of the hint bar should always show the path to quitting the TUI. For example if the terminal pane is focused it should show `mod + b -> q Quit`, because the user must focus on the sidebar pane and then press `q` to quit. Or, if renaming a new session it should show `esc -> q Quit` because the user must stop renaming and then press `q` to quit. This should update dynamically based on the current state of the TUI to always show the correct path to quitting. There should be a separator of `│` colored gray (color 242) just before the quit instructions to separate it from the rest of the hint bar content.
-- Sometimes the hint bar might need to show a prompt message along with the keybindings for that prompt. This prompt message should be on the left before any of the keybindings. It should wrap like the keybindings if it's too long to fit on one line, and its text should be colored white (color 255). Generally if we say we want to show a prompt of some sort that should get shown here.
-  - Note that it is possible for prompts to have only one keybinding, makeybe something like `k` for "ok".
-- Sometimes the hint bar might need to show a temporary message. This should replace the keybindings (but not the quit instructions on the right) and should be colored white (color 255). It should be visible for a few seconds and then disappear and be replaced again by the keybindings.
-- Sometimes the message or prompt might need to be emphasized as more important than the keybindings. In this case the background of the hint bar should change to dark red (color 88). Not all prompts and messsages are this important, only some of them.
+- Contextual hints live inside the sidebar frame beneath a horizontal separator, not in a full-width footer.
+- Render one keybinding per entry: purple keys (color 99), white descriptions (color 255), left aligned. Long entries and prompts wrap within the sidebar, including Unicode text.
+- The hint background is dark grey (color 238), or dark red (color 88) for important/destructive confirmations.
+- Prompts appear above their response bindings. Temporary messages replace bindings for a few seconds, then restore them.
+- Keep the context-dependent detach/exit path at the bottom of the hints. On short screens, clip hints rather than removing all session-list space; preserve the exit path where space permits. Full command help is available with `?`.
+- The session list scrolls independently above the hints and keeps the highlighted session visible. Draft/rename cursors must remain inside that list viewport.
+- Zoom hides the sidebar and hints together, giving the terminal the whole screen. Toggling back restores both. Workspace/help views occupy the right side and retain contextual hints in the sidebar.
 
 #### First-time Start Up
 
@@ -157,7 +140,7 @@ On the very first launch (no workspaces or sessions exist), a workspace named "D
 
 #### Workspace Overlay
 
-The workspace overlay is a full-screen view that replaces the sidebar and terminal panes when `mod + w` is pressed from any pane. It is used to view, switch, create, rename, and delete workspaces. The hint bar remains visible at the bottom.
+The workspace overlay is a view that replaces the right-hand terminal pane when `mod + w` is pressed from any pane. It is used to view, switch, create, rename, and delete workspaces. The contextual hint column remains visible in the sidebar.
 
 **Layout:**
 
@@ -167,7 +150,7 @@ The overlay covers the entire main area (sidebar + terminal panes area). It show
 - A list of all workspaces below the title, one per row, in white (color 255). The currently active workspace is marked with a `*` indicator to the left of its name.
 - The selected/highlighted workspace row has a dark grey background (color 238), same as selected sessions in the sidebar.
 - If the list is too long to fit, truncation indicators (`...`) appear at the top and/or bottom, same as in the sidebar session list.
-- The hint bar at the bottom shows the available keybindings for the overlay (see below).
+- The hint column in the sidebar shows the available keybindings for the overlay (see below).
 
 **Normal mode keybindings:**
 
@@ -190,7 +173,7 @@ When triggered by pressing `m` in the sidebar, the workspace overlay opens in mo
 
 **Quit path hint:**
 
-When the workspace overlay is open, the right side of the hint bar should show `q Quit` as the quit path (since `q` works directly from the overlay).
+When the workspace overlay is open, the bottom of the hint column should show `q Quit` as the quit path (since `q` works directly from the overlay).
 
 **Persistence:**
 

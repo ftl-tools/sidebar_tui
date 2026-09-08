@@ -7,8 +7,8 @@
 //! so tests are fully independent and can run in parallel.
 
 use std::io::Write;
-use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use expectrl::Session;
 
@@ -21,14 +21,21 @@ struct TestTimer {
 impl TestTimer {
     fn new(name: &'static str) -> Self {
         eprintln!("\n[TIMER] ▶ START  {}", name);
-        Self { name, start: Instant::now() }
+        Self {
+            name,
+            start: Instant::now(),
+        }
     }
 }
 
 impl Drop for TestTimer {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
-        eprintln!("[TIMER] ■ FINISH {} — {:.2}s", self.name, elapsed.as_secs_f64());
+        eprintln!(
+            "[TIMER] ■ FINISH {} — {:.2}s",
+            self.name,
+            elapsed.as_secs_f64()
+        );
     }
 }
 
@@ -45,19 +52,22 @@ struct TestIsolation {
 impl TestIsolation {
     fn new() -> Self {
         let pid = std::process::id();
-        let id  = TEST_ENV_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let id = TEST_ENV_COUNTER.fetch_add(1, Ordering::SeqCst);
         let base = std::path::PathBuf::from(format!("/tmp/sb-test-{}-{}", pid, id));
-        let data_dir    = base.join("data");
+        let data_dir = base.join("data");
         let runtime_dir = base.join("runtime");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&runtime_dir).unwrap();
-        Self { data_dir, runtime_dir }
+        Self {
+            data_dir,
+            runtime_dir,
+        }
     }
 
     /// Apply isolation env vars to a Command so it targets our private daemon.
     fn apply<'a>(&self, cmd: &'a mut std::process::Command) -> &'a mut std::process::Command {
-        cmd.env("XDG_DATA_HOME",   &self.data_dir)
-           .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+        cmd.env("XDG_DATA_HOME", &self.data_dir)
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
     }
 
     /// Shut down our private daemon and remove the temp dir.
@@ -158,7 +168,12 @@ impl SbSession {
 
         let parser = vt100::Parser::new(24, 80, 0);
 
-        Ok(Self { session, parser, session_name, iso: env.iso.clone() })
+        Ok(Self {
+            session,
+            parser,
+            session_name,
+            iso: env.iso.clone(),
+        })
     }
 
     /// Read all available output and process it through vt100.
@@ -202,12 +217,9 @@ impl SbSession {
 
     /// Get a specific row's contents
     fn row_contents(&self, row: u16) -> String {
-        self.parser.screen().contents_between(
-            row,
-            0,
-            row,
-            self.parser.screen().size().1 - 1,
-        )
+        self.parser
+            .screen()
+            .contents_between(row, 0, row, self.parser.screen().size().1 - 1)
     }
 
     /// Send Ctrl+Q to quit
@@ -356,7 +368,7 @@ impl Drop for SbSession {
 /// Test that the layout matches the spec:
 /// - Sidebar is 28 chars wide with border outline
 /// - Workspace name title is purple and left-aligned (default: "Default")
-/// - Both sidebar and terminal have borders (terminal border is lighter)
+/// - Only the sidebar has a border; the terminal fills the right side
 #[test]
 fn test_layout_matches_spec() {
     let _timer = TestTimer::new("test_layout_matches_spec");
@@ -514,7 +526,10 @@ fn test_vi_editing_workflow() {
             let _ = fs::remove_file(&self.swap_file);
         }
     }
-    let _cleanup = Cleanup { test_file: test_file.clone(), swap_file: swap_file.clone() };
+    let _cleanup = Cleanup {
+        test_file: test_file.clone(),
+        swap_file: swap_file.clone(),
+    };
 
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
 
@@ -538,10 +553,7 @@ fn test_vi_editing_workflow() {
 
     // Go to the beginning of the line and enter insert mode
     // Press 'I' to insert at beginning of line
-    session
-        .session
-        .write_all(b"I")
-        .expect("Failed to send I");
+    session.session.write_all(b"I").expect("Failed to send I");
     session.session.flush().expect("Failed to flush");
 
     std::thread::sleep(Duration::from_millis(500));
@@ -602,7 +614,9 @@ fn test_backspace_input_handling() {
     session.read_and_parse().expect("Failed to read output");
 
     // Type "git status"
-    session.send("git status").expect("Failed to send git status");
+    session
+        .send("git status")
+        .expect("Failed to send git status");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -663,8 +677,16 @@ fn test_session_persistence_across_restart() {
     let unique_id = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
     let session_name = format!("persist-test-{}-{}", pid, unique_id);
-    let test_file = format!("{}/test_persist_{}.txt", env!("CARGO_MANIFEST_DIR"), unique_id);
-    let swap_file = format!("{}/.test_persist_{}.txt.swp", env!("CARGO_MANIFEST_DIR"), unique_id);
+    let test_file = format!(
+        "{}/test_persist_{}.txt",
+        env!("CARGO_MANIFEST_DIR"),
+        unique_id
+    );
+    let swap_file = format!(
+        "{}/.test_persist_{}.txt.swp",
+        env!("CARGO_MANIFEST_DIR"),
+        unique_id
+    );
     let original_content = "original content\n";
     fs::write(&test_file, original_content).expect("Failed to create test file");
 
@@ -698,7 +720,7 @@ fn test_session_persistence_across_restart() {
 
     // ============ PHASE 1: Start TUI, open vi, type text, detach ============
     {
-                let mut session = spawn_sb(&env, &session_name);
+        let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -719,7 +741,11 @@ fn test_session_persistence_across_restart() {
         let screen = parser.screen().contents();
         eprintln!("Screen after vi open:\n{}", screen);
 
-        assert!(vi_loaded, "Vi should have loaded the file. Screen:\n{}", screen);
+        assert!(
+            vi_loaded,
+            "Vi should have loaded the file. Screen:\n{}",
+            screen
+        );
 
         // Enter insert mode at beginning of line (I)
         session.write_all(b"I").expect("Failed to send I");
@@ -727,7 +753,9 @@ fn test_session_persistence_across_restart() {
         std::thread::sleep(Duration::from_millis(500));
 
         // Type our marker text
-        session.write_all(b"INSERTED: ").expect("Failed to type text");
+        session
+            .write_all(b"INSERTED: ")
+            .expect("Failed to type text");
         session.flush().expect("Failed to flush");
         std::thread::sleep(Duration::from_millis(500));
         read_into_parser(&mut session, &mut parser);
@@ -763,7 +791,7 @@ fn test_session_persistence_across_restart() {
 
     // ============ PHASE 2: Reattach and verify vi is still running ============
     {
-                let mut session = spawn_sb(&env, &session_name);
+        let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(10)));
         let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -787,7 +815,9 @@ fn test_session_persistence_across_restart() {
         // Check if we're at a swap file dialog - if so, choose (R)ecover
         if screen_contents.contains("swap") || screen_contents.contains("Swap file") {
             eprintln!("Swap file dialog detected, sending 'r' to recover");
-            session.write_all(b"r").expect("Failed to send 'r' for recover");
+            session
+                .write_all(b"r")
+                .expect("Failed to send 'r' for recover");
             session.flush().expect("Failed to flush");
             std::thread::sleep(Duration::from_millis(300));
             read_into_parser(&mut session, &mut parser);
@@ -937,14 +967,16 @@ fn test_stale_session_persistence() {
 
     // ============ PHASE 1: Create a session via proper PTY using expectrl ============
     {
-                let mut session = spawn_sb(&env, &session_name);
+        let mut session = spawn_sb(&env, &session_name);
         session.set_expect_timeout(Some(Duration::from_secs(5)));
 
         // Wait for TUI to initialize and shell to be ready
         std::thread::sleep(Duration::from_millis(2500));
 
         // Run a simple command to verify session is working
-        session.write_all(b"echo SESSION_ACTIVE\n").expect("Failed to send command");
+        session
+            .write_all(b"echo SESSION_ACTIVE\n")
+            .expect("Failed to send command");
         session.flush().expect("Failed to flush");
         std::thread::sleep(Duration::from_millis(1000));
 
@@ -959,7 +991,8 @@ fn test_stale_session_persistence() {
     std::thread::sleep(Duration::from_millis(500));
 
     // Verify the session is listed as active
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -985,17 +1018,21 @@ fn test_stale_session_persistence() {
     );
 
     // Read and save the metadata content
-    let metadata_content = fs::read_to_string(&metadata_file)
-        .expect("Failed to read metadata file");
+    let metadata_content =
+        fs::read_to_string(&metadata_file).expect("Failed to read metadata file");
     eprintln!("Metadata content:\n{}", metadata_content);
 
     // ============ PHASE 3: Kill session and restore metadata to simulate reboot ============
     // Kill the session (this will delete the metadata file)
-    let kill_output = env.iso_command()
+    let kill_output = env
+        .iso_command()
         .args(["kill", &session_name])
         .output()
         .expect("Failed to run sb kill");
-    eprintln!("Kill output: {}", String::from_utf8_lossy(&kill_output.stdout));
+    eprintln!(
+        "Kill output: {}",
+        String::from_utf8_lossy(&kill_output.stdout)
+    );
 
     // Restore the metadata file to simulate "reboot" scenario
     // (After reboot, daemon is gone but metadata files persist on disk)
@@ -1003,7 +1040,8 @@ fn test_stale_session_persistence() {
     fs::write(&metadata_file, &metadata_content).expect("Failed to restore metadata");
 
     // Verify session is no longer listed as active
-    let list_output2 = env.iso_command()
+    let list_output2 = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -1017,7 +1055,8 @@ fn test_stale_session_persistence() {
     );
 
     // ============ PHASE 4: Verify stale session appears ============
-    let stale_output = env.iso_command()
+    let stale_output = env
+        .iso_command()
         .arg("stale")
         .output()
         .expect("Failed to run sb stale");
@@ -1031,7 +1070,8 @@ fn test_stale_session_persistence() {
     );
 
     // ============ PHASE 5: Restore the stale session ============
-    let restore_output = env.iso_command()
+    let restore_output = env
+        .iso_command()
         .args(["restore", &session_name])
         .output()
         .expect("Failed to run sb restore");
@@ -1045,7 +1085,8 @@ fn test_stale_session_persistence() {
     );
 
     // Verify session is now active again
-    let list_output3 = env.iso_command()
+    let list_output3 = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -1060,9 +1101,7 @@ fn test_stale_session_persistence() {
 
     // ============ PHASE 6: Clean up ============
     // Kill the restored session
-    let _ = env.iso_command()
-        .args(["kill", &session_name])
-        .output();
+    let _ = env.iso_command().args(["kill", &session_name]).output();
 }
 
 /// Test that the sidebar is exactly 28 characters wide.
@@ -1114,13 +1153,13 @@ fn test_sidebar_is_28_chars_wide() {
         );
     }
 
-    // Verify column 28 is the start of the terminal pane border (top-left corner).
+    // Verify column 28 starts terminal content with no frame.
     if let Some(terminal_start) = session.cell_at(0, 28) {
         let start_char = terminal_start.contents();
-        // Should be the top-left corner of the terminal pane
+        // No terminal frame consumes the first row or column.
         assert!(
-            start_char == "┌" || start_char == "╭",
-            "Column 28 row 0 should be terminal top-left corner, got: '{}'",
+            start_char != "┌" && start_char != "╭",
+            "Column 28 row 0 should be unframed terminal content, got: '{}'",
             start_char
         );
     }
@@ -1155,7 +1194,10 @@ fn test_sidebar_session_list() {
         &session.session_name
     };
 
-    eprintln!("Looking for session name part: '{}' in screen:\n{}", session_name_part, screen_contents);
+    eprintln!(
+        "Looking for session name part: '{}' in screen:\n{}",
+        session_name_part, screen_contents
+    );
 
     // Check that the session name appears somewhere in the screen
     assert!(
@@ -1206,7 +1248,7 @@ fn test_hint_bar_context() {
         session.read_and_parse().expect("Failed to read output");
         screen_contents = session.parser.screen().contents();
 
-        has_ctrl_b = screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
+        has_ctrl_b = screen_contents.contains("ctrl + space/b");
         has_ctrl_n = screen_contents.contains("ctrl + n") || screen_contents.contains("ctrl+n");
 
         if has_ctrl_b || has_ctrl_n {
@@ -1214,7 +1256,7 @@ fn test_hint_bar_context() {
         }
     }
 
-    // The hint bar shows at the bottom, should have keybinding hints
+    // The sidebar hint column should have keybinding hints
     // Look for "ctrl" which should appear in terminal focus mode
     eprintln!("Initial screen:\n{}", screen_contents);
 
@@ -1225,7 +1267,10 @@ fn test_hint_bar_context() {
     );
 
     // Focus sidebar (Ctrl+B)
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B"); // Ctrl+B is ASCII 2
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B"); // Ctrl+B is ASCII 2
     session.session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
@@ -1263,7 +1308,7 @@ fn test_focus_switching() {
     session.read_and_parse().expect("Failed to read output");
 
     // Initially terminal is focused (because we have a session)
-    // Sidebar border should be DARK_GREY (238), terminal border should be FOCUSED_BORDER (99)
+    // Sidebar border should be DARK_GREY (238) when terminal focused
     // Check sidebar corner color
     if let Some(sidebar_corner) = session.cell_at(0, 0) {
         let sidebar_fg = sidebar_corner.fgcolor();
@@ -1276,7 +1321,10 @@ fn test_focus_switching() {
     }
 
     // Focus sidebar with Ctrl+B
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
     // Poll until sidebar is focused (color 99) or timeout
@@ -1293,7 +1341,10 @@ fn test_focus_switching() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar border should be focused (99) when sidebar focused");
+    assert!(
+        sidebar_focused,
+        "Sidebar border should be focused (99) when sidebar focused"
+    );
 
     // Focus terminal again with Enter (select session)
     session.send_enter().expect("Failed to send enter");
@@ -1312,7 +1363,10 @@ fn test_focus_switching() {
             }
         }
     }
-    assert!(terminal_focused, "Sidebar border should be dark grey (238) after returning to terminal");
+    assert!(
+        terminal_focused,
+        "Sidebar border should be dark grey (238) after returning to terminal"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -1330,7 +1384,10 @@ fn test_tab_focuses_terminal() {
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
     // Poll until sidebar is focused (color 99) or timeout
@@ -1347,7 +1404,10 @@ fn test_tab_focuses_terminal() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
+    assert!(
+        sidebar_focused,
+        "Sidebar should become focused (99) after Ctrl+B"
+    );
 
     // Now send Tab to focus terminal - this should work just like Enter
     session.send_tab().expect("Failed to send tab");
@@ -1366,7 +1426,10 @@ fn test_tab_focuses_terminal() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Tab");
+    assert!(
+        terminal_focused,
+        "Terminal should become focused (sidebar 238) after Tab"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -1411,7 +1474,7 @@ fn test_create_mode_flow() {
         created_sessions: cleanup_sessions,
     };
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1442,7 +1505,8 @@ fn test_create_mode_flow() {
     );
 
     // Count current sessions in sidebar (lines after workspace title)
-    let lines_before: Vec<&str> = screen_contents.lines()
+    let lines_before: Vec<&str> = screen_contents
+        .lines()
         .skip(1) // Skip title
         .take_while(|l| !l.contains("Terminal Session"))
         .filter(|l| l.contains("│") && l.trim_matches(|c| c == '│' || c == ' ').len() > 0)
@@ -1452,14 +1516,19 @@ fn test_create_mode_flow() {
 
     // Press 't' to enter drafting mode, then type a name and confirm
     let new_session_name = format!("new-{}-{}", pid, unique_id);
-    created_sessions.lock().unwrap().push(new_session_name.clone());
+    created_sessions
+        .lock()
+        .unwrap()
+        .push(new_session_name.clone());
     session.write_all(b"t").expect("Failed to send 't'");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
     // Type the session name
-    session.write_all(new_session_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(new_session_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -1470,7 +1539,10 @@ fn test_create_mode_flow() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After creating session with name '{}':\n{}", new_session_name, screen_contents);
+    eprintln!(
+        "After creating session with name '{}':\n{}",
+        new_session_name, screen_contents
+    );
 
     // Should now be in Normal mode (terminal focused)
     assert!(
@@ -1483,7 +1555,8 @@ fn test_create_mode_flow() {
     assert!(
         screen_contents.contains(&new_session_name),
         "New session '{}' should be visible in sidebar. Got:\n{}",
-        new_session_name, screen_contents
+        new_session_name,
+        screen_contents
     );
 
     // Cleanup - quit the TUI
@@ -1522,7 +1595,7 @@ fn test_rename_flow() {
         session_names: vec![session_name.clone(), new_name.clone()],
     };
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1564,7 +1637,9 @@ fn test_rename_flow() {
 
     // Should be back in sidebar focus mode (can see New, Delete, etc)
     assert!(
-        screen_after_cancel.contains("New") || screen_after_cancel.contains("Delete") || screen_after_cancel.contains("Rename"),
+        screen_after_cancel.contains("New")
+            || screen_after_cancel.contains("Delete")
+            || screen_after_cancel.contains("Rename"),
         "After cancel, should show sidebar bindings. Got:\n{}",
         screen_after_cancel
     );
@@ -1619,7 +1694,7 @@ fn test_rename_keeps_focus() {
         session_names: vec![session_name.clone(), new_name.clone()],
     };
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1641,13 +1716,17 @@ fn test_rename_keeps_focus() {
 
     // Clear the name and type a new one
     for _ in 0..session_name.len() {
-        session.write_all(&[0x7f]).expect("Failed to send Backspace");
+        session
+            .write_all(&[0x7f])
+            .expect("Failed to send Backspace");
     }
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
     // Type new name
-    session.write_all(new_name.as_bytes()).expect("Failed to type new name");
+    session
+        .write_all(new_name.as_bytes())
+        .expect("Failed to type new name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
@@ -1664,7 +1743,9 @@ fn test_rename_keeps_focus() {
     // After rename, focus should stay on sidebar (where we started rename)
     // We can verify this by checking that sidebar keybindings are shown
     assert!(
-        screen_after_rename.contains("New") || screen_after_rename.contains("Delete") || screen_after_rename.contains("Rename"),
+        screen_after_rename.contains("New")
+            || screen_after_rename.contains("Delete")
+            || screen_after_rename.contains("Rename"),
         "After rename, focus should stay on sidebar with sidebar bindings. Got:\n{}",
         screen_after_rename
     );
@@ -1708,7 +1789,7 @@ fn test_delete_confirmation() {
         session_name: session_name.clone(),
     };
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1745,22 +1826,19 @@ fn test_delete_confirmation() {
         screen_contents
     );
 
-    // Check hint bar has red background (DARK_RED = 88) for delete confirmation
-    // The hint bar is at the bottom - check last few rows
+    // Hint text should remain unfilled even for destructive confirmations.
     let height = parser.screen().size().0;
     let found_red_bg = ((height - 3)..height).any(|row| {
         (0..80).any(|col| {
-            if let Some(cell) = parser.screen().cell(row, col) {
-                matches!(cell.bgcolor(), vt100::Color::Idx(88))
-            } else {
-                false
-            }
+            parser
+                .screen()
+                .cell(row, col)
+                .is_some_and(|cell| matches!(cell.bgcolor(), vt100::Color::Idx(88)))
         })
     });
-
     assert!(
-        found_red_bg,
-        "Delete confirmation hint bar should have red (88) background"
+        !found_red_bg,
+        "Delete confirmation hint text should not have a colored background"
     );
 
     // Press 'n' to cancel
@@ -1805,7 +1883,10 @@ fn test_quit_confirmation() {
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
@@ -1891,7 +1972,7 @@ fn test_navigation() {
     };
 
     // First create session1
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -1913,7 +1994,9 @@ fn test_navigation() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -1967,7 +2050,9 @@ fn test_navigation() {
     assert!(
         screen_after_up.contains(session_name_part) || screen_after_up.contains(session2_name_part),
         "At least one session should be visible. Looking for '{}' or '{}' in:\n{}",
-        session_name_part, session2_name_part, screen_after_up
+        session_name_part,
+        session2_name_part,
+        screen_after_up
     );
 
     // Cleanup
@@ -2010,7 +2095,7 @@ fn test_welcome_state() {
     // Let's verify that the session list rendering works
     // by creating, deleting, and checking the state.
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2066,7 +2151,9 @@ fn test_welcome_state() {
     // Note: The welcome state test is somewhat limited in E2E because
     // attaching to a session always creates one. The proper welcome state
     // test is covered in unit tests in main.rs.
-    eprintln!("Note: Full welcome state is tested in unit tests; E2E verifies TUI handles no-session state");
+    eprintln!(
+        "Note: Full welcome state is tested in unit tests; E2E verifies TUI handles no-session state"
+    );
 }
 
 /// Test that pressing Enter to select a session in the sidebar does not crash.
@@ -2101,7 +2188,7 @@ fn test_session_selection_no_crash() {
         session_names: vec![session_name.clone(), session2_name.clone()],
     };
 
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2153,12 +2240,16 @@ fn test_session_selection_no_crash() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type session name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type session name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    session.write_all(&[0x0d]).expect("Failed to send Enter to create");
+    session
+        .write_all(&[0x0d])
+        .expect("Failed to send Enter to create");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(1000));
     read_into_parser(&mut session, &mut parser);
@@ -2173,7 +2264,9 @@ fn test_session_selection_no_crash() {
     read_into_parser(&mut session, &mut parser);
 
     // Arrow down to select the other session
-    session.write_all(&[0x1b, 0x5b, 0x42]).expect("Failed to send Down arrow"); // ESC [ B
+    session
+        .write_all(&[0x1b, 0x5b, 0x42])
+        .expect("Failed to send Down arrow"); // ESC [ B
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
@@ -2241,7 +2334,7 @@ fn test_agent_session_no_nested_error() {
     };
 
     // First create a regular session so we have a TUI
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2271,7 +2364,9 @@ fn test_agent_session_no_nested_error() {
     read_into_parser(&mut session, &mut parser);
 
     // Type a name for the agent session
-    session.write_all(agent_session_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(agent_session_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
@@ -2358,7 +2453,7 @@ fn test_live_preview_basic() {
     };
 
     // Create first session and run a command that produces unique output
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2367,7 +2462,9 @@ fn test_live_preview_basic() {
     read_into_parser(&mut session, &mut parser);
 
     // Run a unique command in session 1 (use short marker to fit in terminal)
-    session.write_all(b"echo MARK_S1\n").expect("Failed to send command");
+    session
+        .write_all(b"echo MARK_S1\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
 
     // Wait for the marker to appear in output
@@ -2397,7 +2494,9 @@ fn test_live_preview_basic() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -2407,7 +2506,9 @@ fn test_live_preview_basic() {
     read_into_parser(&mut session, &mut parser);
 
     // Run a unique command in session 2 (use short marker to fit in terminal)
-    session.write_all(b"echo MARK_S2\n").expect("Failed to send command");
+    session
+        .write_all(b"echo MARK_S2\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
 
     // Wait for the marker to appear in output
@@ -2497,11 +2598,15 @@ fn test_live_preview_rapid_navigation() {
     }
     let _cleanup = Cleanup {
         binary_path: binary_path.clone(),
-        session_names: vec![session1_name.clone(), session2_name.clone(), session3_name.clone()],
+        session_names: vec![
+            session1_name.clone(),
+            session2_name.clone(),
+            session3_name.clone(),
+        ],
     };
 
     // Create first session
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2522,7 +2627,9 @@ fn test_live_preview_rapid_navigation() {
         session.flush().expect("Failed to flush");
         std::thread::sleep(Duration::from_millis(200));
 
-        session.write_all(name.as_bytes()).expect("Failed to type name");
+        session
+            .write_all(name.as_bytes())
+            .expect("Failed to type name");
         session.flush().expect("Failed to flush");
         std::thread::sleep(Duration::from_millis(200));
 
@@ -2628,7 +2735,7 @@ fn test_live_preview_then_select() {
     };
 
     // Create first session with unique marker
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2636,7 +2743,9 @@ fn test_live_preview_then_select() {
     read_into_parser(&mut session, &mut parser);
 
     // Run unique command in session 1 (short marker)
-    session.write_all(b"echo ATT_1\n").expect("Failed to send command");
+    session
+        .write_all(b"echo ATT_1\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
     wait_for_text(&mut session, &mut parser, "ATT_1", 5000);
 
@@ -2653,7 +2762,9 @@ fn test_live_preview_then_select() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -2663,7 +2774,9 @@ fn test_live_preview_then_select() {
     read_into_parser(&mut session, &mut parser);
 
     // Run unique command in session 2 (short marker)
-    session.write_all(b"echo ATT_2\n").expect("Failed to send command");
+    session
+        .write_all(b"echo ATT_2\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
     wait_for_text(&mut session, &mut parser, "ATT_2", 5000);
 
@@ -2707,7 +2820,9 @@ fn test_live_preview_then_select() {
     );
 
     // Type a command - it should go to session 1
-    session.write_all(b"echo TYPED_1\n").expect("Failed to send command");
+    session
+        .write_all(b"echo TYPED_1\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
     wait_for_text(&mut session, &mut parser, "TYPED_1", 5000);
 
@@ -2763,7 +2878,7 @@ fn test_live_preview_then_create() {
     };
 
     // Create two sessions
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2783,7 +2898,9 @@ fn test_live_preview_then_create() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -2826,7 +2943,9 @@ fn test_live_preview_then_create() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(new_session_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(new_session_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -2846,7 +2965,9 @@ fn test_live_preview_then_create() {
     );
 
     // Verify we can type in the new session (short marker)
-    session.write_all(b"echo NEWSESS\n").expect("Failed to send command");
+    session
+        .write_all(b"echo NEWSESS\n")
+        .expect("Failed to send command");
     session.flush().expect("Failed to flush");
     let found = wait_for_text(&mut session, &mut parser, "NEWSESS", 5000);
 
@@ -2892,7 +3013,7 @@ fn test_ctrl_q_quit_from_terminal() {
     };
 
     // Spawn sb
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -2923,7 +3044,8 @@ fn test_ctrl_q_quit_from_terminal() {
 
     // Should show quit confirmation prompt
     assert!(
-        screen_contents.contains("Quit") && (screen_contents.contains("Yes") || screen_contents.contains("No")),
+        screen_contents.contains("Quit")
+            && (screen_contents.contains("Yes") || screen_contents.contains("No")),
         "Ctrl+Q from terminal should show quit confirmation. Got:\n{}",
         screen_contents
     );
@@ -2986,7 +3108,7 @@ fn test_mod_keys_work_from_sidebar() {
     };
 
     // Spawn sb
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3021,7 +3143,10 @@ fn test_mod_keys_work_from_sidebar() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After Ctrl+B from sidebar (should still be on sidebar):\n{}", screen_contents);
+    eprintln!(
+        "After Ctrl+B from sidebar (should still be on sidebar):\n{}",
+        screen_contents
+    );
     assert!(
         screen_contents.contains("n New") || screen_contents.contains("enter"),
         "Focus should remain on sidebar after Ctrl+B from sidebar. Got:\n{}",
@@ -3035,7 +3160,10 @@ fn test_mod_keys_work_from_sidebar() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After Ctrl+T from sidebar (should still be on sidebar):\n{}", screen_contents);
+    eprintln!(
+        "After Ctrl+T from sidebar (should still be on sidebar):\n{}",
+        screen_contents
+    );
     assert!(
         screen_contents.contains("n New") || screen_contents.contains("enter"),
         "Focus should remain on sidebar after Ctrl+T from sidebar. Got:\n{}",
@@ -3049,7 +3177,10 @@ fn test_mod_keys_work_from_sidebar() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After Ctrl+N from sidebar (should be in create mode):\n{}", screen_contents);
+    eprintln!(
+        "After Ctrl+N from sidebar (should be in create mode):\n{}",
+        screen_contents
+    );
     assert!(
         screen_contents.contains("t Terminal") && screen_contents.contains("a Agent"),
         "Ctrl+N from sidebar should enter create mode showing session types. Got:\n{}",
@@ -3069,9 +3200,13 @@ fn test_mod_keys_work_from_sidebar() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After Ctrl+Q from sidebar (should show quit confirmation):\n{}", screen_contents);
+    eprintln!(
+        "After Ctrl+Q from sidebar (should show quit confirmation):\n{}",
+        screen_contents
+    );
     assert!(
-        screen_contents.contains("Quit") && (screen_contents.contains("y/q") || screen_contents.contains("Yes")),
+        screen_contents.contains("Quit")
+            && (screen_contents.contains("y/q") || screen_contents.contains("Yes")),
         "Ctrl+Q from sidebar should show quit confirmation. Got:\n{}",
         screen_contents
     );
@@ -3105,12 +3240,11 @@ fn test_welcome_state_on_fresh_start() {
     let cleanup_session = format!("cleanup-{}-{}", pid, unique_id);
 
     // Kill any leftover sessions from previous test runs
-    let _ = env.iso_command()
-        .args(["kill", &cleanup_session])
-        .output();
+    let _ = env.iso_command().args(["kill", &cleanup_session]).output();
 
     // List current sessions - we need to kill them all for this test
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list");
@@ -3120,7 +3254,8 @@ fn test_welcome_state_on_fresh_start() {
     // Kill all existing sessions repeatedly until none remain.
     // We keep trying because the list output truncates names at 20 chars.
     for attempt in 0..10 {
-        let list_output = env.iso_command()
+        let list_output = env
+            .iso_command()
             .args(["list"])
             .output()
             .expect("Failed to run sb list");
@@ -3140,15 +3275,16 @@ fn test_welcome_state_on_fresh_start() {
             if line.len() >= 20 {
                 // Get the trimmed name from first 20 chars
                 let display_name = line[..20].trim().to_string();
-                if display_name.is_empty() || display_name == "No" || display_name.starts_with("NAME") {
+                if display_name.is_empty()
+                    || display_name == "No"
+                    || display_name.starts_with("NAME")
+                {
                     continue;
                 }
 
                 // Kill using the display name
                 eprintln!("  Killing: {}", display_name);
-                let _ = env.iso_command()
-                    .args(["kill", &display_name])
-                    .output();
+                let _ = env.iso_command().args(["kill", &display_name]).output();
             }
         }
 
@@ -3156,7 +3292,8 @@ fn test_welcome_state_on_fresh_start() {
     }
 
     // Final verification
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list after kill");
@@ -3176,14 +3313,19 @@ fn test_welcome_state_on_fresh_start() {
                 .map(|entries| entries.flatten().count())
                 .unwrap_or(0);
             if remaining > 0 {
-                eprintln!("WARNING: {} stale files in isolated sessions dir", remaining);
+                eprintln!(
+                    "WARNING: {} stale files in isolated sessions dir",
+                    remaining
+                );
                 clean_state = false;
             }
         }
     }
 
     if !clean_state {
-        eprintln!("WARNING: Could not clear all sessions, test will verify existing session attach behavior instead");
+        eprintln!(
+            "WARNING: Could not clear all sessions, test will verify existing session attach behavior instead"
+        );
     }
 
     // Now start sb without -s argument to test welcome state
@@ -3269,7 +3411,9 @@ fn test_welcome_state_on_fresh_start() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    session.write_all(welcome_new_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(welcome_new_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -3279,13 +3423,17 @@ fn test_welcome_state_on_fresh_start() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After creating session '{}':\n{}", welcome_new_name, screen_contents);
+    eprintln!(
+        "After creating session '{}':\n{}",
+        welcome_new_name, screen_contents
+    );
 
     // The new session should appear in the sidebar
     assert!(
         screen_contents.contains(&welcome_new_name),
         "New session '{}' should appear in sidebar. Got:\n{}",
-        welcome_new_name, screen_contents
+        welcome_new_name,
+        screen_contents
     );
 
     // Terminal should be focused
@@ -3305,17 +3453,13 @@ fn test_welcome_state_on_fresh_start() {
     let _ = session.get_process_mut().exit(true);
 
     // Clean up all sessions by listing and killing them
-    let list_output = env.iso_command()
-        .args(["list"])
-        .output();
+    let list_output = env.iso_command().args(["list"]).output();
     if let Ok(output) = list_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let name = line.split_whitespace().next().unwrap_or("");
             if !name.is_empty() && name != "NAME" && !name.contains("No") {
-                let _ = env.iso_command()
-                    .args(["kill", name])
-                    .output();
+                let _ = env.iso_command().args(["kill", name]).output();
             }
         }
     }
@@ -3360,7 +3504,7 @@ fn test_session_ordering_by_last_used() {
     };
 
     // Create first session with specific name via CLI
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3380,7 +3524,10 @@ fn test_session_ordering_by_last_used() {
     // Get the first session row (row 2, after title at row 1)
     let row2_before = parser.screen().contents_between(2, 0, 2, 27);
     eprintln!("Row 2 before creating session2: '{}'", row2_before);
-    assert!(row2_before.contains(&session1_name), "Session1 should be at row 2");
+    assert!(
+        row2_before.contains(&session1_name),
+        "Session1 should be at row 2"
+    );
 
     // Create a second session with Ctrl+N -> 't' -> type name -> Enter
     let session2_name = format!("order2-{}-{}", pid, unique_id);
@@ -3394,7 +3541,9 @@ fn test_session_ordering_by_last_used() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type session2 name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -3404,7 +3553,10 @@ fn test_session_ordering_by_last_used() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("After second session '{}' created:\n{}", session2_name, screen_contents);
+    eprintln!(
+        "After second session '{}' created:\n{}",
+        session2_name, screen_contents
+    );
 
     // Session 2 should be at the top now (most recently created/used)
     let row2_after = parser.screen().contents_between(2, 0, 2, 27);
@@ -3419,14 +3571,20 @@ fn test_session_ordering_by_last_used() {
 
     // Session1 should now be at row 3
     let row3_after = parser.screen().contents_between(3, 0, 3, 27);
-    eprintln!("Row 3 after session2 creation (should be session1): '{}'", row3_after);
+    eprintln!(
+        "Row 3 after session2 creation (should be session1): '{}'",
+        row3_after
+    );
     assert!(
         row3_after.contains(&session1_name),
         "Session1 should now be at row 3. Row 3: '{}'",
         row3_after
     );
 
-    eprintln!("Session2 at row 2: '{}'", row2_after.trim_matches(|c| c == '│' || c == ' '));
+    eprintln!(
+        "Session2 at row 2: '{}'",
+        row2_after.trim_matches(|c| c == '│' || c == ' ')
+    );
 
     // Now switch to session1 by navigating down and pressing Enter
     // First, go to sidebar
@@ -3436,7 +3594,9 @@ fn test_session_ordering_by_last_used() {
     read_into_parser(&mut session, &mut parser);
 
     // Arrow down to select session1 (now at row 3)
-    session.write_all(&[0x1b, 0x5b, 0x42]).expect("Failed to send Down arrow"); // ESC [ B
+    session
+        .write_all(&[0x1b, 0x5b, 0x42])
+        .expect("Failed to send Down arrow"); // ESC [ B
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
@@ -3519,7 +3679,7 @@ fn test_session_order_preserved_across_restart() {
     // === PHASE 1: Create two sessions and establish order ===
 
     // Create first session with specific name via CLI
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(10)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -3530,7 +3690,10 @@ fn test_session_order_preserved_across_restart() {
     // Session 1 should be at row 2 initially
     let row2_initial = parser.screen().contents_between(2, 0, 2, 27);
     eprintln!("PHASE 1 - Initial session at row2: '{}'", row2_initial);
-    assert!(row2_initial.contains(&session1_name), "Session1 should be at row 2 initially");
+    assert!(
+        row2_initial.contains(&session1_name),
+        "Session1 should be at row 2 initially"
+    );
 
     // Create a second session with Ctrl+N -> 't' -> type name -> Enter
     let session2_name = format!("persist2-{}-{}", pid, unique_id);
@@ -3544,7 +3707,9 @@ fn test_session_order_preserved_across_restart() {
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type session2 name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -3555,7 +3720,10 @@ fn test_session_order_preserved_across_restart() {
 
     // Session 2 should now be at the top
     let row2_after_create = parser.screen().contents_between(2, 0, 2, 27);
-    eprintln!("PHASE 1 - After creating session2, row2: '{}'", row2_after_create);
+    eprintln!(
+        "PHASE 1 - After creating session2, row2: '{}'",
+        row2_after_create
+    );
 
     // The new session should be at top, session1 should be at row 3
     assert!(
@@ -3582,7 +3750,9 @@ fn test_session_order_preserved_across_restart() {
     read_into_parser(&mut session, &mut parser);
 
     // Arrow down to select session1 (now at row 3)
-    session.write_all(&[0x1b, 0x5b, 0x42]).expect("Failed to send Down arrow"); // ESC [ B
+    session
+        .write_all(&[0x1b, 0x5b, 0x42])
+        .expect("Failed to send Down arrow"); // ESC [ B
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut session, &mut parser);
@@ -3594,11 +3764,17 @@ fn test_session_order_preserved_across_restart() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("PHASE 1 - After switching to session1:\n{}", screen_contents);
+    eprintln!(
+        "PHASE 1 - After switching to session1:\n{}",
+        screen_contents
+    );
 
     // Session 1 should now be at the top (most recently used after switch)
     let row2 = parser.screen().contents_between(2, 0, 2, 27);
-    eprintln!("PHASE 1 - Row 2 after switch (should be session1): '{}'", row2);
+    eprintln!(
+        "PHASE 1 - Row 2 after switch (should be session1): '{}'",
+        row2
+    );
     assert!(
         row2.contains(&session1_name),
         "Session1 should be at top after switching to it. Row 2 contents: '{}'",
@@ -3607,7 +3783,10 @@ fn test_session_order_preserved_across_restart() {
 
     // Auto-session should now be second
     let row3 = parser.screen().contents_between(3, 0, 3, 27);
-    eprintln!("PHASE 1 - Row 3 after switch (should be auto-session): '{}'", row3);
+    eprintln!(
+        "PHASE 1 - Row 3 after switch (should be auto-session): '{}'",
+        row3
+    );
 
     // === PHASE 2: Quit TUI but keep daemon running ===
     session.write_all(&[17]).expect("Failed to send Ctrl+Q");
@@ -3639,7 +3818,10 @@ fn test_session_order_preserved_across_restart() {
     // === PHASE 4: Verify order is preserved ===
     // Session 1 should still be at the top (was most recently used before quit)
     let row2_after = parser2.screen().contents_between(2, 0, 2, 27);
-    eprintln!("PHASE 3 - Row 2 after restart (should be session1): '{}'", row2_after);
+    eprintln!(
+        "PHASE 3 - Row 2 after restart (should be session1): '{}'",
+        row2_after
+    );
     assert!(
         row2_after.contains(&session1_name),
         "Session1 should still be at top after TUI restart (order preserved). Row 2 contents: '{}'",
@@ -3834,7 +4016,8 @@ fn test_shutdown_kills_all_sessions() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // Verify sessions are listed
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -3853,7 +4036,8 @@ fn test_shutdown_kills_all_sessions() {
     );
 
     // Run shutdown
-    let shutdown_output = env.iso_command()
+    let shutdown_output = env
+        .iso_command()
         .arg("shutdown")
         .output()
         .expect("Failed to run sb shutdown");
@@ -3876,7 +4060,8 @@ fn test_shutdown_kills_all_sessions() {
     let _ = session2.get_process_mut().exit(true);
 
     // After shutdown, running list should show no sessions (new daemon starts)
-    let list_output2 = env.iso_command()
+    let list_output2 = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list after shutdown");
@@ -3904,15 +4089,14 @@ fn test_shutdown_no_daemon_running() {
     let _binary_path = get_binary_path();
 
     // First, ensure no daemon is running by calling shutdown
-    let _ = env.iso_command()
-        .arg("shutdown")
-        .output();
+    let _ = env.iso_command().arg("shutdown").output();
 
     // Wait for daemon to fully shut down
     std::thread::sleep(Duration::from_millis(500));
 
     // Now call shutdown again - should report no daemon
-    let shutdown_output = env.iso_command()
+    let shutdown_output = env
+        .iso_command()
         .arg("shutdown")
         .output()
         .expect("Failed to run sb shutdown");
@@ -3935,14 +4119,12 @@ fn test_sessions_work_after_shutdown() {
     let _binary_path = get_binary_path();
 
     // Ensure clean state by shutting down any existing daemon
-    let _ = env.iso_command()
-        .arg("shutdown")
-        .output();
+    let _ = env.iso_command().arg("shutdown").output();
     std::thread::sleep(Duration::from_millis(500));
 
     // Create a new session - this should start a new daemon
     let session_name = get_unique_session_name();
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
 
     // Wait for initialization
@@ -3961,7 +4143,10 @@ fn test_sessions_work_after_shutdown() {
     }
 
     let screen_contents = parser.screen().contents();
-    eprintln!("Screen after post-shutdown session creation:\n{}", screen_contents);
+    eprintln!(
+        "Screen after post-shutdown session creation:\n{}",
+        screen_contents
+    );
 
     // Verify TUI is rendered properly
     assert!(
@@ -3971,7 +4156,8 @@ fn test_sessions_work_after_shutdown() {
     );
 
     // Verify session is listed
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .arg("list")
         .output()
         .expect("Failed to run sb list");
@@ -3986,9 +4172,7 @@ fn test_sessions_work_after_shutdown() {
     // Clean up
     let _ = session.write_all(&[17]); // Ctrl+Q
     let _ = session.get_process_mut().exit(true);
-    let _ = env.iso_command()
-        .args(["kill", &session_name])
-        .output();
+    let _ = env.iso_command().args(["kill", &session_name]).output();
 }
 
 /// Test that Ctrl+S toggles mouse mode (mouse scroll vs text selection).
@@ -4021,7 +4205,7 @@ fn test_ctrl_s_toggles_mouse_mode() {
     };
 
     // Spawn sb
-        let mut session = spawn_sb(&env, &session_name);
+    let mut session = spawn_sb(&env, &session_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4104,7 +4288,10 @@ fn test_mouse_mode_toggle_shows_timed_message_then_clears() {
     session.read_and_parse().expect("Failed to read output");
 
     let after_toggle_screen = session.screen_contents();
-    eprintln!("After Ctrl+S (message should show):\n{}", after_toggle_screen);
+    eprintln!(
+        "After Ctrl+S (message should show):\n{}",
+        after_toggle_screen
+    );
     assert!(
         after_toggle_screen.contains("Text select enabled"),
         "Hint bar should show timed message 'Text select enabled' after toggle. Got:\n{}",
@@ -4150,7 +4337,9 @@ fn test_zoom_hides_sidebar_and_shows_timed_message() {
     // Create a session to have something to show
     session.send("n").expect("Failed to send n");
     std::thread::sleep(Duration::from_millis(200));
-    session.send("t").expect("Failed to send t (terminal session)");
+    session
+        .send("t")
+        .expect("Failed to send t (terminal session)");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -4159,7 +4348,8 @@ fn test_zoom_hides_sidebar_and_shows_timed_message() {
     eprintln!("Pre-zoom screen:\n{}", pre_zoom);
     assert!(
         pre_zoom.contains("Default"),
-        "Sidebar should show 'Default' workspace before zooming. Got:\n{}", pre_zoom
+        "Sidebar should show 'Default' workspace before zooming. Got:\n{}",
+        pre_zoom
     );
 
     // Press Ctrl+Z to zoom
@@ -4171,11 +4361,13 @@ fn test_zoom_hides_sidebar_and_shows_timed_message() {
     eprintln!("Zoomed screen:\n{}", zoomed_screen);
     assert!(
         zoomed_screen.contains("Zoomed"),
-        "Should show 'Zoomed' timed message after Ctrl+Z. Got:\n{}", zoomed_screen
+        "Should show 'Zoomed' timed message after Ctrl+Z. Got:\n{}",
+        zoomed_screen
     );
     assert!(
         !zoomed_screen.contains("Default"),
-        "Sidebar workspace name 'Default' should be hidden when zoomed. Got:\n{}", zoomed_screen
+        "Sidebar workspace name 'Default' should be hidden when zoomed. Got:\n{}",
+        zoomed_screen
     );
 
     // Press Ctrl+Z again to unzoom
@@ -4187,7 +4379,8 @@ fn test_zoom_hides_sidebar_and_shows_timed_message() {
     eprintln!("Unzoomed screen:\n{}", unzoomed_screen);
     assert!(
         unzoomed_screen.contains("Unzoomed"),
-        "Should show 'Unzoomed' timed message after second Ctrl+Z. Got:\n{}", unzoomed_screen
+        "Should show 'Unzoomed' timed message after second Ctrl+Z. Got:\n{}",
+        unzoomed_screen
     );
 
     // Wait for timed message to clear, then sidebar should be visible again
@@ -4244,7 +4437,7 @@ fn test_vim_jk_navigation() {
     };
 
     // Create first session
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4266,7 +4459,9 @@ fn test_vim_jk_navigation() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -4317,7 +4512,9 @@ fn test_vim_jk_navigation() {
     assert!(
         screen_after_k.contains(session1_part) || screen_after_k.contains(session2_part),
         "At least one session should be visible. Looking for '{}' or '{}' in:\n{}",
-        session1_part, session2_part, screen_after_k
+        session1_part,
+        session2_part,
+        screen_after_k
     );
 
     // Test multiple 'j' presses to move down through the list
@@ -4339,7 +4536,9 @@ fn test_vim_jk_navigation() {
     assert!(
         final_screen.contains(session1_part) || final_screen.contains(session2_part),
         "Sessions should still be visible after j/k navigation. Looking for '{}' or '{}' in:\n{}",
-        session1_part, session2_part, final_screen
+        session1_part,
+        session2_part,
+        final_screen
     );
 
     // Cleanup
@@ -4382,7 +4581,7 @@ fn test_esc_jump_back() {
     };
 
     // Start with first session (named via CLI)
-        let mut session = spawn_sb(&env, &session1_name);
+    let mut session = spawn_sb(&env, &session1_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4408,7 +4607,9 @@ fn test_esc_jump_back() {
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.write_all(session2_name.as_bytes()).expect("Failed to type session2 name");
+    session
+        .write_all(session2_name.as_bytes())
+        .expect("Failed to type session2 name");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
 
@@ -4418,7 +4619,10 @@ fn test_esc_jump_back() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_with_two = parser.screen().contents();
-    eprintln!("After creating second session '{}':\n{}", session2_name, screen_with_two);
+    eprintln!(
+        "After creating second session '{}':\n{}",
+        session2_name, screen_with_two
+    );
 
     // Now we're attached to session2. Focus sidebar.
     session.write_all(&[2]).expect("Failed to send Ctrl+B");
@@ -4443,7 +4647,10 @@ fn test_esc_jump_back() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_after_j = parser.screen().contents();
-    eprintln!("After 'j' navigation (selection moved to session1):\n{}", screen_after_j);
+    eprintln!(
+        "After 'j' navigation (selection moved to session1):\n{}",
+        screen_after_j
+    );
 
     // Now press Esc - this should:
     // 1. Return focus to terminal
@@ -4525,7 +4732,10 @@ fn test_space_focuses_terminal_from_sidebar() {
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
     // Poll until sidebar is focused (color 99) or timeout
@@ -4542,7 +4752,10 @@ fn test_space_focuses_terminal_from_sidebar() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
+    assert!(
+        sidebar_focused,
+        "Sidebar should become focused (99) after Ctrl+B"
+    );
 
     // Now send Space to focus terminal - this should work just like Enter
     session.send_space().expect("Failed to send space");
@@ -4561,7 +4774,10 @@ fn test_space_focuses_terminal_from_sidebar() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing Space");
+    assert!(
+        terminal_focused,
+        "Terminal should become focused (sidebar 238) after pressing Space"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -4579,7 +4795,10 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
     session.read_and_parse().expect("Failed to read output");
 
     // Focus sidebar with Ctrl+B
-    session.session.write_all(&[2]).expect("Failed to send Ctrl+B");
+    session
+        .session
+        .write_all(&[2])
+        .expect("Failed to send Ctrl+B");
     session.session.flush().expect("Failed to flush");
 
     // Poll until sidebar is focused (color 99) or timeout
@@ -4596,10 +4815,15 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (99) after Ctrl+B");
+    assert!(
+        sidebar_focused,
+        "Sidebar should become focused (99) after Ctrl+B"
+    );
 
     // Now send Right Arrow to focus terminal - this should work just like Enter
-    session.send_right_arrow().expect("Failed to send right arrow");
+    session
+        .send_right_arrow()
+        .expect("Failed to send right arrow");
 
     // Poll until terminal is focused (sidebar color 238) or timeout
     let mut terminal_focused = false;
@@ -4608,14 +4832,20 @@ fn test_right_arrow_focuses_terminal_from_sidebar() {
         session.read_and_parse().expect("Failed to read output");
         if let Some(sidebar_corner) = session.cell_at(0, 0) {
             let sidebar_fg = sidebar_corner.fgcolor();
-            eprintln!("Polling Right Arrow - sidebar border color: {:?}", sidebar_fg);
+            eprintln!(
+                "Polling Right Arrow - sidebar border color: {:?}",
+                sidebar_fg
+            );
             if matches!(sidebar_fg, vt100::Color::Idx(238)) {
                 terminal_focused = true;
                 break;
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing Right Arrow");
+    assert!(
+        terminal_focused,
+        "Terminal should become focused (sidebar 238) after pressing Right Arrow"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -4636,7 +4866,7 @@ fn test_session_name_wrapping_with_continuation_indicators() {
     let long_name = "VeryLongSessionNameThatShouldWrapToMultipleLines12";
 
     // Create a session with this long name via CLI (no quotes needed for alphanumeric names)
-        let mut session = spawn_sb(&env, &long_name);
+    let mut session = spawn_sb(&env, &long_name);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4705,7 +4935,10 @@ fn test_session_name_wrapping_with_continuation_indicators() {
             let symbol = cell.contents();
             if symbol == "│" || symbol == "└" {
                 let fg_color = cell.fgcolor();
-                eprintln!("Found continuation '{}' at row {}, color: {:?}", symbol, row, fg_color);
+                eprintln!(
+                    "Found continuation '{}' at row {}, color: {:?}",
+                    symbol, row, fg_color
+                );
                 if matches!(fg_color, vt100::Color::Idx(238)) {
                     found_continuation_with_correct_color = true;
                     break;
@@ -4725,9 +4958,7 @@ fn test_session_name_wrapping_with_continuation_indicators() {
     let _ = session.get_process_mut().exit(true);
 
     // Kill the session
-    let _ = env.iso_command()
-        .args(["kill", long_name])
-        .output();
+    let _ = env.iso_command().args(["kill", long_name]).output();
 }
 
 /// Test that truncation indicators ("...") appear when there are more sessions than can fit
@@ -4778,7 +5009,7 @@ fn test_truncation_indicators_when_session_list_overflows() {
         session_names.push(name.clone());
 
         // Spawn sb briefly to create the session
-                let mut temp_session = spawn_sb(&env, &name);
+        let mut temp_session = spawn_sb(&env, &name);
         temp_session.set_expect_timeout(Some(Duration::from_millis(1000)));
 
         // Wait briefly for session to be created
@@ -4802,7 +5033,7 @@ fn test_truncation_indicators_when_session_list_overflows() {
 
     // Now launch the TUI to view all the sessions
     let first_session = &session_names[0];
-        let mut session = spawn_sb(&env, &first_session);
+    let mut session = spawn_sb(&env, &first_session);
     session.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -4817,7 +5048,10 @@ fn test_truncation_indicators_when_session_list_overflows() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!("Screen with {} sessions:\n{}", num_sessions, screen_contents);
+    eprintln!(
+        "Screen with {} sessions:\n{}",
+        num_sessions, screen_contents
+    );
 
     // Verify the truncation indicator "..." appears
     // It should appear at the bottom since we have more sessions than can fit
@@ -4968,7 +5202,8 @@ fn test_create_workspace() {
     eprintln!("After Ctrl+W:\n{}", screen);
     assert!(
         screen.contains("Workspace") || screen.contains("Default"),
-        "Workspace overlay should be open. Got:\n{}", screen
+        "Workspace overlay should be open. Got:\n{}",
+        screen
     );
 
     // Press 'n' to start creating a new workspace
@@ -4977,7 +5212,9 @@ fn test_create_workspace() {
     session.read_and_parse().expect("Failed to read output");
 
     // Type the workspace name
-    session.send("MyWork").expect("Failed to type workspace name");
+    session
+        .send("MyWork")
+        .expect("Failed to type workspace name");
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
@@ -4995,7 +5232,8 @@ fn test_create_workspace() {
     eprintln!("After re-opening overlay:\n{}", screen);
     assert!(
         screen.contains("MyWork"),
-        "New workspace 'MyWork' should appear in overlay. Got:\n{}", screen
+        "New workspace 'MyWork' should appear in overlay. Got:\n{}",
+        screen
     );
 
     session.send_esc().expect("Failed to send Esc");
@@ -5010,7 +5248,8 @@ fn test_switch_workspace() {
 
     // Create a second workspace first using CLI
     let _binary_path = get_binary_path();
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "Work"])
         .output()
         .expect("Failed to create workspace via CLI");
@@ -5025,7 +5264,8 @@ fn test_switch_workspace() {
     let second_row = session.row_contents(1);
     assert!(
         second_row.contains("Default"),
-        "Should start in Default workspace. Got: '{}'", second_row
+        "Should start in Default workspace. Got: '{}'",
+        second_row
     );
 
     // Focus sidebar and open workspace overlay
@@ -5049,7 +5289,8 @@ fn test_switch_workspace() {
     eprintln!("After switching to Work workspace:\n{}", screen);
     assert!(
         screen.contains("Work"),
-        "Sidebar should show 'Work' workspace after switching. Got:\n{}", screen
+        "Sidebar should show 'Work' workspace after switching. Got:\n{}",
+        screen
     );
 
     // Session isolation: session from Default should not be in Work
@@ -5103,7 +5344,8 @@ fn test_rename_workspace() {
     eprintln!("After renaming workspace:\n{}", screen);
     assert!(
         screen.contains("Renamed"),
-        "Sidebar should show renamed workspace 'Renamed'. Got:\n{}", screen
+        "Sidebar should show renamed workspace 'Renamed'. Got:\n{}",
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -5117,7 +5359,8 @@ fn test_delete_workspace() {
 
     // Create a second workspace to delete
     let _binary_path = get_binary_path();
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "ToDelete"])
         .output()
         .expect("Failed to create workspace via CLI");
@@ -5164,7 +5407,8 @@ fn test_delete_workspace() {
     eprintln!("After re-opening overlay:\n{}", screen);
     assert!(
         !screen.contains("ToDelete"),
-        "Deleted workspace 'ToDelete' should not appear. Got:\n{}", screen
+        "Deleted workspace 'ToDelete' should not appear. Got:\n{}",
+        screen
     );
 
     session.send_esc().expect("Failed to send Esc");
@@ -5179,7 +5423,8 @@ fn test_move_session_between_workspaces() {
 
     // Create a destination workspace
     let _binary_path = get_binary_path();
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "Destination"])
         .output()
         .expect("Failed to create workspace via CLI");
@@ -5195,7 +5440,9 @@ fn test_move_session_between_workspaces() {
     let screen = session.screen_contents();
     assert!(
         screen.contains(&session_name),
-        "Session '{}' should be visible in Default. Got:\n{}", session_name, screen
+        "Session '{}' should be visible in Default. Got:\n{}",
+        session_name,
+        screen
     );
 
     // Focus sidebar and press 'm' to move session
@@ -5209,7 +5456,8 @@ fn test_move_session_between_workspaces() {
     eprintln!("After 'm' (move mode overlay):\n{}", screen);
     assert!(
         screen.contains("Move") || screen.contains("Workspace"),
-        "Move-to-workspace overlay should be open. Got:\n{}", screen
+        "Move-to-workspace overlay should be open. Got:\n{}",
+        screen
     );
 
     // Navigate to "Destination" (comes after "Default" alphabetically)
@@ -5220,7 +5468,9 @@ fn test_move_session_between_workspaces() {
     session.read_and_parse().expect("Failed to read output");
 
     // Now switch to Destination workspace and verify session is there
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5235,12 +5485,14 @@ fn test_move_session_between_workspaces() {
     eprintln!("After switching to Destination workspace:\n{}", screen);
     assert!(
         screen.contains("Destination"),
-        "Should be in Destination workspace. Got:\n{}", screen
+        "Should be in Destination workspace. Got:\n{}",
+        screen
     );
     assert!(
         screen.contains(&session_name),
         "Session '{}' should be visible in Destination workspace after move. Got:\n{}",
-        session_name, screen
+        session_name,
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -5305,7 +5557,8 @@ fn test_workspace_persists_across_restart() {
     eprintln!("Workspace overlay after restart:\n{}", screen);
     assert!(
         screen.contains("Persistent"),
-        "Workspace 'Persistent' should persist across daemon restart. Got:\n{}", screen
+        "Workspace 'Persistent' should persist across daemon restart. Got:\n{}",
+        screen
     );
 
     session.send_esc().expect("Failed to send Esc");
@@ -5320,7 +5573,8 @@ fn test_workspace_state_restored_on_switch_back() {
 
     // Create a second workspace
     let _binary_path = get_binary_path();
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "Other"])
         .output()
         .expect("Failed to create workspace");
@@ -5336,7 +5590,9 @@ fn test_workspace_state_restored_on_switch_back() {
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
     std::thread::sleep(Duration::from_millis(300));
 
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5349,10 +5605,16 @@ fn test_workspace_state_restored_on_switch_back() {
 
     let screen = session.screen_contents();
     eprintln!("In Other workspace:\n{}", screen);
-    assert!(screen.contains("Other"), "Should be in Other workspace. Got:\n{}", screen);
+    assert!(
+        screen.contains("Other"),
+        "Should be in Other workspace. Got:\n{}",
+        screen
+    );
 
     // Switch back to Default workspace
-    session.send_ctrl_w().expect("Failed to re-open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to re-open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5360,7 +5622,9 @@ fn test_workspace_state_restored_on_switch_back() {
     // Navigate up to select "Default"
     session.send_up_arrow().expect("Failed to send Up");
     std::thread::sleep(Duration::from_millis(200));
-    session.send_enter().expect("Failed to switch back to Default");
+    session
+        .send_enter()
+        .expect("Failed to switch back to Default");
     std::thread::sleep(Duration::from_millis(800));
     session.read_and_parse().expect("Failed to read output");
 
@@ -5368,13 +5632,15 @@ fn test_workspace_state_restored_on_switch_back() {
     eprintln!("After switching back to Default:\n{}", screen);
     assert!(
         screen.contains("Default"),
-        "Should be back in Default workspace. Got:\n{}", screen
+        "Should be back in Default workspace. Got:\n{}",
+        screen
     );
     // The session from Default should be visible again (workspace state restored)
     assert!(
         screen.contains(&session_name),
         "Session '{}' should be visible again in Default after switching back. Got:\n{}",
-        session_name, screen
+        session_name,
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -5401,7 +5667,10 @@ fn test_ctrl_n_from_terminal_enters_create_mode() {
     eprintln!("Initial state (terminal should be focused):\n{}", screen);
 
     // Send Ctrl+N (ASCII 14) from terminal pane
-    session.session.write_all(&[14]).expect("Failed to send Ctrl+N");
+    session
+        .session
+        .write_all(&[14])
+        .expect("Failed to send Ctrl+N");
     session.session.flush().expect("Failed to flush");
 
     // Wait for create mode to appear
@@ -5469,7 +5738,10 @@ fn test_ctrl_w_from_terminal_opens_workspace_overlay() {
         let screen = session.screen_contents();
         if screen.contains("Workspaces") || screen.contains("Default") {
             found_overlay = true;
-            eprintln!("After Ctrl+W from terminal (workspace overlay):\n{}", screen);
+            eprintln!(
+                "After Ctrl+W from terminal (workspace overlay):\n{}",
+                screen
+            );
             break;
         }
     }
@@ -5576,7 +5848,7 @@ fn test_delete_session_focus_transitions() {
 
     // Create 3 sessions by briefly spawning the TUI for each one
     for name in &[&session1, &session2, &session3] {
-                let mut temp = spawn_sb(&env, &name);
+        let mut temp = spawn_sb(&env, &name);
         temp.set_expect_timeout(Some(Duration::from_millis(1000)));
         std::thread::sleep(Duration::from_millis(400));
         let _ = temp.write_all(&[17]); // Ctrl+Q
@@ -5588,7 +5860,7 @@ fn test_delete_session_focus_transitions() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Attach to TUI (session3 is most recently created/used)
-        let mut sb = spawn_sb(&env, &session3);
+    let mut sb = spawn_sb(&env, &session3);
     sb.set_expect_timeout(Some(Duration::from_secs(5)));
     let mut parser = vt100::Parser::new(24, 80, 0);
 
@@ -5602,7 +5874,10 @@ fn test_delete_session_focus_transitions() {
     read_into_parser(&mut sb, &mut parser);
 
     let screen = parser.screen().contents();
-    eprintln!("Before delete (session3 should be at top/selected):\n{}", screen);
+    eprintln!(
+        "Before delete (session3 should be at top/selected):\n{}",
+        screen
+    );
 
     // Delete the selected session (session3): press 'd', then 'y'
     sb.write_all(b"d").expect("Failed to send 'd'");
@@ -5708,7 +5983,10 @@ fn test_create_mode_drafting_workflow() {
     read_into_parser(&mut sb, &mut parser);
 
     let screen_drafting = parser.screen().contents();
-    eprintln!("After 'n' -> 't' (should be in drafting mode):\n{}", screen_drafting);
+    eprintln!(
+        "After 'n' -> 't' (should be in drafting mode):\n{}",
+        screen_drafting
+    );
 
     // Should show drafting hint bar (enter Create, esc Cancel)
     assert!(
@@ -5744,13 +6022,17 @@ fn test_create_mode_drafting_workflow() {
     read_into_parser(&mut sb, &mut parser);
 
     // Type the session name
-    sb.write_all(new_session.as_bytes()).expect("Failed to type name");
+    sb.write_all(new_session.as_bytes())
+        .expect("Failed to type name");
     sb.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     read_into_parser(&mut sb, &mut parser);
 
     let screen_while_typing = parser.screen().contents();
-    eprintln!("While typing name '{}':\n{}", new_session, screen_while_typing);
+    eprintln!(
+        "While typing name '{}':\n{}",
+        new_session, screen_while_typing
+    );
 
     // The typed name should be visible in the sidebar draft row
     let name_prefix = &new_session[..new_session.len().min(15)];
@@ -5773,7 +6055,8 @@ fn test_create_mode_drafting_workflow() {
     assert!(
         screen_after_create.contains(&new_session),
         "Created session '{}' should appear in sidebar. Got:\n{}",
-        new_session, screen_after_create
+        new_session,
+        screen_after_create
     );
 
     // Should be back in normal terminal-focused mode
@@ -5848,8 +6131,7 @@ fn test_session_name_character_restrictions() {
     // Invalid chars '!', '#' should be filtered out and NOT appear in the sidebar
     // (Note: '@' appears in terminal prompt like 'user@host' so we check the sidebar rows only)
     // The sidebar occupies columns 0-27; check the first few rows for invalid chars
-    let sidebar_content: String = session.parser.screen()
-        .contents_between(0, 0, 20, 27);
+    let sidebar_content: String = session.parser.screen().contents_between(0, 0, 20, 27);
     eprintln!("Sidebar content only:\n{}", sidebar_content);
     assert!(
         !sidebar_content.contains('!') && !sidebar_content.contains('#'),
@@ -5911,12 +6193,22 @@ fn test_session_name_wraps_while_typing() {
 
     let screen = session.screen_contents();
     eprintln!("Screen after typing long rename name:\n{}", screen);
-    assert!(got_wrap, "Session name should wrap with │/└ indicators while typing. Got:\n{}", screen);
+    assert!(
+        got_wrap,
+        "Session name should wrap with │/└ indicators while typing. Got:\n{}",
+        screen
+    );
 
     // The first 24 chars should be on row 2, remaining on row 3 in the sidebar
     let sidebar: String = session.parser.screen().contents_between(0, 0, 23, 27);
-    assert!(sidebar.contains("abcdefghijklmnopqrstuvwx"), "First 24 chars should appear in sidebar while typing");
-    assert!(sidebar.contains("yz1"), "Remaining chars should appear on continuation line");
+    assert!(
+        sidebar.contains("abcdefghijklmnopqrstuvwx"),
+        "First 24 chars should appear in sidebar while typing"
+    );
+    assert!(
+        sidebar.contains("yz1"),
+        "Remaining chars should appear on continuation line"
+    );
 
     session.send_esc().expect("Cancel rename");
     session.quit().expect("Failed to quit");
@@ -5935,8 +6227,15 @@ fn test_workspace_name_truncated_in_sidebar_header() {
     // Sidebar content width is 24 chars; create a workspace name definitely longer than that
     // Use a fixed prefix of 25+ chars so it always exceeds the limit regardless of pid/unique_id
     let long_ws_name = format!("VeryLongWorkspaceName-{}-{}", pid % 100, unique_id % 100);
-    eprintln!("Long workspace name ({} chars): {}", long_ws_name.len(), long_ws_name);
-    assert!(long_ws_name.len() > 24, "Long workspace name should exceed sidebar width of 24 chars");
+    eprintln!(
+        "Long workspace name ({} chars): {}",
+        long_ws_name.len(),
+        long_ws_name
+    );
+    assert!(
+        long_ws_name.len() > 24,
+        "Long workspace name should exceed sidebar width of 24 chars"
+    );
 
     struct Cleanup {
         binary_path: String,
@@ -5955,17 +6254,25 @@ fn test_workspace_name_truncated_in_sidebar_header() {
     };
 
     // Create and switch to the long-named workspace via CLI
-    let create_output = env.iso_command()
+    let create_output = env
+        .iso_command()
         .args(["workspace", "create", &long_ws_name])
         .output()
         .expect("Failed to create workspace");
-    eprintln!("Create workspace output: {}", String::from_utf8_lossy(&create_output.stdout));
+    eprintln!(
+        "Create workspace output: {}",
+        String::from_utf8_lossy(&create_output.stdout)
+    );
 
-    let switch_output = env.iso_command()
+    let switch_output = env
+        .iso_command()
         .args(["workspace", "switch", &long_ws_name])
         .output()
         .expect("Failed to switch workspace");
-    eprintln!("Switch workspace output: {}", String::from_utf8_lossy(&switch_output.stdout));
+    eprintln!(
+        "Switch workspace output: {}",
+        String::from_utf8_lossy(&switch_output.stdout)
+    );
     std::thread::sleep(Duration::from_millis(300));
 
     // Spawn TUI and verify the workspace name is truncated in the sidebar header
@@ -6030,7 +6337,11 @@ fn test_workspace_overlay_q_shows_quit_confirmation() {
             break;
         }
     }
-    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+    assert!(
+        found_overlay,
+        "Workspace overlay should open. Got:\n{}",
+        session.screen_contents()
+    );
 
     // Verify hint bar shows 'q' for Quit (not 'esc → q')
     let screen = session.screen_contents();
@@ -6109,13 +6420,18 @@ fn test_workspace_overlay_active_workspace_has_asterisk() {
             break;
         }
     }
-    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+    assert!(
+        found_overlay,
+        "Workspace overlay should open. Got:\n{}",
+        session.screen_contents()
+    );
 
     // Verify the active workspace ("Default") has a '*' indicator
     let screen = session.screen_contents();
     assert!(
         screen.contains("* Default") || screen.contains("*Default"),
-        "Active workspace 'Default' should have '*' indicator in overlay. Got:\n{}", screen
+        "Active workspace 'Default' should have '*' indicator in overlay. Got:\n{}",
+        screen
     );
 
     session.send_esc().expect("Failed to close overlay");
@@ -6140,7 +6456,10 @@ fn test_workspace_overlay_inline_create() {
             break;
         }
     }
-    assert!(session.screen_contents().contains("Workspaces"), "Workspace overlay should open");
+    assert!(
+        session.screen_contents().contains("Workspaces"),
+        "Workspace overlay should open"
+    );
 
     // Press 'n' to start drafting a new workspace inline
     session.send("n").expect("Failed to send n");
@@ -6152,7 +6471,8 @@ fn test_workspace_overlay_inline_create() {
     eprintln!("After pressing 'n' for new workspace:\n{}", screen_after_n);
     assert!(
         screen_after_n.contains("enter Create"),
-        "Hint bar should show 'enter Create' during workspace drafting. Got:\n{}", screen_after_n
+        "Hint bar should show 'enter Create' during workspace drafting. Got:\n{}",
+        screen_after_n
     );
 
     // Type a workspace name inline
@@ -6169,7 +6489,8 @@ fn test_workspace_overlay_inline_create() {
     eprintln!("After typing 'MyWork':\n{}", screen_typing);
     assert!(
         screen_typing.contains("MyWork"),
-        "Draft name 'MyWork' should appear inline in the overlay list. Got:\n{}", screen_typing
+        "Draft name 'MyWork' should appear inline in the overlay list. Got:\n{}",
+        screen_typing
     );
 
     // Press Enter to create the workspace
@@ -6181,7 +6502,8 @@ fn test_workspace_overlay_inline_create() {
     eprintln!("After creating workspace:\n{}", screen_after_create);
     assert!(
         screen_after_create.contains("MyWork"),
-        "Created workspace 'MyWork' should appear in the overlay list. Got:\n{}", screen_after_create
+        "Created workspace 'MyWork' should appear in the overlay list. Got:\n{}",
+        screen_after_create
     );
 
     session.send_esc().expect("Failed to close overlay");
@@ -6213,7 +6535,10 @@ fn test_workspace_overlay_inline_rename() {
             break;
         }
     }
-    assert!(session.screen_contents().contains("OldName"), "OldName workspace should be visible in overlay");
+    assert!(
+        session.screen_contents().contains("OldName"),
+        "OldName workspace should be visible in overlay"
+    );
 
     // Navigate to OldName (it should be below Default)
     session.send("j").expect("Failed to navigate down");
@@ -6230,7 +6555,8 @@ fn test_workspace_overlay_inline_rename() {
     // The current name should appear inline (editable)
     assert!(
         screen_after_r.contains("OldName"),
-        "Rename should show current name inline. Got:\n{}", screen_after_r
+        "Rename should show current name inline. Got:\n{}",
+        screen_after_r
     );
 
     // Clear the name and type a new one (backspace 7 times for "OldName")
@@ -6253,7 +6579,8 @@ fn test_workspace_overlay_inline_rename() {
     eprintln!("After typing new name 'NewName':\n{}", screen_typing);
     assert!(
         screen_typing.contains("NewName"),
-        "New name 'NewName' should appear inline while renaming. Got:\n{}", screen_typing
+        "New name 'NewName' should appear inline while renaming. Got:\n{}",
+        screen_typing
     );
 
     // Press Enter to confirm rename
@@ -6265,11 +6592,13 @@ fn test_workspace_overlay_inline_rename() {
     eprintln!("After renaming:\n{}", screen_after_rename);
     assert!(
         screen_after_rename.contains("NewName"),
-        "Renamed workspace 'NewName' should be visible. Got:\n{}", screen_after_rename
+        "Renamed workspace 'NewName' should be visible. Got:\n{}",
+        screen_after_rename
     );
     assert!(
         !screen_after_rename.contains("OldName"),
-        "Old workspace name 'OldName' should no longer be visible. Got:\n{}", screen_after_rename
+        "Old workspace name 'OldName' should no longer be visible. Got:\n{}",
+        screen_after_rename
     );
 
     session.send_esc().expect("Failed to close overlay");
@@ -6285,7 +6614,8 @@ fn test_workspace_overlay_move_mode_restrictions() {
 
     // Create a second workspace so we have somewhere to move to
     let _binary_path = get_binary_path();
-    let _ = env.iso_command()
+    let _ = env
+        .iso_command()
         .args(["workspace", "create", "WorkTwo"])
         .output()
         .expect("Failed to create workspace via CLI");
@@ -6308,11 +6638,13 @@ fn test_workspace_overlay_move_mode_restrictions() {
     eprintln!("Move mode overlay:\n{}", screen);
     assert!(
         screen.contains("Move") || screen.contains("Workspace"),
-        "Move mode overlay should be open. Got:\n{}", screen
+        "Move mode overlay should be open. Got:\n{}",
+        screen
     );
 
     // Count workspaces listed before trying 'n' (create)
-    let workspace_count_before = screen.matches("Default").count() + screen.matches("WorkTwo").count();
+    let workspace_count_before =
+        screen.matches("Default").count() + screen.matches("WorkTwo").count();
 
     // Press 'n' - should NOT create a new workspace draft row
     session.send("n").expect("Failed to send 'n'");
@@ -6325,10 +6657,12 @@ fn test_workspace_overlay_move_mode_restrictions() {
     // If 'n' was blocked, there should be no new empty draft row
     // We verify by checking the overlay is still in move mode (not in drafting mode with cursor)
     // The workspace count should remain the same
-    let workspace_count_after = screen_after_n.matches("Default").count() + screen_after_n.matches("WorkTwo").count();
+    let workspace_count_after =
+        screen_after_n.matches("Default").count() + screen_after_n.matches("WorkTwo").count();
     assert!(
         workspace_count_after >= workspace_count_before,
-        "Move mode should block 'n' from creating new workspace. Got:\n{}", screen_after_n
+        "Move mode should block 'n' from creating new workspace. Got:\n{}",
+        screen_after_n
     );
 
     // Press 'r' - should NOT start renaming
@@ -6348,7 +6682,8 @@ fn test_workspace_overlay_move_mode_restrictions() {
     // The overlay should still be open
     assert!(
         screen_after.contains("Move") || screen_after.contains("Workspace"),
-        "Move mode overlay should still be open after blocked n/r/d keys. Got:\n{}", screen_after
+        "Move mode overlay should still be open after blocked n/r/d keys. Got:\n{}",
+        screen_after
     );
 
     // Close the overlay with Esc
@@ -6375,7 +6710,8 @@ fn test_move_session_to_same_workspace_is_noop() {
     let screen = session.screen_contents();
     assert!(
         screen.contains(&session_name),
-        "Session should be visible. Got:\n{}", screen
+        "Session should be visible. Got:\n{}",
+        screen
     );
 
     // Focus sidebar
@@ -6392,7 +6728,8 @@ fn test_move_session_to_same_workspace_is_noop() {
     eprintln!("Move mode overlay:\n{}", screen);
     assert!(
         screen.contains("Move") || screen.contains("Workspace"),
-        "Move mode overlay should be open. Got:\n{}", screen
+        "Move mode overlay should be open. Got:\n{}",
+        screen
     );
 
     // Press Enter while on the active (current) workspace - should be no-op
@@ -6409,13 +6746,15 @@ fn test_move_session_to_same_workspace_is_noop() {
     assert!(
         screen.contains(&session_name),
         "Session '{}' should still be in Default workspace after no-op move. Got:\n{}",
-        session_name, screen
+        session_name,
+        screen
     );
 
     // Overlay should be closed
     assert!(
         !screen.contains("Move to Workspace") && !screen.contains("Move Session"),
-        "Overlay should be closed after no-op move. Got:\n{}", screen
+        "Overlay should be closed after no-op move. Got:\n{}",
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -6445,16 +6784,19 @@ fn test_welcome_text_dynamic_keybinding() {
     // Initial state: sidebar is focused, welcome text should show "n"
     assert!(
         screen.contains("Welcome"),
-        "Should show welcome message. Got:\n{}", screen
+        "Should show welcome message. Got:\n{}",
+        screen
     );
     assert!(
         screen.contains("Press"),
-        "Should show 'Press' in welcome text. Got:\n{}", screen
+        "Should show 'Press' in welcome text. Got:\n{}",
+        screen
     );
     // In sidebar-focused welcome state, the keybinding shown should NOT be "ctrl+n"
     assert!(
         !screen.contains("ctrl+n"),
-        "Welcome text should NOT show 'ctrl+n' when sidebar is focused. Got:\n{}", screen
+        "Welcome text should NOT show 'ctrl+n' when sidebar is focused. Got:\n{}",
+        screen
     );
 
     // Press Enter to focus the terminal pane (allowed even in welcome state)
@@ -6469,11 +6811,13 @@ fn test_welcome_text_dynamic_keybinding() {
     // Now terminal is focused, welcome text should show "ctrl+n"
     assert!(
         screen.contains("Welcome"),
-        "Should still show welcome message after Enter. Got:\n{}", screen
+        "Should still show welcome message after Enter. Got:\n{}",
+        screen
     );
     assert!(
         screen.contains("ctrl+n"),
-        "Welcome text should show 'ctrl+n' when terminal is focused. Got:\n{}", screen
+        "Welcome text should show 'ctrl+n' when terminal is focused. Got:\n{}",
+        screen
     );
 
     // Press Ctrl+B to go back to sidebar
@@ -6488,11 +6832,13 @@ fn test_welcome_text_dynamic_keybinding() {
     // Back to sidebar focus — keybinding should be "n" again, not "ctrl+n"
     assert!(
         screen.contains("Welcome"),
-        "Should still show welcome message after returning to sidebar. Got:\n{}", screen
+        "Should still show welcome message after returning to sidebar. Got:\n{}",
+        screen
     );
     assert!(
         !screen.contains("ctrl+n"),
-        "Welcome text should NOT show 'ctrl+n' after returning to sidebar. Got:\n{}", screen
+        "Welcome text should NOT show 'ctrl+n' after returning to sidebar. Got:\n{}",
+        screen
     );
 
     // Clean up
@@ -6520,7 +6866,9 @@ fn test_new_session_created_in_launch_working_directory() {
         SESSION_COUNTER.fetch_add(1, Ordering::SeqCst)
     ));
     std::fs::create_dir_all(&launch_dir).expect("Failed to create launch dir");
-    let launch_dir_path = launch_dir.canonicalize().expect("Failed to canonicalize launch dir");
+    let launch_dir_path = launch_dir
+        .canonicalize()
+        .expect("Failed to canonicalize launch dir");
 
     // Build an sb command with current_dir set to the temp directory
     let session_name = get_unique_session_name();
@@ -6549,7 +6897,8 @@ fn test_new_session_created_in_launch_working_directory() {
     // Wait for pwd output. The path may wrap across lines in the terminal, so we search
     // for the unique directory name (last component) which is guaranteed to be short enough
     // to fit on one line (format: "sb-cwd-test-PID-N").
-    let dir_name = launch_dir_path.file_name()
+    let dir_name = launch_dir_path
+        .file_name()
         .expect("temp dir should have a file name")
         .to_string_lossy()
         .to_string();
@@ -6598,7 +6947,8 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     let env = TestEnv::setup();
 
     // Create a second workspace
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "Other"])
         .output()
         .expect("Failed to create Other workspace");
@@ -6640,12 +6990,17 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_before_scroll = parser.screen().contents();
-    eprintln!("Before scrolling (sidebar has {} sessions):\n{}", num_sessions, screen_before_scroll);
+    eprintln!(
+        "Before scrolling (sidebar has {} sessions):\n{}",
+        num_sessions, screen_before_scroll
+    );
 
     // Scroll down many times to move the visible window past the first few sessions
     for _ in 0..12 {
         // Down arrow: ESC [ B
-        session.write_all(b"\x1b[B").expect("Failed to send Down arrow");
+        session
+            .write_all(b"\x1b[B")
+            .expect("Failed to send Down arrow");
         session.flush().expect("Failed to flush");
         std::thread::sleep(Duration::from_millis(60));
     }
@@ -6657,7 +7012,10 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
 
     // Check that scrolling created a truncation indicator at the top
     let has_top_truncation = screen_after_scroll.contains("...");
-    eprintln!("Has truncation indicator after scroll: {}", has_top_truncation);
+    eprintln!(
+        "Has truncation indicator after scroll: {}",
+        has_top_truncation
+    );
 
     // Open workspace overlay with Ctrl+W
     session.write_all(&[23]).expect("Failed to send Ctrl+W");
@@ -6666,7 +7024,9 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     read_into_parser(&mut session, &mut parser);
 
     // Navigate to "Other" workspace (below "Default") and switch
-    session.write_all(b"\x1b[B").expect("Failed to send Down arrow");
+    session
+        .write_all(b"\x1b[B")
+        .expect("Failed to send Down arrow");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(200));
     session.write_all(&[0x0d]).expect("Failed to send Enter");
@@ -6678,7 +7038,8 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     eprintln!("In Other workspace:\n{}", screen_in_other);
     assert!(
         screen_in_other.contains("Other"),
-        "Should have switched to Other workspace. Got:\n{}", screen_in_other
+        "Should have switched to Other workspace. Got:\n{}",
+        screen_in_other
     );
 
     // Switch back to Default workspace
@@ -6688,7 +7049,9 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     read_into_parser(&mut session, &mut parser);
 
     // Default is at index 0, navigate up to select it
-    session.write_all(b"\x1b[A").expect("Failed to send Up arrow");
+    session
+        .write_all(b"\x1b[A")
+        .expect("Failed to send Up arrow");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(200));
     session.write_all(&[0x0d]).expect("Failed to send Enter");
@@ -6697,12 +7060,16 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
     read_into_parser(&mut session, &mut parser);
 
     let screen_restored = parser.screen().contents();
-    eprintln!("After switching back to Default (scroll should be restored):\n{}", screen_restored);
+    eprintln!(
+        "After switching back to Default (scroll should be restored):\n{}",
+        screen_restored
+    );
 
     // Verify we're back in Default workspace
     assert!(
         screen_restored.contains("Default"),
-        "Should be back in Default workspace. Got:\n{}", screen_restored
+        "Should be back in Default workspace. Got:\n{}",
+        screen_restored
     );
 
     // Verify the scroll position was restored: if we had scrolled past enough sessions
@@ -6712,14 +7079,16 @@ fn test_sidebar_scroll_position_restored_on_workspace_switch() {
         assert!(
             screen_restored.contains("..."),
             "Sidebar scroll position should be restored after switching workspaces. \
-            Expected '...' truncation indicator to still be visible. Got:\n{}", screen_restored
+            Expected '...' truncation indicator to still be visible. Got:\n{}",
+            screen_restored
         );
     } else {
         // Even if we couldn't trigger truncation (e.g., terminal height varies), verify
         // we successfully switched workspaces and returned. The workspace restoration works.
         assert!(
             screen_restored.contains("Default"),
-            "Workspace switch and return should work. Got:\n{}", screen_restored
+            "Workspace switch and return should work. Got:\n{}",
+            screen_restored
         );
     }
 
@@ -6749,7 +7118,7 @@ fn test_ctrl_t_from_terminal_focuses_sidebar() {
     let screen_contents = session.screen_contents();
     eprintln!("Initial (terminal focused):\n{}", screen_contents);
 
-    // Verify terminal is focused initially (lighter terminal border, darker sidebar border)
+    // Verify terminal is focused initially (darker sidebar border)
     // The terminal pane is focused when sidebar border is dimmer (color 238)
     let height = session.parser.screen().size().0;
 
@@ -6764,20 +7133,11 @@ fn test_ctrl_t_from_terminal_focuses_sidebar() {
         }
     });
 
-    // Terminal border is at column 28 (left border of terminal pane)
-    let terminal_border_col = 28u16;
-    let terminal_border_focused = (0..height).any(|row| {
-        if let Some(cell) = session.parser.screen().cell(row, terminal_border_col) {
-            matches!(cell.fgcolor(), vt100::Color::Idx(99))
-        } else {
-            false
-        }
-    });
-
-    eprintln!("Sidebar border darker: {}, Terminal border lighter: {}", sidebar_border_focused, terminal_border_focused);
+    eprintln!("Sidebar border darker: {}", sidebar_border_focused);
 
     // Hint bar shows ctrl+b when terminal is focused
-    let has_ctrl_b_hint = screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
+    let has_ctrl_b_hint =
+        screen_contents.contains("ctrl + b") || screen_contents.contains("ctrl+b");
     assert!(
         has_ctrl_b_hint,
         "When terminal is focused, hint bar should show ctrl+b binding. Got:\n{}",
@@ -6785,13 +7145,19 @@ fn test_ctrl_t_from_terminal_focuses_sidebar() {
     );
 
     // Send Ctrl+T (ASCII 20) from terminal pane to focus sidebar
-    session.session.write_all(&[20]).expect("Failed to send Ctrl+T");
+    session
+        .session
+        .write_all(&[20])
+        .expect("Failed to send Ctrl+T");
     session.session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     let screen_contents = session.screen_contents();
-    eprintln!("After Ctrl+T (sidebar should be focused):\n{}", screen_contents);
+    eprintln!(
+        "After Ctrl+T (sidebar should be focused):\n{}",
+        screen_contents
+    );
 
     // When sidebar is focused, hint bar shows single-key bindings (n, d, r, q, etc.)
     // and NOT ctrl+b (since that's a terminal-focused binding for "focus sidebar")
@@ -6809,16 +7175,15 @@ fn test_ctrl_t_from_terminal_focuses_sidebar() {
     let _ = session.quit();
 }
 
-/// Test that the workspace delete confirmation prompt shows a dark red (color 88) background.
-/// Per spec line 175: "Show an important (dark red background, color 88) confirmation prompt
-/// in the hint bar: 'Delete workspace and ALL its sessions permanently?'"
+/// Test that the workspace delete confirmation remains visible without a background fill.
 #[test]
-fn test_workspace_delete_confirmation_has_dark_red_background() {
-    let _timer = TestTimer::new("test_workspace_delete_confirmation_has_dark_red_background");
+fn test_workspace_delete_confirmation_has_no_background() {
+    let _timer = TestTimer::new("test_workspace_delete_confirmation_has_no_background");
     let env = TestEnv::setup();
 
     // Create a second workspace to delete (can't delete the only workspace)
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "ToDeleteRed"])
         .output()
         .expect("Failed to create workspace via CLI");
@@ -6837,7 +7202,11 @@ fn test_workspace_delete_confirmation_has_dark_red_background() {
 
     let screen = session.screen_contents();
     eprintln!("Workspace overlay:\n{}", screen);
-    assert!(screen.contains("ToDeleteRed"), "ToDeleteRed workspace should appear in overlay. Got:\n{}", screen);
+    assert!(
+        screen.contains("ToDeleteRed"),
+        "ToDeleteRed workspace should appear in overlay. Got:\n{}",
+        screen
+    );
 
     // Navigate to ToDeleteRed (comes after Default alphabetically)
     session.send_down_arrow().expect("Failed to send Down");
@@ -6852,31 +7221,35 @@ fn test_workspace_delete_confirmation_has_dark_red_background() {
         std::thread::sleep(Duration::from_millis(200));
         session.read_and_parse().expect("Failed to read output");
         let screen = session.screen_contents();
-        if screen.contains("Delete") && (screen.contains("permanently") || screen.contains("Yes") || screen.contains("No")) {
+        if screen.contains("Delete")
+            && (screen.contains("permanently") || screen.contains("Yes") || screen.contains("No"))
+        {
             found_confirmation = true;
             eprintln!("After 'd' (workspace delete confirmation):\n{}", screen);
             break;
         }
     }
 
-    assert!(found_confirmation, "Workspace delete confirmation prompt should appear after pressing 'd'");
+    assert!(
+        found_confirmation,
+        "Workspace delete confirmation prompt should appear after pressing 'd'"
+    );
 
-    // Check for dark red (color 88) background in the hint bar rows
+    // Workspace delete hints also preserve the terminal background.
     let height = session.parser.screen().size().0;
     let width = session.parser.screen().size().1;
     let found_red_bg = ((height - 3)..height).any(|row| {
         (0..width).any(|col| {
-            if let Some(cell) = session.parser.screen().cell(row, col) {
-                matches!(cell.bgcolor(), vt100::Color::Idx(88))
-            } else {
-                false
-            }
+            session
+                .parser
+                .screen()
+                .cell(row, col)
+                .is_some_and(|cell| matches!(cell.bgcolor(), vt100::Color::Idx(88)))
         })
     });
-
     assert!(
-        found_red_bg,
-        "Workspace delete confirmation hint bar should have dark red (color 88) background per spec"
+        !found_red_bg,
+        "Workspace delete confirmation hint text should not have a colored background"
     );
 
     // Cancel the delete
@@ -6890,144 +7263,73 @@ fn test_workspace_delete_confirmation_has_dark_red_background() {
     let _ = session.quit();
 }
 
-/// Test that the hint bar wraps to multiple lines when keybindings are too long to fit.
-/// Per spec line 145: "If the available keybindings are too long to fit on one line they
-/// should wrap to multiple lines. A keybinding and its description should never be split
-/// across lines."
+/// Hints form a column confined to the sidebar, below a horizontal divider.
 #[test]
-fn test_hint_bar_wraps_when_keybindings_too_long() {
-    let _timer = TestTimer::new("test_hint_bar_wraps_when_keybindings_too_long");
+fn test_hint_column_inside_sidebar() {
     let env = TestEnv::setup();
-
-    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
-
-    // Wait for TUI to initialize
+    let mut session = SbSession::new(&env).unwrap();
     std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
-
-    // Focus sidebar - sidebar mode has many keybindings that should overflow a single line
-    // at 80 columns: enter/tab Select, ↑/↓/j/k Navigate, n New, r Rename, d Delete,
-    // m Move to workspace, ctrl+w Workspaces, ctrl+s Mouse/Text, q Quit, │ quit path
-    session.send_ctrl_b().expect("Failed to send Ctrl+B");
-    std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
-
-    let screen = session.screen_contents();
-    eprintln!("Sidebar focused (hint bar should wrap):\n{}", screen);
-
-    // The hint bar at the bottom should span at least 2 rows.
-    // We detect this by checking that the hint bar background (color 238) appears on
-    // at least 2 of the last 4 rows, meaning the content wrapped to multiple lines.
-    let height = session.parser.screen().size().0;
-    let width = session.parser.screen().size().1;
-
-    let mut hint_bar_row_count = 0u16;
-    for row in (0..height).rev() {
-        let row_has_hint_bg = (0..width).any(|col| {
-            if let Some(cell) = session.parser.screen().cell(row, col) {
-                matches!(cell.bgcolor(), vt100::Color::Idx(238))
-            } else {
-                false
-            }
-        });
-        if row_has_hint_bg {
-            hint_bar_row_count += 1;
-        } else {
-            break; // Stop counting once we leave the hint bar area
-        }
+    session.read_and_parse().unwrap();
+    session.send_ctrl_b().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().unwrap();
+    let screen = session.parser.screen();
+    let divider = (0..24)
+        .find(|&row| screen.cell(row, 0).unwrap().contents() == "├")
+        .expect("sidebar list/hint divider");
+    assert!(divider > 2);
+    assert_eq!(screen.cell(divider, 27).unwrap().contents(), "┤");
+    assert_eq!(screen.cell(divider + 1, 1).unwrap().contents(), "e");
+    assert!(matches!(
+        screen.cell(divider + 1, 1).unwrap().fgcolor(),
+        vt100::Color::Idx(99)
+    ));
+    // The old hint fill distinguished this column with grey; the frame now
+    // provides the boundary while every hint row preserves the background.
+    for row in divider + 1..23 {
+        assert!(!matches!(
+            screen.cell(row, 1).unwrap().bgcolor(),
+            vt100::Color::Idx(238) | vt100::Color::Idx(88)
+        ));
     }
-
-    eprintln!("Hint bar spans {} rows", hint_bar_row_count);
-
-    assert!(
-        hint_bar_row_count >= 2,
-        "Hint bar should wrap to at least 2 rows when sidebar is focused at 80 cols (many keybindings). \
-        Got {} rows with hint bar background. Screen:\n{}",
-        hint_bar_row_count, screen
-    );
-
-    let _ = session.quit();
 }
 
-/// Test that when the hint bar wraps to 2 lines, the terminal content is NOT cut off.
-/// This verifies the fix for sidebar_tui-xac: the PTY is resized to account for the hint
-/// bar's actual height so that the bottom rows of terminal output remain visible.
+/// Changing hint context must neither resize the PTY nor change terminal cells.
 #[test]
-fn test_hint_bar_2lines_does_not_cut_off_terminal() {
-    let _timer = TestTimer::new("test_hint_bar_2lines_does_not_cut_off_terminal");
+fn test_hint_column_does_not_resize_terminal() {
     let env = TestEnv::setup();
-
-    let mut session = SbSession::new(&env).expect("Failed to spawn sb");
+    let mut session = SbSession::new(&env).unwrap();
     std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read output");
-
-    let (height, _width) = session.parser.screen().size();
-
-    // Fill the terminal with output (many lines, guaranteed to reach the bottom)
-    // Use the terminal which should be focused by default after session creation
-    session.send("seq 1 50\n").expect("Failed to send seq command");
+    session.read_and_parse().unwrap();
+    session.send("stty size; seq 1 30\n").unwrap();
     std::thread::sleep(Duration::from_millis(600));
-    session.read_and_parse().expect("Failed to read output");
-
-    let screen_with_terminal_focused = session.screen_contents();
-    eprintln!("Screen with terminal focused:\n{}", screen_with_terminal_focused);
-
-    // Find the bottom row of the terminal border (should be at height-2, since hint bar is 1 line)
-    // The terminal bottom border should appear near row height-2
-    // When terminal is focused, hint bar is 1 line
-
-    // Now focus sidebar - this will cause the hint bar to expand to 2 lines
-    session.send_ctrl_b().expect("Failed to send Ctrl+B");
-    for _ in 0..15 {
-        std::thread::sleep(Duration::from_millis(200));
-        session.read_and_parse().expect("Failed to read output");
-        if let Some(c) = session.cell_at(0, 0) {
-            if matches!(c.fgcolor(), vt100::Color::Idx(99)) {
-                break;
-            }
-        }
-    }
-
-    // Count hint bar rows from the bottom
-    let mut hint_bar_rows = 0u16;
-    for row in (0..height).rev() {
-        let row_has_hint_bg = (0.._width).any(|col| {
-            session.parser.screen().cell(row, col)
-                .map(|c| matches!(c.bgcolor(), vt100::Color::Idx(238)))
-                .unwrap_or(false)
-        });
-        if row_has_hint_bg {
-            hint_bar_rows += 1;
-        } else {
-            break;
-        }
-    }
-
-    eprintln!("Hint bar spans {} rows with sidebar focused", hint_bar_rows);
-
-    // The hint bar should now be 2 lines
+    session.read_and_parse().unwrap();
+    let terminal_cells = |session: &SbSession| -> Vec<String> {
+        (0..24)
+            .flat_map(|row| {
+                (28..80).map(move |col| session.parser.screen().cell(row, col).unwrap().contents())
+            })
+            .collect()
+    };
+    let before = terminal_cells(&session);
     assert!(
-        hint_bar_rows >= 2,
-        "Hint bar should wrap to at least 2 rows when sidebar is focused. Got {} rows.",
-        hint_bar_rows
+        before[23 * 52..].iter().any(|cell| !cell.trim().is_empty()),
+        "terminal reaches bottom row"
     );
-
-    // With the fix, the terminal bottom border should now be at row (height - 1 - hint_bar_rows)
-    // (the hint bar took hint_bar_rows rows, and one row above is the terminal border)
-    let expected_terminal_bottom_border_row = height - 1 - hint_bar_rows;
-
-    // Check that there's a border character at that position (not hint bar background)
-    // The row just above the hint bar should NOT be a hint bar row
-    if let Some(cell) = session.parser.screen().cell(expected_terminal_bottom_border_row, 0) {
-        assert!(
-            !matches!(cell.bgcolor(), vt100::Color::Idx(238)),
-            "Row {} should be the terminal border, not hint bar. Got bgcolor: {:?}",
-            expected_terminal_bottom_border_row,
-            cell.bgcolor()
-        );
-    }
-
-    session.quit().expect("Failed to quit");
+    session.send_ctrl_b().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    session.read_and_parse().unwrap();
+    assert_eq!(terminal_cells(&session), before);
+    session.send_enter().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    session.send("stty size\n").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    session.read_and_parse().unwrap();
+    assert!(
+        session.screen_contents().contains("24 52"),
+        "PTY must use all 24 rows and 52 columns: {}",
+        session.screen_contents()
+    );
 }
 
 /// Test that the terminal pane is non-interactive during create mode.
@@ -7050,11 +7352,15 @@ fn test_terminal_not_interactive_during_create_mode() {
     // Verify terminal is focused initially
     assert!(
         initial_screen.contains("ctrl + n") || initial_screen.contains("ctrl + b"),
-        "Terminal should be focused initially. Got:\n{}", initial_screen
+        "Terminal should be focused initially. Got:\n{}",
+        initial_screen
     );
 
     // Enter create mode with Ctrl+N from terminal
-    session.session.write_all(&[14]).expect("Failed to send Ctrl+N");
+    session
+        .session
+        .write_all(&[14])
+        .expect("Failed to send Ctrl+N");
     session.session.flush().expect("Failed to flush");
 
     // Wait for create mode to appear
@@ -7082,7 +7388,10 @@ fn test_terminal_not_interactive_during_create_mode() {
     session.read_and_parse().expect("Failed to read output");
 
     let screen_after_ctrl_b = session.screen_contents();
-    eprintln!("After Ctrl+B during create mode (should stay in create mode):\n{}", screen_after_ctrl_b);
+    eprintln!(
+        "After Ctrl+B during create mode (should stay in create mode):\n{}",
+        screen_after_ctrl_b
+    );
 
     // Should still be in create mode - session type options should still be visible
     assert!(
@@ -7111,7 +7420,10 @@ fn test_terminal_not_interactive_during_create_mode() {
     session.read_and_parse().expect("Failed to read output");
 
     let screen_after_cancel = session.screen_contents();
-    eprintln!("After Esc (cancelled create mode):\n{}", screen_after_cancel);
+    eprintln!(
+        "After Esc (cancelled create mode):\n{}",
+        screen_after_cancel
+    );
 
     // After cancelling, should be back to normal mode with terminal focused bindings
     let back_to_normal = screen_after_cancel.contains("ctrl + n")
@@ -7143,12 +7455,16 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     // Use a unique marker in the first output so we can detect it when scrolled up.
     let pid = std::process::id();
     let scroll_marker = format!("SCROLLMARK-{}", pid);
-    session.send(&format!("echo {}\n", scroll_marker)).expect("Failed to send command");
+    session
+        .send(&format!("echo {}\n", scroll_marker))
+        .expect("Failed to send command");
     std::thread::sleep(Duration::from_millis(300));
 
     // Generate more output lines to push the marker off-screen
     for i in 0..30 {
-        session.send(&format!("echo LINE{}\n", i)).expect("Failed to send line");
+        session
+            .send(&format!("echo LINE{}\n", i))
+            .expect("Failed to send line");
         std::thread::sleep(Duration::from_millis(30));
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -7158,12 +7474,15 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     let screen_mouse = session.screen_contents();
     assert!(
         screen_mouse.contains("Mouse scroll"),
-        "Mouse scroll mode should be enabled by default. Got:\n{}", screen_mouse
+        "Mouse scroll mode should be enabled by default. Got:\n{}",
+        screen_mouse
     );
 
     // Scroll up many times to move view back in history (center of terminal area ~row 12, col 50)
     for _ in 0..20 {
-        session.send_mouse_scroll_up(50, 12).expect("Failed to send scroll up");
+        session
+            .send_mouse_scroll_up(50, 12)
+            .expect("Failed to send scroll up");
         std::thread::sleep(Duration::from_millis(50));
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -7172,7 +7491,10 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     let screen_scrolled = session.screen_contents();
     eprintln!("Screen after scrolling up:\n{}", screen_scrolled);
     let marker_visible_after_scroll = screen_scrolled.contains(&scroll_marker);
-    eprintln!("Marker visible after scroll: {}", marker_visible_after_scroll);
+    eprintln!(
+        "Marker visible after scroll: {}",
+        marker_visible_after_scroll
+    );
 
     // Create a second session via sidebar: Ctrl+B, n, t, name, Enter
     let session2_name = format!("scrolltest2-{}", pid);
@@ -7184,7 +7506,9 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     std::thread::sleep(Duration::from_millis(300));
     session.send("t").expect("Failed to send 't'");
     std::thread::sleep(Duration::from_millis(300));
-    session.send(&session2_name).expect("Failed to type session2 name");
+    session
+        .send(&session2_name)
+        .expect("Failed to type session2 name");
     std::thread::sleep(Duration::from_millis(300));
     session.send_enter().expect("Failed to send Enter");
     std::thread::sleep(Duration::from_millis(500));
@@ -7195,9 +7519,13 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
-    session.send_down_arrow().expect("Failed to send Down arrow");
+    session
+        .send_down_arrow()
+        .expect("Failed to send Down arrow");
     std::thread::sleep(Duration::from_millis(200));
-    session.send_enter().expect("Failed to send Enter to select session 1");
+    session
+        .send_enter()
+        .expect("Failed to send Enter to select session 1");
     std::thread::sleep(Duration::from_millis(600));
     session.read_and_parse().expect("Failed to read output");
 
@@ -7206,8 +7534,10 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
 
     // Verify we're back in session 1 with TUI active
     assert!(
-        screen_back_in_session1.contains("Mouse scroll") || screen_back_in_session1.contains("ctrl + n"),
-        "Should be back in session 1 with TUI active. Got:\n{}", screen_back_in_session1
+        screen_back_in_session1.contains("Mouse scroll")
+            || screen_back_in_session1.contains("ctrl + n"),
+        "Should be back in session 1 with TUI active. Got:\n{}",
+        screen_back_in_session1
     );
 
     // If the marker was visible when scrolled, it should still be visible now (scroll restored)
@@ -7215,7 +7545,8 @@ fn test_terminal_scroll_position_restored_on_session_switch() {
         assert!(
             screen_back_in_session1.contains(&scroll_marker),
             "Scroll position should be restored: marker '{}' should still be visible after switching back. Got:\n{}",
-            scroll_marker, screen_back_in_session1
+            scroll_marker,
+            screen_back_in_session1
         );
     }
     // Even if scrollback didn't extend to the marker, the test passes — the important thing is
@@ -7251,10 +7582,16 @@ fn test_b_jump_back_from_sidebar() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (99, purple) after Ctrl+B");
+    assert!(
+        sidebar_focused,
+        "Sidebar should become focused (99, purple) after Ctrl+B"
+    );
 
     // Send 'b' to jump back - should focus terminal (like Esc)
-    session.session.write_all(&[b'b']).expect("Failed to send 'b'");
+    session
+        .session
+        .write_all(&[b'b'])
+        .expect("Failed to send 'b'");
     session.session.flush().expect("Failed to flush");
 
     // Poll until terminal is focused (sidebar color 238) or timeout
@@ -7269,7 +7606,10 @@ fn test_b_jump_back_from_sidebar() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after pressing 'b' (jump back)");
+    assert!(
+        terminal_focused,
+        "Terminal should become focused (sidebar 238) after pressing 'b' (jump back)"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -7301,7 +7641,10 @@ fn test_ctrl_b_from_sidebar_jump_back() {
             }
         }
     }
-    assert!(sidebar_focused, "Sidebar should become focused (99, purple) after Ctrl+B");
+    assert!(
+        sidebar_focused,
+        "Sidebar should become focused (99, purple) after Ctrl+B"
+    );
 
     // Send Ctrl+B again to jump back - should focus terminal (like Esc)
     session.send_ctrl_b().expect("Failed to send second Ctrl+B");
@@ -7318,7 +7661,10 @@ fn test_ctrl_b_from_sidebar_jump_back() {
             }
         }
     }
-    assert!(terminal_focused, "Terminal should become focused (sidebar 238) after Ctrl+B (jump back) from sidebar");
+    assert!(
+        terminal_focused,
+        "Terminal should become focused (sidebar 238) after Ctrl+B (jump back) from sidebar"
+    );
 
     session.quit().expect("Failed to quit");
 }
@@ -7331,7 +7677,8 @@ fn test_delete_last_workspace_auto_creates_default() {
     let env = TestEnv::setup();
 
     // Create a workspace "LastOne" to switch to, so we can then delete "Default"
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "LastOne"])
         .output()
         .expect("Failed to create 'LastOne' workspace via CLI");
@@ -7344,7 +7691,9 @@ fn test_delete_last_workspace_auto_creates_default() {
     // Open workspace overlay and switch to "LastOne" (it's after "Default" alphabetically)
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
     std::thread::sleep(Duration::from_millis(300));
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
@@ -7360,26 +7709,42 @@ fn test_delete_last_workspace_auto_creates_default() {
 
     let screen = session.screen_contents();
     eprintln!("After switching to LastOne:\n{}", screen);
-    assert!(screen.contains("LastOne"), "Should now be in 'LastOne' workspace. Got:\n{}", screen);
+    assert!(
+        screen.contains("LastOne"),
+        "Should now be in 'LastOne' workspace. Got:\n{}",
+        screen
+    );
 
     // Open workspace overlay. Selection starts at active workspace "LastOne" (index 1).
     // Navigate UP to "Default" (index 0) and delete it.
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
     eprintln!("Overlay before deleting Default:\n{}", screen);
-    assert!(screen.contains("Default"), "Default workspace should still exist. Got:\n{}", screen);
+    assert!(
+        screen.contains("Default"),
+        "Default workspace should still exist. Got:\n{}",
+        screen
+    );
 
-    session.send_up_arrow().expect("Failed to navigate up to Default");
+    session
+        .send_up_arrow()
+        .expect("Failed to navigate up to Default");
     std::thread::sleep(Duration::from_millis(200));
-    session.send("d").expect("Failed to press 'd' to delete Default");
+    session
+        .send("d")
+        .expect("Failed to press 'd' to delete Default");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     // Confirm deletion of "Default"
-    session.send("y").expect("Failed to confirm deletion of Default");
+    session
+        .send("y")
+        .expect("Failed to confirm deletion of Default");
     std::thread::sleep(Duration::from_millis(800));
     session.read_and_parse().expect("Failed to read output");
 
@@ -7389,29 +7754,48 @@ fn test_delete_last_workspace_auto_creates_default() {
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
-    eprintln!("After deleting Default (only LastOne should remain):\n{}", screen);
-    assert!(!screen.contains("Default"), "Default workspace should be gone. Got:\n{}", screen);
-    assert!(screen.contains("LastOne"), "LastOne workspace should still exist. Got:\n{}", screen);
+    eprintln!(
+        "After deleting Default (only LastOne should remain):\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains("Default"),
+        "Default workspace should be gone. Got:\n{}",
+        screen
+    );
+    assert!(
+        screen.contains("LastOne"),
+        "LastOne workspace should still exist. Got:\n{}",
+        screen
+    );
 
     // Now delete "LastOne" - it's the last workspace, so "Default" should be auto-created.
     // Selection starts at "LastOne" (the only/active workspace).
-    session.send("d").expect("Failed to press 'd' to delete LastOne");
+    session
+        .send("d")
+        .expect("Failed to press 'd' to delete LastOne");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
     eprintln!("Delete confirmation for LastOne:\n{}", screen);
 
-    session.send("y").expect("Failed to confirm deletion of LastOne");
+    session
+        .send("y")
+        .expect("Failed to confirm deletion of LastOne");
     std::thread::sleep(Duration::from_millis(1000));
     session.read_and_parse().expect("Failed to read output");
 
     // The sidebar/overlay should now show "Default" - the auto-created workspace
     let screen = session.screen_contents();
-    eprintln!("After deleting last workspace (Default should be auto-created):\n{}", screen);
+    eprintln!(
+        "After deleting last workspace (Default should be auto-created):\n{}",
+        screen
+    );
     assert!(
         screen.contains("Default"),
-        "A new 'Default' workspace should be auto-created after deleting the last workspace. Got:\n{}", screen
+        "A new 'Default' workspace should be auto-created after deleting the last workspace. Got:\n{}",
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -7461,7 +7845,9 @@ fn test_new_session_inherits_launch_env_vars() {
     read_into_parser(&mut session, &mut parser);
 
     // Type the echo command to print the env var and press enter
-    session.write_all(b"echo $SB_LAUNCH_TEST_VAR").expect("Failed to type command");
+    session
+        .write_all(b"echo $SB_LAUNCH_TEST_VAR")
+        .expect("Failed to type command");
     session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(200));
     session.write_all(&[0x0d]).expect("Failed to send Enter");
@@ -7515,11 +7901,15 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
     // Use a unique early marker so we can detect when we're deep in history.
     let pid = std::process::id();
     let early_marker = format!("EARLYMARK-{}", pid);
-    session.send(&format!("echo {}\n", early_marker)).expect("Failed to send marker");
+    session
+        .send(&format!("echo {}\n", early_marker))
+        .expect("Failed to send marker");
     std::thread::sleep(Duration::from_millis(200));
 
     for i in 1..=50 {
-        session.send(&format!("echo HISTFILL{:03}\n", i)).expect("Failed to send echo");
+        session
+            .send(&format!("echo HISTFILL{:03}\n", i))
+            .expect("Failed to send echo");
         std::thread::sleep(Duration::from_millis(25));
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -7528,7 +7918,9 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
     // Mouse scroll is enabled by default — no need to enable it
     // Scroll up aggressively to get well into history (50ms between events > 30ms throttle)
     for _ in 0..60 {
-        session.send_mouse_scroll_up(50, 12).expect("Failed to send scroll up");
+        session
+            .send_mouse_scroll_up(50, 12)
+            .expect("Failed to send scroll up");
         std::thread::sleep(Duration::from_millis(50));
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -7540,7 +7932,9 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
     // Only run the preservation check if scroll actually worked (early marker visible).
     // If scroll didn't work, the test still passes (the feature works manually).
     if !screen_scrolled.contains(&early_marker) {
-        eprintln!("Early marker not visible after scrolling — scroll may not have gone far enough. Skipping preservation check.");
+        eprintln!(
+            "Early marker not visible after scrolling — scroll may not have gone far enough. Skipping preservation check."
+        );
         return;
     }
 
@@ -7548,7 +7942,9 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
 
     // Now produce new output while scrolled. With the OLD behavior, process() would reset
     // scrollback to 0, causing the view to jump to the bottom. With the fix, it stays.
-    session.send("echo NEWOUTPUT_ARRIVAL\n").expect("Failed to send command");
+    session
+        .send("echo NEWOUTPUT_ARRIVAL\n")
+        .expect("Failed to send command");
     std::thread::sleep(Duration::from_millis(600));
     session.read_and_parse().expect("Failed to read");
 
@@ -7561,7 +7957,8 @@ fn test_mouse_scroll_preserves_position_when_output_arrives() {
         screen_after_output.contains(&early_marker),
         "Scroll position should be preserved when new output arrives. \
         Early marker '{}' should still be visible but got:\n{}",
-        early_marker, screen_after_output
+        early_marker,
+        screen_after_output
     );
     assert!(
         !screen_after_output.contains("NEWOUTPUT_ARRIVAL"),
@@ -7582,9 +7979,17 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
     // Create a file with enough lines for vim to scroll through
     let content: String = (1..=50).map(|i| format!("vim line {:03}\n", i)).collect();
     fs::write(&test_file, &content).expect("Failed to create test file");
-    struct Cleanup { path: String }
-    impl Drop for Cleanup { fn drop(&mut self) { let _ = fs::remove_file(&self.path); } }
-    let _cleanup = Cleanup { path: test_file.clone() };
+    struct Cleanup {
+        path: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+    let _cleanup = Cleanup {
+        path: test_file.clone(),
+    };
 
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(1000));
@@ -7593,7 +7998,9 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
     // Mouse scroll is enabled by default — no need to enable it
 
     // Open the file in vim (it will enter alt screen mode)
-    session.send(&format!("vim {}\n", test_file)).expect("Failed to open vim");
+    session
+        .send(&format!("vim {}\n", test_file))
+        .expect("Failed to open vim");
     std::thread::sleep(Duration::from_millis(1500));
     session.read_and_parse().expect("Failed to read");
 
@@ -7603,7 +8010,8 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
     // Vim should be showing the file content
     assert!(
         screen_vim.contains("vim line"),
-        "Vim should be showing file content. Got:\n{}", screen_vim
+        "Vim should be showing file content. Got:\n{}",
+        screen_vim
     );
 
     // Scroll down in vim (toward the end of file) — vim in alt screen should receive these events
@@ -7625,8 +8033,11 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
     // 2. The TUI itself didn't crash or switch to a broken state
     // Vim content or status bar should still be present
     assert!(
-        screen_after_scroll.contains("vim line") || screen_after_scroll.contains("VIM") || screen_after_scroll.contains(".txt"),
-        "Vim should still be running after scroll events. Got:\n{}", screen_after_scroll
+        screen_after_scroll.contains("vim line")
+            || screen_after_scroll.contains("VIM")
+            || screen_after_scroll.contains(".txt"),
+        "Vim should still be running after scroll events. Got:\n{}",
+        screen_after_scroll
     );
 
     // Exit vim without saving
@@ -7639,8 +8050,11 @@ fn test_mouse_scroll_forwards_to_vim_in_alt_screen() {
 
     // Should be back at shell prompt
     assert!(
-        screen_after_vim.contains("%") || screen_after_vim.contains("$") || screen_after_vim.contains(">"),
-        "Should be back at shell prompt after exiting vim. Got:\n{}", screen_after_vim
+        screen_after_vim.contains("%")
+            || screen_after_vim.contains("$")
+            || screen_after_vim.contains(">"),
+        "Should be back at shell prompt after exiting vim. Got:\n{}",
+        screen_after_vim
     );
 }
 
@@ -7681,7 +8095,11 @@ fn test_workspace_overlay_scrolling() {
             break;
         }
     }
-    assert!(found_overlay, "Workspace overlay should open. Got:\n{}", session.screen_contents());
+    assert!(
+        found_overlay,
+        "Workspace overlay should open. Got:\n{}",
+        session.screen_contents()
+    );
 
     // The list overflows — a bottom truncation indicator should be visible.
     let screen_initial = session.screen_contents();
@@ -7708,7 +8126,8 @@ fn test_workspace_overlay_scrolling() {
     // After scrolling down, a truncation indicator should still be visible (items above/below).
     assert!(
         screen_scrolled.contains("..."),
-        "Truncation indicator should be visible after scrolling down. Got:\n{}", screen_scrolled
+        "Truncation indicator should be visible after scrolling down. Got:\n{}",
+        screen_scrolled
     );
 
     // Workspace01 should be scrolled off screen now (selection is at index ~25).
@@ -7738,7 +8157,8 @@ fn test_workspace_overlay_scrolling() {
 
     assert!(
         screen_top.contains("Default"),
-        "Default workspace should be visible after navigating back to top. Got:\n{}", screen_top
+        "Default workspace should be visible after navigating back to top. Got:\n{}",
+        screen_top
     );
 
     session.send_esc().expect("Failed to close overlay");
@@ -7758,7 +8178,8 @@ fn test_delete_workspace_sessions_are_gone() {
     let env = TestEnv::setup();
 
     // Create "Victim" workspace via CLI
-    let _: std::process::Output = env.iso_command()
+    let _: std::process::Output = env
+        .iso_command()
         .args(["workspace", "create", "Victim"])
         .output()
         .expect("Failed to create Victim workspace");
@@ -7767,23 +8188,37 @@ fn test_delete_workspace_sessions_are_gone() {
     // Start the TUI with a Default session (so Default is NOT in welcome state)
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(1000));
-    session.read_and_parse().expect("Failed to read initial output");
+    session
+        .read_and_parse()
+        .expect("Failed to read initial output");
 
     let screen = session.screen_contents();
     eprintln!("Initial TUI screen:\n{}", screen);
-    assert!(screen.contains("Default"), "Should start in Default workspace. Got:\n{}", screen);
+    assert!(
+        screen.contains("Default"),
+        "Should start in Default workspace. Got:\n{}",
+        screen
+    );
 
     // Open workspace overlay with Ctrl+W (works from terminal pane)
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
     eprintln!("Workspace overlay:\n{}", screen);
-    assert!(screen.contains("Victim"), "Victim should appear in workspace overlay. Got:\n{}", screen);
+    assert!(
+        screen.contains("Victim"),
+        "Victim should appear in workspace overlay. Got:\n{}",
+        screen
+    );
 
     // Navigate to Victim (alphabetically after Default, one down)
-    session.send_down_arrow().expect("Failed to navigate to Victim");
+    session
+        .send_down_arrow()
+        .expect("Failed to navigate to Victim");
     std::thread::sleep(Duration::from_millis(200));
     session.send_enter().expect("Failed to switch to Victim");
     std::thread::sleep(Duration::from_millis(800));
@@ -7791,36 +8226,55 @@ fn test_delete_workspace_sessions_are_gone() {
 
     let screen = session.screen_contents();
     eprintln!("After switching to Victim:\n{}", screen);
-    assert!(screen.contains("Victim"), "Should be in Victim workspace. Got:\n{}", screen);
+    assert!(
+        screen.contains("Victim"),
+        "Should be in Victim workspace. Got:\n{}",
+        screen
+    );
 
     // In Victim workspace (empty, welcome state, terminal pane focused after switch):
     // use Ctrl+N to enter create mode from terminal pane, then 't' for terminal session type
-    session.session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N is ASCII 14
+    session
+        .session
+        .write_all(&[14])
+        .expect("Failed to send Ctrl+N"); // Ctrl+N is ASCII 14
     session.session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
-    session.send("t").expect("Failed to send t (terminal session type)");
+    session
+        .send("t")
+        .expect("Failed to send t (terminal session type)");
     std::thread::sleep(Duration::from_millis(300));
     session.read_and_parse().expect("Failed to read output");
 
     // Type the session name
     let victim_session_name = "victim-sess";
-    session.send(victim_session_name).expect("Failed to type session name");
+    session
+        .send(victim_session_name)
+        .expect("Failed to type session name");
     std::thread::sleep(Duration::from_millis(200));
-    session.send_enter().expect("Failed to confirm session creation");
+    session
+        .send_enter()
+        .expect("Failed to confirm session creation");
     std::thread::sleep(Duration::from_millis(800));
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
-    eprintln!("After creating victim-sess in Victim workspace:\n{}", screen);
+    eprintln!(
+        "After creating victim-sess in Victim workspace:\n{}",
+        screen
+    );
     assert!(
         screen.contains(victim_session_name),
-        "Session '{}' should appear in sidebar. Got:\n{}", victim_session_name, screen
+        "Session '{}' should appear in sidebar. Got:\n{}",
+        victim_session_name,
+        screen
     );
 
     // Verify via CLI that victim-sess is listed in the daemon
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list");
@@ -7829,16 +8283,21 @@ fn test_delete_workspace_sessions_are_gone() {
     assert!(
         list_str.contains(victim_session_name),
         "Victim session '{}' should appear in list before deletion. Got:\n{}",
-        victim_session_name, list_str
+        victim_session_name,
+        list_str
     );
 
     // Switch back to Default workspace via overlay
-    session.send_ctrl_w().expect("Failed to re-open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to re-open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     // Navigate up to Default (currently Victim is active/selected, Default is above)
-    session.send_up_arrow().expect("Failed to navigate up to Default");
+    session
+        .send_up_arrow()
+        .expect("Failed to navigate up to Default");
     std::thread::sleep(Duration::from_millis(200));
     session.send_enter().expect("Failed to switch to Default");
     std::thread::sleep(Duration::from_millis(800));
@@ -7846,19 +8305,31 @@ fn test_delete_workspace_sessions_are_gone() {
 
     let screen = session.screen_contents();
     eprintln!("After switching back to Default:\n{}", screen);
-    assert!(screen.contains("Default"), "Should be back in Default. Got:\n{}", screen);
+    assert!(
+        screen.contains("Default"),
+        "Should be back in Default. Got:\n{}",
+        screen
+    );
 
     // Open workspace overlay and delete Victim
-    session.send_ctrl_w().expect("Failed to open workspace overlay");
+    session
+        .send_ctrl_w()
+        .expect("Failed to open workspace overlay");
     std::thread::sleep(Duration::from_millis(500));
     session.read_and_parse().expect("Failed to read output");
 
     let screen = session.screen_contents();
     eprintln!("Workspace overlay for deletion:\n{}", screen);
-    assert!(screen.contains("Victim"), "Victim should still be in overlay. Got:\n{}", screen);
+    assert!(
+        screen.contains("Victim"),
+        "Victim should still be in overlay. Got:\n{}",
+        screen
+    );
 
     // Navigate to Victim (one down from Default)
-    session.send_down_arrow().expect("Failed to navigate to Victim");
+    session
+        .send_down_arrow()
+        .expect("Failed to navigate to Victim");
     std::thread::sleep(Duration::from_millis(200));
 
     // Press 'd' to delete
@@ -7879,7 +8350,8 @@ fn test_delete_workspace_sessions_are_gone() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Verify via CLI that victim-sess is no longer in the daemon
-    let list_output = env.iso_command()
+    let list_output = env
+        .iso_command()
         .args(["list"])
         .output()
         .expect("Failed to run sb list after deletion");
@@ -7888,7 +8360,8 @@ fn test_delete_workspace_sessions_are_gone() {
     assert!(
         !list_str.contains(victim_session_name),
         "Victim session '{}' should be gone after workspace deletion. Got:\n{}",
-        victim_session_name, list_str
+        victim_session_name,
+        list_str
     );
 }
 
@@ -7904,7 +8377,9 @@ fn test_rename_session_confirm() {
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     let original_name = session.session_name.clone();
     std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read initial output");
+    session
+        .read_and_parse()
+        .expect("Failed to read initial output");
 
     // Focus sidebar
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
@@ -7920,7 +8395,8 @@ fn test_rename_session_confirm() {
     eprintln!("After 'r' (rename mode):\n{}", screen);
     assert!(
         screen.contains("Rename") || screen.contains("rename"),
-        "Should be in rename mode. Got:\n{}", screen
+        "Should be in rename mode. Got:\n{}",
+        screen
     );
 
     // Backspace the entire current name and type a new one
@@ -7938,7 +8414,9 @@ fn test_rename_session_confirm() {
     eprintln!("After typing new name:\n{}", screen);
     assert!(
         screen.contains(new_name),
-        "New name '{}' should appear in sidebar during rename. Got:\n{}", new_name, screen
+        "New name '{}' should appear in sidebar during rename. Got:\n{}",
+        new_name,
+        screen
     );
 
     // Confirm rename with Enter
@@ -7952,19 +8430,24 @@ fn test_rename_session_confirm() {
     // New name should appear in sidebar
     assert!(
         screen.contains(new_name),
-        "Renamed session '{}' should appear in sidebar after confirm. Got:\n{}", new_name, screen
+        "Renamed session '{}' should appear in sidebar after confirm. Got:\n{}",
+        new_name,
+        screen
     );
 
     // Old name should be gone from sidebar
     assert!(
         !screen.contains(&original_name[..original_name.len().min(10)]),
-        "Original name '{}' should no longer appear after rename. Got:\n{}", original_name, screen
+        "Original name '{}' should no longer appear after rename. Got:\n{}",
+        original_name,
+        screen
     );
 
     // Focus should have returned to terminal pane (hint bar shows terminal-focused keybindings)
     assert!(
         screen.contains("ctrl + n") || screen.contains("ctrl + b Sidebar"),
-        "Focus should be on terminal pane after rename confirm. Got:\n{}", screen
+        "Focus should be on terminal pane after rename confirm. Got:\n{}",
+        screen
     );
 
     session.quit().expect("Failed to quit");
@@ -7980,9 +8463,7 @@ fn test_bd_list_performance_in_tui() {
     let _timer = TestTimer::new("test_bd_list_performance_in_tui");
 
     // Check if bd is available
-    let bd_check = std::process::Command::new("which")
-        .arg("bd")
-        .output();
+    let bd_check = std::process::Command::new("which").arg("bd").output();
     match bd_check {
         Ok(output) if output.status.success() => {}
         _ => {
@@ -8016,7 +8497,9 @@ fn test_bd_list_performance_in_tui() {
 
     // Wait for TUI to be ready and shell prompt to appear
     std::thread::sleep(Duration::from_millis(1500));
-    session.read_and_parse().expect("Failed to read initial output");
+    session
+        .read_and_parse()
+        .expect("Failed to read initial output");
 
     // Use a sentinel echo to detect command completion
     let sentinel = "BD_PERF_DONE_12345";
@@ -8072,7 +8555,7 @@ fn test_bd_list_performance_in_tui() {
 }
 
 /// Test that the hint bar quit path updates dynamically based on current focus/mode.
-/// Spec line 148: "The right side of the hint bar should always show the path to quitting
+/// The bottom of the sidebar hint column shows the path to quitting
 /// the TUI... This should update dynamically based on the current state of the TUI."
 /// Verifies: (a) terminal focused → "ctrl + b → q Quit", (b) rename mode → "esc → q Quit",
 /// (c) sidebar focused → "q Quit".
@@ -8083,7 +8566,9 @@ fn test_hint_bar_dynamic_quit_path() {
 
     let mut session = SbSession::new(&env).expect("Failed to spawn sb");
     std::thread::sleep(Duration::from_millis(500));
-    session.read_and_parse().expect("Failed to read initial output");
+    session
+        .read_and_parse()
+        .expect("Failed to read initial output");
 
     // --- (a) Terminal focused: quit path should show "ctrl + b" and "q Quit" ---
     let screen = session.screen_contents();
@@ -8097,7 +8582,9 @@ fn test_hint_bar_dynamic_quit_path() {
     // --- (b) Enter sidebar focus then rename mode: quit path should be "esc → q Quit" ---
     session.send_ctrl_b().expect("Failed to send Ctrl+B");
     std::thread::sleep(Duration::from_millis(300));
-    session.read_and_parse().expect("Failed to read after Ctrl+B");
+    session
+        .read_and_parse()
+        .expect("Failed to read after Ctrl+B");
 
     // Press 'r' to enter rename mode
     session.send("r").expect("Failed to send 'r'");
@@ -8121,7 +8608,9 @@ fn test_hint_bar_dynamic_quit_path() {
     // Cancel rename with Escape
     session.send_esc().expect("Failed to send Escape");
     std::thread::sleep(Duration::from_millis(300));
-    session.read_and_parse().expect("Failed to read after Escape");
+    session
+        .read_and_parse()
+        .expect("Failed to read after Escape");
 
     // --- (c) Sidebar focused: quit path should be "q Quit" (no ctrl+b prefix) ---
     let screen = session.screen_contents();
@@ -8163,7 +8652,8 @@ fn test_zoom_ctrl_b_unzooms_and_focuses_sidebar() {
     let pre_zoom = session.screen_contents();
     assert!(
         pre_zoom.contains("Default"),
-        "Sidebar should show 'Default' workspace before zooming. Got:\n{}", pre_zoom
+        "Sidebar should show 'Default' workspace before zooming. Got:\n{}",
+        pre_zoom
     );
 
     // Press Ctrl+Z to enter zoom mode
@@ -8175,7 +8665,8 @@ fn test_zoom_ctrl_b_unzooms_and_focuses_sidebar() {
     eprintln!("Zoomed screen:\n{}", zoomed_screen);
     assert!(
         !zoomed_screen.contains("Default"),
-        "Sidebar should be hidden when zoomed. Got:\n{}", zoomed_screen
+        "Sidebar should be hidden when zoomed. Got:\n{}",
+        zoomed_screen
     );
 
     // Press Ctrl+B while zoomed — should unzoom AND focus the sidebar
@@ -8246,7 +8737,8 @@ fn test_zoom_create_mode_unzooms_automatically() {
     let pre_zoom = session.screen_contents();
     assert!(
         pre_zoom.contains("Default"),
-        "Sidebar should show 'Default' before zooming. Got:\n{}", pre_zoom
+        "Sidebar should show 'Default' before zooming. Got:\n{}",
+        pre_zoom
     );
 
     // Press Ctrl+Z to zoom
@@ -8258,11 +8750,15 @@ fn test_zoom_create_mode_unzooms_automatically() {
     eprintln!("Zoomed screen:\n{}", zoomed_screen);
     assert!(
         !zoomed_screen.contains("Default"),
-        "Sidebar should be hidden when zoomed. Got:\n{}", zoomed_screen
+        "Sidebar should be hidden when zoomed. Got:\n{}",
+        zoomed_screen
     );
 
     // Press Ctrl+N to enter create mode — this should unzoom automatically
-    session.session.write_all(&[14]).expect("Failed to send Ctrl+N"); // Ctrl+N = ASCII 14
+    session
+        .session
+        .write_all(&[14])
+        .expect("Failed to send Ctrl+N"); // Ctrl+N = ASCII 14
     session.session.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(400));
     session.read_and_parse().expect("Failed to read output");
@@ -8305,7 +8801,10 @@ fn test_minimum_terminal_size_64x24() {
     session.read_and_parse().expect("Failed to read output");
 
     // Resize the PTY to the minimum supported size: 64 columns x 24 rows
-    session.session.get_process_mut().set_window_size(64, 24)
+    session
+        .session
+        .get_process_mut()
+        .set_window_size(64, 24)
         .expect("Failed to resize PTY to 64x24");
 
     // Send SIGWINCH so the TUI re-reads the terminal size
@@ -8331,7 +8830,8 @@ fn test_minimum_terminal_size_64x24() {
     );
     assert!(
         screen.contains("Default"),
-        "Sidebar should show 'Default' workspace at 64x24 minimum size. Got:\n{}", screen
+        "Sidebar should show 'Default' workspace at 64x24 minimum size. Got:\n{}",
+        screen
     );
 
     session.quit().expect("Failed to quit");

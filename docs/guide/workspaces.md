@@ -31,7 +31,7 @@ In the overlay, select the workspace and press <kbd>r</kbd>. Edit the name and p
 
 ## Deleting a workspace
 
-In the overlay, select the workspace and press <kbd>d</kbd>. A confirmation prompt appears (red background). Press <kbd>y</kbd> to confirm. All sessions in the deleted workspace are permanently removed.
+In the overlay, select the workspace and press <kbd>d</kbd>. A confirmation prompt appears in the sidebar hints. Press <kbd>y</kbd> to confirm. All sessions in the deleted workspace are permanently removed.
 
 If you delete the active workspace, sidebar-tui switches to the first remaining workspace (or creates a new Default if none remain).
 

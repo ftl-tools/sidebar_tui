@@ -1,6 +1,6 @@
 [package]
 name = "sidebar-tui"
-version = "0.1.13"
+version = "0.1.17"
 edition = "2024"
 
 [lib]
@@ -12,7 +12,8 @@ name = "sb"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.29"
+# Share Ratatui's wrapping measurement with rendering for sidebar hint geometry.
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 crossterm = "0.28"
 color-eyre = "0.6"
 portable-pty = "0.9"
