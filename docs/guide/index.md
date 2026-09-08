@@ -1,14 +1,16 @@
 # Quickstart
 
-sidebar-tui is a terminal session manager that lives in a sidebar inside your terminal. You get a persistent list of named sessions on the left and a full terminal on the right — no window switching, no context loss.
+sidebar-tui is moving toward being a tmux manager, with sessions containing windows and a terminal pane in each window. A persistent window list sits on the left, with the selected terminal pane on the right.
+
+This release aligns terminology; it still uses Sidebar's own PTY server rather than tmux. See [terminology and compatibility](./terminology.md).
 
 ## Layout
 
-The 28-column sidebar contains the workspace title and scrollable session list, followed by a horizontal divider and a column of contextual hints. Hints, confirmations, and temporary messages stay inside the sidebar; the detach/exit path sits below them.
+The 28-column sidebar contains the session title and scrollable window list, followed by a horizontal divider and a column of contextual hints. Hints, confirmations, and temporary messages stay inside the sidebar; the detach/exit path sits below them.
 
-The terminal fills the entire right side, from the first row to the last, without a frame or padding. Changing hints does not resize the terminal or disturb its output. The sidebar outline indicates focus. Zoom hides the sidebar and its hints together; toggle focus to bring them back. Workspace and help views use the right side while their hints remain on the left.
+The terminal fills the entire right side, from the first row to the last, without a frame or padding. Changing hints does not resize the terminal or disturb its output. The sidebar outline indicates focus. Zoom hides the sidebar and its hints together; toggle focus to bring them back. Session and help views use the right side while their hints remain on the left.
 
-On short screens, hints are clipped to preserve session-list space and the exit path. Press <kbd>?</kbd> from the sidebar for the full command reference.
+On short screens, hints are clipped to preserve window-list space and the exit path. Press <kbd>?</kbd> from the sidebar for the full command reference.
 
 ## Launch
 
@@ -16,23 +18,22 @@ On short screens, hints are clipped to preserve session-list space and the exit 
 sb
 ```
 
-That's it. On first launch a **Default** workspace is created and the sidebar is focused, ready for you to create your first session.
+That's it. On first launch a **Default** session is created and the sidebar is focused, ready for you to create your first window.
 
-## Your first session
+## Your first window
 
-1. Press <kbd>n</kbd> to enter create mode.
-2. Press <kbd>t</kbd> to start a new terminal session.
-3. Type a name (e.g. `api-server`) and press <kbd>Enter</kbd>.
-4. You're now in a full terminal. Run whatever you like.
+1. Press <kbd>c</kbd> to create a window (or <kbd>a</kbd> for a window running Claude).
+2. Type a name (e.g. `api-server`) and press <kbd>Enter</kbd>.
+3. You're now in its terminal pane. Run whatever you like.
 
-## Switching sessions
+## Switching windows
 
-Focus the sidebar with <kbd>Ctrl+B</kbd>, use <kbd>↑</kbd>/<kbd>↓</kbd> (or <kbd>k</kbd>/<kbd>j</kbd>) to select a session, and press <kbd>Enter</kbd> to focus it.
+Focus the sidebar with <kbd>Ctrl+B</kbd>, use <kbd>↑</kbd>/<kbd>↓</kbd> (or <kbd>k</kbd>/<kbd>j</kbd>) to select a window, and press <kbd>Enter</kbd> to focus it.
 
-Or press <kbd>Ctrl+B</kbd> while already in the sidebar to jump back to the last active session.
+Pressing <kbd>Ctrl+B</kbd> while in the sidebar also commits the highlighted window. <kbd>Esc</kbd> cancels browsing; <kbd>l</kbd> switches to the last active window.
 
 ## What's next
 
 - [Installation options](/guide/installation) — Homebrew, npm, curl, AUR
 - [All keybindings](/guide/keybindings) — complete reference
-- [Workspaces](/guide/workspaces) — group sessions by project
+- [Sessions](/guide/sessions) — group windows by project

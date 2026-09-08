@@ -1,11 +1,11 @@
-//! Sidebar pane rendering for the Sidebar TUI.
+//! Sidebar region rendering for the Sidebar TUI.
 //!
 //! This module handles rendering the sidebar with:
-//! - Session list with selection and scrolling
-//! - Line wrapping for long session names with continuation indicators
+//! - Window list with selection and scrolling
+//! - Line wrapping for long window names with continuation indicators
 //! - Focus-aware border colors
 //! - Truncation indicators when list overflows
-//! - Welcome state when no sessions exist
+//! - Welcome state when no windows exist
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, Borders, Widget};
 use crate::colors::{DARK_GREY, FOCUSED_BORDER, PURPLE, WHITE};
 use crate::state::{AppMode, AppState, Focus};
 
-/// Width of the sidebar pane including borders.
+/// Width of the sidebar region including borders.
 pub const SIDEBAR_WIDTH: u16 = 28;
 
 /// Padding on each side between border and content.
@@ -31,22 +31,22 @@ const CONTINUATION_MIDDLE: &str = "│";
 /// Final continuation indicator for the last line of a wrapped name.
 const CONTINUATION_END: &str = "└";
 
-/// A rendered line in the sidebar representing a session name (or part of it).
+/// A rendered line in the sidebar representing a window name (or part of it).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionLine {
+struct WindowLine {
     /// The text content to display.
     text: String,
-    /// Session index this line belongs to (usize::MAX for draft).
-    session_index: usize,
+    /// Window index this line belongs to (usize::MAX for draft).
+    window_index: usize,
     /// Whether this is a continuation line (not the first line of the name).
     is_continuation: bool,
     /// Whether this is the last line of a wrapped name.
     is_last_line: bool,
 }
 
-/// Wrap a session name into multiple lines if needed.
+/// Wrap a window name into multiple lines if needed.
 /// Returns a vector of (text, is_continuation, is_last_line) tuples.
-fn wrap_session_name(name: &str, max_width: usize) -> Vec<(String, bool, bool)> {
+fn wrap_window_name(name: &str, max_width: usize) -> Vec<(String, bool, bool)> {
     if name.is_empty() {
         return vec![(String::new(), false, true)];
     }
@@ -82,9 +82,9 @@ fn wrap_session_name(name: &str, max_width: usize) -> Vec<(String, bool, bool)> 
     lines
 }
 
-/// Calculate how many visual rows a session name will take.
-fn session_row_count(name: &str, max_width: usize) -> usize {
-    wrap_session_name(name, max_width).len()
+/// Calculate how many visual rows a window name will take.
+fn window_row_count(name: &str, max_width: usize) -> usize {
+    wrap_window_name(name, max_width).len()
 }
 
 /// Given wrapped lines and a cursor_position (character offset into the full string),
@@ -106,7 +106,7 @@ fn cursor_line_col(wrapped: &[(String, bool, bool)], cursor_position: usize) -> 
 
 /// Build the list of sidebar lines for rendering.
 /// Returns (lines, show_top_truncation, show_bottom_truncation).
-fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLine>, bool, bool) {
+fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<WindowLine>, bool, bool) {
     let max_width = CONTENT_WIDTH;
     let mut lines = Vec::new();
     let mut show_top_truncation = false;
@@ -119,53 +119,53 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
         None
     };
 
-    // Rename info: (session_index, new_name) if we're currently renaming a session.
+    // Rename info: (window_index, new_name) if we're currently renaming a window.
     // We use the rename text for row calculations so wrapping reflects what's being typed.
     let renaming_info: Option<(usize, String)> = if let AppMode::Renaming(rename) = &state.mode {
-        Some((rename.session_index, rename.new_name.clone()))
+        Some((rename.window_index, rename.new_name.clone()))
     } else {
         None
     };
 
-    // Helper: get the display name for session at index (substitutes rename text if applicable).
-    let effective_name = |idx: usize, session_name: &str| -> String {
+    // Helper: get the display name for window at index (substitutes rename text if applicable).
+    let effective_name = |idx: usize, window_name: &str| -> String {
         if let Some((ri, ref rn)) = renaming_info {
             if ri == idx {
                 return rn.clone();
             }
         }
-        session_name.to_string()
+        window_name.to_string()
     };
 
-    // Calculate total rows needed for all sessions (plus draft if any)
+    // Calculate total rows needed for all windows (plus draft if any)
     let mut total_rows = 0;
     if draft_name.is_some() {
-        total_rows += session_row_count("", max_width);
+        total_rows += window_row_count("", max_width);
     }
-    for (idx, session) in state.sessions.iter().enumerate() {
-        total_rows += session_row_count(&effective_name(idx, &session.name), max_width);
+    for (idx, window) in state.windows.iter().enumerate() {
+        total_rows += window_row_count(&effective_name(idx, &window.name), max_width);
     }
 
     // If everything fits, render all
     if total_rows <= visible_rows {
         // Render draft if present
         if let Some(ref name) = draft_name {
-            for (text, is_continuation, is_last_line) in wrap_session_name(name, max_width) {
-                lines.push(SessionLine {
+            for (text, is_continuation, is_last_line) in wrap_window_name(name, max_width) {
+                lines.push(WindowLine {
                     text,
-                    session_index: usize::MAX, // Special marker for draft
+                    window_index: usize::MAX, // Special marker for draft
                     is_continuation,
                     is_last_line,
                 });
             }
         }
-        // Render all sessions (using effective name for renamed sessions)
-        for (idx, session) in state.sessions.iter().enumerate() {
-            let name = effective_name(idx, &session.name);
-            for (text, is_continuation, is_last_line) in wrap_session_name(&name, max_width) {
-                lines.push(SessionLine {
+        // Render all windows (using effective name for renamed windows)
+        for (idx, window) in state.windows.iter().enumerate() {
+            let name = effective_name(idx, &window.name);
+            for (text, is_continuation, is_last_line) in wrap_window_name(&name, max_width) {
+                lines.push(WindowLine {
                     text,
-                    session_index: idx,
+                    window_index: idx,
                     is_continuation,
                     is_last_line,
                 });
@@ -178,22 +178,22 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
     // We need to account for truncation indicators taking up space
     let available_rows = visible_rows.saturating_sub(2); // Reserve space for potential truncation indicators
 
-    // Calculate which sessions are visible based on scroll_offset
+    // Calculate which windows are visible based on scroll_offset
     // The hints shrink this viewport independently of the terminal. Keep the
-    // selected session visible instead of trusting a stale stored scroll offset.
+    // selected window visible instead of trusting a stale stored scroll offset.
     let selected_start: usize = state
-        .sessions
+        .windows
         .iter()
         .enumerate()
         .take(state.selected_index)
-        .map(|(idx, session)| session_row_count(&effective_name(idx, &session.name), max_width))
+        .map(|(idx, window)| window_row_count(&effective_name(idx, &window.name), max_width))
         .sum();
     let selected_rows = state
-        .sessions
+        .windows
         .get(state.selected_index)
-        .map(|session| {
-            session_row_count(
-                &effective_name(state.selected_index, &session.name),
+        .map(|window| {
+            window_row_count(
+                &effective_name(state.selected_index, &window.name),
                 max_width,
             )
         })
@@ -208,25 +208,25 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
             .min(selected_start)
     };
     let mut rows_before_scroll = 0;
-    let mut first_visible_session = 0;
+    let mut first_visible_window = 0;
 
     // Account for draft in scrolling
     if draft_name.is_some() {
-        let draft_rows = session_row_count("", max_width);
+        let draft_rows = window_row_count("", max_width);
         if scroll_offset > 0 {
             rows_before_scroll = draft_rows;
             show_top_truncation = true;
         }
     }
 
-    // Find first visible session (using effective names for row counts)
-    for (idx, session) in state.sessions.iter().enumerate() {
-        let name = effective_name(idx, &session.name);
-        let session_rows = session_row_count(&name, max_width);
-        if rows_before_scroll + session_rows > scroll_offset {
-            // Rendering starts at a whole session. Skip a partially scrolled
+    // Find first visible window (using effective names for row counts)
+    for (idx, window) in state.windows.iter().enumerate() {
+        let name = effective_name(idx, &window.name);
+        let window_rows = window_row_count(&name, max_width);
+        if rows_before_scroll + window_rows > scroll_offset {
+            // Rendering starts at a whole window. Skip a partially scrolled
             // predecessor so its wrapped rows cannot push the selection out.
-            first_visible_session =
+            first_visible_window =
                 if rows_before_scroll < scroll_offset && idx < state.selected_index {
                     show_top_truncation = true;
                     idx + 1
@@ -235,8 +235,8 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
                 };
             break;
         }
-        rows_before_scroll += session_rows;
-        if idx + 1 < state.sessions.len() || draft_name.is_some() {
+        rows_before_scroll += window_rows;
+        if idx + 1 < state.windows.len() || draft_name.is_some() {
             show_top_truncation = true;
         }
     }
@@ -250,15 +250,15 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
 
     // If draft is visible (scroll_offset == 0 and draft exists)
     if draft_name.is_some() && scroll_offset == 0 {
-        let wrapped = wrap_session_name(&draft_name.clone().unwrap(), max_width);
+        let wrapped = wrap_window_name(&draft_name.clone().unwrap(), max_width);
         for (text, is_continuation, is_last_line) in wrapped {
             if rows_used >= rows_for_content {
                 show_bottom_truncation = true;
                 break;
             }
-            lines.push(SessionLine {
+            lines.push(WindowLine {
                 text,
-                session_index: usize::MAX,
+                window_index: usize::MAX,
                 is_continuation,
                 is_last_line,
             });
@@ -266,23 +266,23 @@ fn build_sidebar_lines(state: &AppState, visible_rows: usize) -> (Vec<SessionLin
         }
     }
 
-    // Add visible sessions (using effective names for renamed sessions)
-    for idx in first_visible_session..state.sessions.len() {
+    // Add visible windows (using effective names for renamed windows)
+    for idx in first_visible_window..state.windows.len() {
         if rows_used >= rows_for_content {
             show_bottom_truncation = true;
             break;
         }
-        let session = &state.sessions[idx];
-        let name = effective_name(idx, &session.name);
-        let wrapped = wrap_session_name(&name, max_width);
+        let window = &state.windows[idx];
+        let name = effective_name(idx, &window.name);
+        let wrapped = wrap_window_name(&name, max_width);
         for (text, is_continuation, is_last_line) in wrapped {
             if rows_used >= rows_for_content {
                 show_bottom_truncation = true;
                 break;
             }
-            lines.push(SessionLine {
+            lines.push(WindowLine {
                 text,
-                session_index: idx,
+                window_index: idx,
                 is_continuation,
                 is_last_line,
             });
@@ -333,7 +333,7 @@ impl<'a> Sidebar<'a> {
                 Style::default().fg(DARK_GREY),
             )],
             vec![Span::styled(
-                "first session!",
+                "first window!",
                 Style::default().fg(DARK_GREY),
             )],
         ];
@@ -360,8 +360,8 @@ impl<'a> Sidebar<'a> {
         }
     }
 
-    /// Render the session list.
-    fn render_session_list(&self, buf: &mut Buffer, area: Rect) {
+    /// Render the window list.
+    fn render_window_list(&self, buf: &mut Buffer, area: Rect) {
         let visible_rows = area.height as usize;
         let (lines, show_top, show_bottom) = build_sidebar_lines(self.state, visible_rows);
 
@@ -379,25 +379,25 @@ impl<'a> Sidebar<'a> {
         // Check if we're in drafting mode
         let is_drafting = matches!(&self.state.mode, AppMode::Drafting(_));
 
-        // Render session lines
+        // Render window lines
         for line in &lines {
             if y >= area.y + area.height {
                 break;
             }
 
-            let SessionLine {
+            let WindowLine {
                 text,
-                session_index,
+                window_index,
                 is_continuation,
                 is_last_line,
             } = line;
 
             // Determine if this line is selected
-            let is_selected = if *session_index == usize::MAX {
+            let is_selected = if *window_index == usize::MAX {
                 // This is the draft line - always selected while drafting
                 is_drafting
             } else {
-                *session_index == self.state.selected_index && !is_drafting
+                *window_index == self.state.selected_index && !is_drafting
             };
 
             // Background style for selection
@@ -430,7 +430,7 @@ impl<'a> Sidebar<'a> {
             }
 
             // Render text: always use the pre-wrapped slice for this line.
-            // For draft and renamed sessions, build_sidebar_lines already wraps using the
+            // For draft and renamed windows, build_sidebar_lines already wraps using the
             // typed text, so 'text' is the correct slice to show here.
             let text_style = if is_selected {
                 Style::default().fg(WHITE).bg(DARK_GREY)
@@ -461,19 +461,19 @@ impl Widget for Sidebar<'_> {
             DARK_GREY
         };
 
-        // The old title consumed a session-list row. Put the workspace name in
-        // the frame so the full bordered interior remains available to sessions.
+        // The old title consumed a window-list row. Put the session name in
+        // the frame so the full bordered interior remains available to windows.
         let max_title_width = area.width.saturating_sub(4) as usize;
-        let workspace_chars: Vec<char> = self.state.workspace_name.chars().collect();
-        let title = if workspace_chars.len() > max_title_width && max_title_width > 3 {
+        let session_chars: Vec<char> = self.state.session_name.chars().collect();
+        let title = if session_chars.len() > max_title_width && max_title_width > 3 {
             format!(
                 "{}...",
-                workspace_chars[..max_title_width - 3]
+                session_chars[..max_title_width - 3]
                     .iter()
                     .collect::<String>()
             )
         } else {
-            workspace_chars[..workspace_chars.len().min(max_title_width)]
+            session_chars[..session_chars.len().min(max_title_width)]
                 .iter()
                 .collect()
         };
@@ -491,7 +491,7 @@ impl Widget for Sidebar<'_> {
         if self.state.is_welcome_state() && !matches!(self.state.mode, AppMode::Drafting(_)) {
             self.render_welcome(buf, content_area);
         } else {
-            self.render_session_list(buf, content_area);
+            self.render_window_list(buf, content_area);
         }
     }
 }
@@ -500,13 +500,13 @@ impl Widget for Sidebar<'_> {
 /// Returns (x, y) position if cursor should be shown.
 pub fn get_sidebar_cursor_position(state: &AppState, area: Rect) -> Option<(u16, u16)> {
     let inner_x = area.x + 1 + PADDING; // Inside border + padding
-    // The workspace title now occupies the top frame instead of an interior row.
+    // The session title now occupies the top frame instead of an interior row.
     let inner_y = area.y + 1; // Immediately below the top border
 
     let position = match &state.mode {
         AppMode::Drafting(draft) => {
             // Cursor may be on a wrapped line; compute which line and column.
-            let wrapped = wrap_session_name(&draft.name, CONTENT_WIDTH);
+            let wrapped = wrap_window_name(&draft.name, CONTENT_WIDTH);
             let (cursor_line, cursor_col) = cursor_line_col(&wrapped, draft.cursor_position);
             let indicator_offset = if cursor_line > 0 { 1u16 } else { 0u16 };
             let cursor_x = inner_x + indicator_offset + cursor_col as u16;
@@ -514,16 +514,16 @@ pub fn get_sidebar_cursor_position(state: &AppState, area: Rect) -> Option<(u16,
             Some((cursor_x, cursor_y))
         }
         AppMode::Renaming(rename) => {
-            // Rows before the renamed session (using the current rename text for that session's row count).
+            // Rows before the renamed window (using the current rename text for that window's row count).
             // Use the rendered viewport, not the full list, for scrolled rename cursors.
             let (lines, top, _) =
                 build_sidebar_lines(state, area.height.saturating_sub(2) as usize);
             let rows_before = lines
                 .iter()
-                .position(|line| line.session_index == rename.session_index)?
+                .position(|line| line.window_index == rename.window_index)?
                 + usize::from(top);
-            // Within the renamed session, cursor may be on a wrapped line.
-            let wrapped = wrap_session_name(&rename.new_name, CONTENT_WIDTH);
+            // Within the renamed window, cursor may be on a wrapped line.
+            let wrapped = wrap_window_name(&rename.new_name, CONTENT_WIDTH);
             let (cursor_line, cursor_col) = cursor_line_col(&wrapped, rename.cursor_position);
             let indicator_offset = if cursor_line > 0 { 1u16 } else { 0u16 };
             let cursor_x = inner_x + indicator_offset + cursor_col as u16;
@@ -540,7 +540,7 @@ pub fn get_sidebar_cursor_position(state: &AppState, area: Rect) -> Option<(u16,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Session;
+    use crate::state::Window;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -566,19 +566,19 @@ mod tests {
 
     #[test]
     fn test_short_list_viewport_tracks_selection_and_rename_cursor() {
-        let mut state = AppState::with_sessions(
+        let mut state = AppState::with_windows(
             (0..20)
-                .map(|i| Session::new(&format!("window_{i}")))
+                .map(|i| Window::new(&format!("window_{i}")))
                 .collect(),
         );
         state.selected_index = 19;
         let (lines, top, _) = build_sidebar_lines(&state, 5);
         assert!(top);
-        assert!(lines.iter().any(|line| line.session_index == 19));
-        state.sessions[18].name =
-            "a preceding session with a name that wraps across several rows".into();
+        assert!(lines.iter().any(|line| line.window_index == 19));
+        state.windows[18].name =
+            "a preceding window with a name that wraps across several rows".into();
         let (lines, _, _) = build_sidebar_lines(&state, 5);
-        assert!(lines.iter().any(|line| line.session_index == 19));
+        assert!(lines.iter().any(|line| line.window_index == 19));
         state.start_renaming();
         let area = Rect::new(0, 0, 28, 8);
         let (_, y) = get_sidebar_cursor_position(&state, area).expect("selected rename is visible");
@@ -589,7 +589,7 @@ mod tests {
     fn test_sidebar_title_rendered() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        // Default workspace name is shown as title
+        // Default session name is shown as title
         assert!(buffer_contains(&buf, "Default"));
     }
 
@@ -597,7 +597,7 @@ mod tests {
     fn test_sidebar_title_is_purple() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        // The workspace title is embedded in the top frame, after one padding cell.
+        // The session title is embedded in the top frame, after one padding cell.
         let cell = &buf[(2, 0)];
         assert_eq!(cell.symbol(), "D");
         assert_eq!(cell.fg, PURPLE, "Title should be purple");
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_welcome_state_shown_when_no_sessions() {
+    fn test_sidebar_welcome_state_shown_when_no_windows() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         assert!(buffer_contains(&buf, "Welcome"));
@@ -665,41 +665,41 @@ mod tests {
     }
 
     #[test]
-    fn test_sidebar_session_list_rendered() {
+    fn test_sidebar_window_list_rendered() {
         let state =
-            AppState::with_sessions(vec![Session::new("session1"), Session::new("session2")]);
+            AppState::with_windows(vec![Window::new("window1"), Window::new("window2")]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        assert!(buffer_contains(&buf, "session1"));
-        assert!(buffer_contains(&buf, "session2"));
+        assert!(buffer_contains(&buf, "window1"));
+        assert!(buffer_contains(&buf, "window2"));
     }
 
     #[test]
-    fn test_sidebar_selected_session_has_grey_bg() {
-        let mut state = AppState::with_sessions(vec![Session::new("selected")]);
+    fn test_sidebar_selected_window_has_grey_bg() {
+        let mut state = AppState::with_windows(vec![Window::new("selected")]);
         state.selected_index = 0;
         state.focus = Focus::Sidebar;
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
-        // The frame title leaves the first interior row available to sessions.
+        // The frame title leaves the first interior row available to windows.
         let cell = &buf[(2, 1)];
         assert_eq!(
             cell.bg, DARK_GREY,
-            "Selected session should have grey background"
+            "Selected window should have grey background"
         );
     }
 
     #[test]
-    fn test_sidebar_session_names_are_white() {
-        let state = AppState::with_sessions(vec![Session::new("test")]);
+    fn test_sidebar_window_names_are_white() {
+        let state = AppState::with_windows(vec![Window::new("test")]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
-        // Find the first session at x=2, y=1 (after border + padding).
+        // Find the first window at x=2, y=1 (after border + padding).
         let cell = &buf[(2, 1)];
-        assert_eq!(cell.fg, WHITE, "Session name should be white");
+        assert_eq!(cell.fg, WHITE, "Window name should be white");
     }
 
     #[test]
-    fn test_wrap_session_name_short() {
-        let wrapped = wrap_session_name("short", CONTENT_WIDTH);
+    fn test_wrap_window_name_short() {
+        let wrapped = wrap_window_name("short", CONTENT_WIDTH);
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].0, "short");
         assert!(!wrapped[0].1); // Not a continuation
@@ -707,18 +707,18 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_session_name_exact_width() {
+    fn test_wrap_window_name_exact_width() {
         let name = "a".repeat(CONTENT_WIDTH);
-        let wrapped = wrap_session_name(&name, CONTENT_WIDTH);
+        let wrapped = wrap_window_name(&name, CONTENT_WIDTH);
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].0, name);
     }
 
     #[test]
-    fn test_wrap_session_name_long() {
+    fn test_wrap_window_name_long() {
         // Create a name that's longer than CONTENT_WIDTH
         let name = "a".repeat(CONTENT_WIDTH + 10);
-        let wrapped = wrap_session_name(&name, CONTENT_WIDTH);
+        let wrapped = wrap_window_name(&name, CONTENT_WIDTH);
 
         assert!(wrapped.len() > 1);
         // First line is not a continuation
@@ -732,10 +732,10 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_session_name_continuation_indicators() {
+    fn test_wrap_window_name_continuation_indicators() {
         // Verify continuation lines have correct markers
         let name = "a".repeat(CONTENT_WIDTH * 3);
-        let wrapped = wrap_session_name(&name, CONTENT_WIDTH);
+        let wrapped = wrap_window_name(&name, CONTENT_WIDTH);
 
         // Should have 3+ lines
         assert!(wrapped.len() >= 3);
@@ -751,35 +751,35 @@ mod tests {
     }
 
     #[test]
-    fn test_session_row_count() {
-        assert_eq!(session_row_count("short", CONTENT_WIDTH), 1);
+    fn test_window_row_count() {
+        assert_eq!(window_row_count("short", CONTENT_WIDTH), 1);
         assert_eq!(
-            session_row_count(&"a".repeat(CONTENT_WIDTH), CONTENT_WIDTH),
+            window_row_count(&"a".repeat(CONTENT_WIDTH), CONTENT_WIDTH),
             1
         );
         assert_eq!(
-            session_row_count(&"a".repeat(CONTENT_WIDTH + 1), CONTENT_WIDTH),
+            window_row_count(&"a".repeat(CONTENT_WIDTH + 1), CONTENT_WIDTH),
             2
         );
     }
 
     #[test]
     fn test_truncation_indicator_shown_when_overflow() {
-        // Create more sessions than can fit
-        let sessions: Vec<Session> = (0..50)
-            .map(|i| Session::new(format!("session{}", i)))
+        // Create more windows than can fit
+        let windows: Vec<Window> = (0..50)
+            .map(|i| Window::new(format!("window{}", i)))
             .collect();
-        let state = AppState::with_sessions(sessions);
+        let state = AppState::with_windows(windows);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 10);
         assert!(buffer_contains(&buf, "..."));
     }
 
     #[test]
     fn test_truncation_indicator_is_dark_grey() {
-        let sessions: Vec<Session> = (0..50)
-            .map(|i| Session::new(format!("session{}", i)))
+        let windows: Vec<Window> = (0..50)
+            .map(|i| Window::new(format!("window{}", i)))
             .collect();
-        let state = AppState::with_sessions(sessions);
+        let state = AppState::with_windows(windows);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 10);
 
         // Find the "..." indicator
@@ -803,9 +803,9 @@ mod tests {
 
     #[test]
     fn test_continuation_indicators_are_dark_grey() {
-        // Create a session with a very long name
+        // Create a window with a very long name
         let long_name = "a".repeat(CONTENT_WIDTH * 2);
-        let state = AppState::with_sessions(vec![Session::new(long_name)]);
+        let state = AppState::with_windows(vec![Window::new(long_name)]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
         // Find the continuation indicator (│ or └)
@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_selection_highlight_fills_row() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.selected_index = 0;
         state.focus = Focus::Sidebar;
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
@@ -831,7 +831,7 @@ mod tests {
         // Check that the row from first letter to right before the right border has dark purple background
         // Per spec: highlight starts at first letter and stops right before the right sidebar border
         // Layout: x=0 border, x=1 padding, x=2-25 content, x=26 padding, x=27 border
-        // The session starts on row 1 because the workspace name is in the frame.
+        // The window starts on row 1 because the session name is in the frame.
         let y = 1;
         // Content starts at x=2 (after border + padding) and goes through x=25 (CONTENT_WIDTH chars)
         // That's 2..26 exclusive, which covers x=2 through x=25
@@ -859,10 +859,10 @@ mod tests {
 
     #[test]
     fn test_get_sidebar_cursor_position_drafting() {
-        use crate::state::{DraftingState, SessionType};
+        use crate::state::{DraftingState, WindowType};
 
         let mut state = AppState::default();
-        let mut draft = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut draft = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         draft.insert_char('a');
         draft.insert_char('b');
         draft.insert_char('c');
@@ -879,12 +879,12 @@ mod tests {
 
     #[test]
     fn test_draft_wraps_while_typing() {
-        use crate::state::{DraftingState, SessionType};
+        use crate::state::{DraftingState, WindowType};
 
         // Type a name longer than CONTENT_WIDTH (24 chars)
         let long_name = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
         let mut state = AppState::default();
-        let mut draft = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut draft = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         for c in long_name.chars() {
             draft.insert_char(c);
         }
@@ -913,12 +913,12 @@ mod tests {
 
     #[test]
     fn test_draft_cursor_wraps_correctly() {
-        use crate::state::{DraftingState, SessionType};
+        use crate::state::{DraftingState, WindowType};
 
         // Type exactly CONTENT_WIDTH + 1 chars so name wraps
         let name: String = "a".repeat(CONTENT_WIDTH + 1); // 25 chars
         let mut state = AppState::default();
-        let mut draft = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut draft = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         for c in name.chars() {
             draft.insert_char(c);
         }
@@ -947,12 +947,12 @@ mod tests {
 
     #[test]
     fn test_rename_wraps_while_typing() {
-        use crate::state::{RenamingState, Session};
+        use crate::state::{RenamingState, Window};
 
-        // Session with short name, rename it with a long name
-        let mut state = AppState::with_sessions(vec![Session::new("short")]);
+        // Window with short name, rename it with a long name
+        let mut state = AppState::with_windows(vec![Window::new("short")]);
         state.selected_index = 0;
-        let long_name = "averylongsessionnamethatiswrapped"; // >24 chars
+        let long_name = "averylongwindownamethatiswrapped"; // >24 chars
         let mut rename = RenamingState::new(0, long_name, Focus::Sidebar);
         // Move cursor to end
         for _ in 0..long_name.len() {
@@ -975,7 +975,7 @@ mod tests {
 
     #[test]
     fn test_cursor_line_col_no_wrap() {
-        let wrapped = wrap_session_name("abc", CONTENT_WIDTH);
+        let wrapped = wrap_window_name("abc", CONTENT_WIDTH);
         assert_eq!(cursor_line_col(&wrapped, 0), (0, 0));
         assert_eq!(cursor_line_col(&wrapped, 2), (0, 2));
         assert_eq!(cursor_line_col(&wrapped, 3), (0, 3));
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn test_cursor_line_col_with_wrap() {
         let name = "a".repeat(CONTENT_WIDTH + 5); // 29 chars
-        let wrapped = wrap_session_name(&name, CONTENT_WIDTH);
+        let wrapped = wrap_window_name(&name, CONTENT_WIDTH);
         // First 24 chars on line 0, next 5 (23-max continuation) on line 1
         assert_eq!(cursor_line_col(&wrapped, 0), (0, 0));
         assert_eq!(cursor_line_col(&wrapped, 23), (0, 23));
@@ -1005,22 +1005,22 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_session_name_wrapping() {
-        let wrapped = wrap_session_name("", CONTENT_WIDTH);
+    fn test_empty_window_name_wrapping() {
+        let wrapped = wrap_window_name("", CONTENT_WIDTH);
         assert_eq!(wrapped.len(), 1);
         assert_eq!(wrapped[0].0, "");
     }
 
     #[test]
-    fn test_no_sessions_shows_welcome() {
+    fn test_no_windows_shows_welcome() {
         let state = AppState::default();
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         assert!(buffer_contains(&buf, "Welcome"));
     }
 
     #[test]
-    fn test_sessions_hides_welcome() {
-        let state = AppState::with_sessions(vec![Session::new("test")]);
+    fn test_windows_hides_welcome() {
+        let state = AppState::with_windows(vec![Window::new("test")]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
         assert!(!buffer_contains(&buf, "Welcome"));
     }
@@ -1028,11 +1028,11 @@ mod tests {
     #[test]
     fn test_sidebar_has_padding_between_content_and_border() {
         // Per spec: The sidebar should have one char of padding on the left and right
-        // between the session names and the sidebar border.
-        let state = AppState::with_sessions(vec![Session::new("test")]);
+        // between the window names and the sidebar border.
+        let state = AppState::with_windows(vec![Window::new("test")]);
         let buf = render_sidebar_to_buffer(&state, SIDEBAR_WIDTH, 24);
 
-        // Session names begin on the first row inside the titled frame.
+        // Window names begin on the first row inside the titled frame.
         let y = 1;
 
         // x=0 is the left border
@@ -1051,12 +1051,12 @@ mod tests {
             padding_cell.symbol()
         );
 
-        // x=2 should be where the session name starts (the 't' of 'test')
+        // x=2 should be where the window name starts (the 't' of 'test')
         let content_cell = &buf[(2, y)];
         assert_eq!(
             content_cell.symbol(),
             "t",
-            "Position 2 should be first letter of session name"
+            "Position 2 should be first letter of window name"
         );
     }
 }

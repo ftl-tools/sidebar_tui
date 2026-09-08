@@ -21,16 +21,16 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use sidebar_tui::colors;
-use sidebar_tui::daemon::{
-    self, ClientMessage, DaemonClient, DaemonResponse, IpcStream, MessageReader, decode_message,
+use sidebar_tui::server::{
+    self, ClientMessage, ServerClient, ServerResponse, IpcStream, MessageReader, decode_message,
     encode_message, ensure_runtime_dir, get_socket_path,
 };
 use sidebar_tui::hint_bar::hint_bar_for_state;
 use sidebar_tui::input::{encode_mouse_scroll, key_to_bytes};
 use sidebar_tui::sidebar::{Sidebar, get_sidebar_cursor_position};
 use sidebar_tui::state::{
-    AppMode, AppState, EventResult, Focus, Session, SessionType, WorkspaceOverlayMode,
-    WorkspaceOverlayState,
+    AppMode, AppState, EventResult, Focus, Window, WindowType, SessionOverlayMode,
+    SessionOverlayState,
 };
 use sidebar_tui::terminal::Terminal;
 use sidebar_tui::updater;
@@ -38,19 +38,20 @@ use sidebar_tui::updater;
 /// Version from Cargo.toml
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Sidebar TUI - A terminal session manager
+/// Sidebar TUI - A tmux-style session and window manager
 #[derive(Parser, Debug)]
 #[command(name = "sb")]
 #[command(version = VERSION)]
-#[command(about = "A terminal session manager with session persistence", long_about = None)]
+#[command(about = "A tmux-style session and window manager (currently using Sidebar's own PTY server)", long_about = None)]
 #[command(disable_version_flag = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Session name to attach to (if not specified, attaches to most recent or shows welcome state)
-    #[arg(short, long)]
-    session: Option<String>,
+    /// Window name to attach to (if not specified, attaches to most recent or shows welcome state)
+    // The old --session flag targeted a window; retain it only as a compatibility alias.
+    #[arg(short = 'w', short_alias = 's', long, alias = "session")]
+    window: Option<String>,
 
     /// Print version information
     #[arg(short = 'v', short_alias = 'V', long = "version", action = clap::ArgAction::Version)]
@@ -59,61 +60,66 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// List all active sessions
+    /// List all active windows across sessions
+    #[command(name = "list-windows", alias = "list")]
     List,
-    /// Kill a session
+    /// Kill a window
+    #[command(name = "kill-window", alias = "kill")]
     Kill {
-        /// Name of the session to kill
-        session: String,
+        /// Name of the window to kill
+        window: String,
     },
-    /// Attach to a session (or create if it doesn't exist)
+    /// Attach to a window (or create if it doesn't exist)
     Attach {
-        /// Session name
+        /// Window name
         #[arg(default_value = "main")]
-        session: String,
+        window: String,
     },
-    /// Start the session daemon
-    Daemon,
-    /// List stale sessions (from before reboot/crash)
+    /// Start the Sidebar server
+    #[command(alias = "daemon")]
+    Server,
+    /// List stale windows (from before reboot/crash)
     Stale,
-    /// Restore a stale session
+    /// Restore a stale window
     Restore {
-        /// Name of the session to restore
-        session: String,
+        /// Name of the window to restore
+        window: String,
     },
-    /// Delete stale session metadata
+    /// Delete stale window metadata
     Forget {
-        /// Name of the session to forget
-        session: String,
+        /// Name of the window to forget
+        window: String,
     },
-    /// Shutdown the daemon and kill all sessions
+    /// Shutdown the server and kill all windows
     Shutdown,
-    /// Manage workspaces
-    Workspace {
+    /// Manage sessions (groups of windows)
+    #[command(alias = "workspace")]
+    Session {
         #[command(subcommand)]
-        action: WorkspaceAction,
+        action: SessionAction,
     },
     /// Check for updates and self-update the binary
     SelfUpdate,
 }
 
 #[derive(Subcommand, Debug)]
-enum WorkspaceAction {
-    /// List all workspaces
+enum SessionAction {
+    /// List all sessions
     List,
-    /// Create a new workspace
+    /// Create a new session
     Create {
-        /// Workspace name
+        /// Session name
         name: String,
     },
-    /// Delete a workspace
-    Delete {
-        /// Workspace name
+    /// Kill a session and all its windows
+    #[command(name = "kill", alias = "delete")]
+    Kill {
+        /// Session name
         name: String,
     },
-    /// Switch active workspace
+    /// Switch active session
     Switch {
-        /// Workspace name
+        /// Session name
         name: String,
     },
 }
@@ -122,47 +128,47 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
 
-    // On normal startup (not a daemon or subcommand) check for updates in the background.
+    // On normal startup (not a server or subcommand) check for updates in the background.
     if cli.command.is_none() {
         updater::check_and_notify();
     }
 
     match cli.command {
         Some(Commands::List) => cmd_list(),
-        Some(Commands::Kill { session }) => cmd_kill(&session),
-        Some(Commands::Attach { session }) => cmd_attach(Some(&session)),
-        Some(Commands::Daemon) => cmd_daemon(),
+        Some(Commands::Kill { window }) => cmd_kill(&window),
+        Some(Commands::Attach { window }) => cmd_attach(Some(&window)),
+        Some(Commands::Server) => cmd_server(),
         Some(Commands::Stale) => cmd_stale(),
-        Some(Commands::Restore { session }) => cmd_restore(&session),
-        Some(Commands::Forget { session }) => cmd_forget(&session),
+        Some(Commands::Restore { window }) => cmd_restore(&window),
+        Some(Commands::Forget { window }) => cmd_forget(&window),
         Some(Commands::Shutdown) => cmd_shutdown(),
-        Some(Commands::Workspace { action }) => cmd_workspace(action),
+        Some(Commands::Session { action }) => cmd_session(action),
         Some(Commands::SelfUpdate) => updater::run_self_update(),
-        None => cmd_attach(cli.session.as_deref()),
+        None => cmd_attach(cli.window.as_deref()),
     }
 }
 
-/// List all active sessions.
+/// List all active windows.
 fn cmd_list() -> Result<()> {
-    let mut client = connect_to_daemon()?;
-    let sessions = client.list_sessions()?;
+    let mut client = connect_to_server()?;
+    let windows = client.list_windows()?;
 
-    if sessions.is_empty() {
-        println!("No active sessions");
+    if windows.is_empty() {
+        println!("No active windows");
     } else {
         println!(
             "{:<20} {:<10} {:>5}x{:<5}",
             "NAME", "STATUS", "ROWS", "COLS"
         );
-        for session in sessions {
-            let status = if session.is_attached {
+        for window in windows {
+            let status = if window.is_attached {
                 "attached"
             } else {
                 "detached"
             };
             println!(
                 "{:<20} {:<10} {:>5}x{:<5}",
-                session.name, status, session.rows, session.cols
+                window.name, status, window.rows, window.cols
             );
         }
     }
@@ -170,136 +176,136 @@ fn cmd_list() -> Result<()> {
     Ok(())
 }
 
-/// Kill a session.
-fn cmd_kill(session_name: &str) -> Result<()> {
-    let mut client = connect_to_daemon()?;
-    client.kill_session(session_name)?;
-    println!("Killed session '{}'", session_name);
+/// Kill a window.
+fn cmd_kill(window_name: &str) -> Result<()> {
+    let mut client = connect_to_server()?;
+    client.kill_window(window_name)?;
+    println!("Killed window '{}'", window_name);
     Ok(())
 }
 
-/// List stale sessions (from before reboot/crash).
+/// List stale windows (from before reboot/crash).
 fn cmd_stale() -> Result<()> {
-    let mut client = connect_to_daemon()?;
-    let sessions = client.list_stale_sessions()?;
+    let mut client = connect_to_server()?;
+    let windows = client.list_stale_windows()?;
 
-    if sessions.is_empty() {
-        println!("No stale sessions found");
+    if windows.is_empty() {
+        println!("No stale windows found");
     } else {
         println!(
             "{:<20} {:<30} {:>5}x{:<5}",
             "NAME", "WORKING DIR", "ROWS", "COLS"
         );
-        for session in sessions {
-            let cwd = session
+        for window in windows {
+            let cwd = window
                 .cwd
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "-".to_string());
             println!(
                 "{:<20} {:<30} {:>5}x{:<5}",
-                session.name, cwd, session.rows, session.cols
+                window.name, cwd, window.rows, window.cols
             );
         }
         println!(
-            "\nUse 'sb restore <name>' to restore a session, or 'sb forget <name>' to delete."
+            "\nUse 'sb restore <name>' to restore a window, or 'sb forget <name>' to delete."
         );
     }
 
     Ok(())
 }
 
-/// Restore a stale session.
-fn cmd_restore(session_name: &str) -> Result<()> {
-    let mut client = connect_to_daemon()?;
-    client.restore_stale_session(session_name)?;
+/// Restore a stale window.
+fn cmd_restore(window_name: &str) -> Result<()> {
+    let mut client = connect_to_server()?;
+    client.restore_stale_window(window_name)?;
     println!(
-        "Restored session '{}'. Use 'sb attach {}' to connect.",
-        session_name, session_name
+        "Restored window '{}'. Use 'sb attach {}' to connect.",
+        window_name, window_name
     );
     Ok(())
 }
 
-/// Delete stale session metadata.
-fn cmd_forget(session_name: &str) -> Result<()> {
-    let mut client = connect_to_daemon()?;
-    client.delete_stale_session(session_name)?;
-    println!("Deleted metadata for session '{}'", session_name);
+/// Delete stale window metadata.
+fn cmd_forget(window_name: &str) -> Result<()> {
+    let mut client = connect_to_server()?;
+    client.delete_stale_window(window_name)?;
+    println!("Deleted metadata for window '{}'", window_name);
     Ok(())
 }
 
-/// Shutdown the daemon and kill all sessions.
+/// Shutdown the server and kill all windows.
 fn cmd_shutdown() -> Result<()> {
-    match connect_to_daemon() {
+    match connect_to_server() {
         Ok(mut client) => {
             client.shutdown()?;
-            println!("Daemon shutdown complete. All sessions terminated.");
+            println!("Server shutdown complete. All windows terminated.");
             Ok(())
         }
         Err(_) => {
-            println!("No daemon running.");
+            println!("No server running.");
             Ok(())
         }
     }
 }
 
-/// Manage workspaces via CLI.
-fn cmd_workspace(action: WorkspaceAction) -> Result<()> {
-    let mut client = connect_to_daemon()?;
+/// Manage sessions via CLI.
+fn cmd_session(action: SessionAction) -> Result<()> {
+    let mut client = connect_to_server()?;
     match action {
-        WorkspaceAction::List => {
-            let (workspaces, active) = client.list_workspaces()?;
-            if workspaces.is_empty() {
-                println!("No workspaces found.");
+        SessionAction::List => {
+            let (sessions, active) = client.list_sessions()?;
+            if sessions.is_empty() {
+                println!("No sessions found.");
             } else {
-                for ws in &workspaces {
-                    let marker = if ws.name == active { "* " } else { "  " };
-                    println!("{}{}", marker, ws.name);
+                for session in &sessions {
+                    let marker = if session.name == active { "* " } else { "  " };
+                    println!("{}{}", marker, session.name);
                 }
             }
         }
-        WorkspaceAction::Create { name } => {
-            client.create_workspace(&name)?;
-            println!("Created workspace '{}'", name);
+        SessionAction::Create { name } => {
+            client.create_session(&name)?;
+            println!("Created session '{}'", name);
         }
-        WorkspaceAction::Delete { name } => {
-            client.delete_workspace(&name)?;
-            println!("Deleted workspace '{}'", name);
+        SessionAction::Kill { name } => {
+            client.kill_session(&name)?;
+            println!("Killed session '{}'", name);
         }
-        WorkspaceAction::Switch { name } => {
-            client.switch_workspace(&name)?;
-            println!("Switched to workspace '{}'", name);
+        SessionAction::Switch { name } => {
+            client.switch_session(&name)?;
+            println!("Switched to session '{}'", name);
         }
     }
     Ok(())
 }
 
-/// Start the daemon process (runs in foreground).
-fn cmd_daemon() -> Result<()> {
-    let daemon = daemon::Daemon::new()?;
-    println!("Starting daemon at {:?}", daemon.socket_path());
-    daemon.run()
+/// Start the server process (runs in foreground).
+fn cmd_server() -> Result<()> {
+    let server = server::Server::new()?;
+    println!("Starting server at {:?}", server.socket_path());
+    server.run()
 }
 
-/// Attach to a session (or show welcome state if no sessions exist).
-/// If session_name is None, will attach to the first existing session or show welcome state.
-/// If session_name is Some, will attach to that session (creating if needed).
-fn cmd_attach(session_name: Option<&str>) -> Result<()> {
-    // Ensure daemon is running
-    ensure_daemon_running()?;
+/// Attach to a window (or show welcome state if no windows exist).
+/// If window_name is None, will attach to the first existing window or show welcome state.
+/// If window_name is Some, will attach to that window (creating if needed).
+fn cmd_attach(window_name: Option<&str>) -> Result<()> {
+    // Ensure server is running
+    ensure_server_running()?;
 
-    // Connect to daemon: on Unix use Unix socket, on Windows use TCP via lockfile port.
+    // Connect to server: on Unix use Unix socket, on Windows use TCP via lockfile port.
     let socket_path = get_socket_path();
     #[cfg(unix)]
     let mut stream: IpcStream =
-        UnixStream::connect(&socket_path).context("Failed to connect to daemon")?;
+        UnixStream::connect(&socket_path).context("Failed to connect to server")?;
     #[cfg(windows)]
     let mut stream: IpcStream = {
         let port = std::fs::read_to_string(&socket_path)
             .ok()
             .and_then(|s| s.trim().parse::<u16>().ok())
-            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to read daemon port from lockfile"))?;
+            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to read server port from lockfile"))?;
         TcpStream::connect(format!("127.0.0.1:{}", port))
-            .context("Failed to connect to daemon via TCP")?
+            .context("Failed to connect to server via TCP")?
     };
 
     // Set read timeout for non-blocking reads
@@ -313,7 +319,7 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     let mut ratatui_term = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture).context("Failed to enable mouse capture")?;
 
-    let result = run_attached(&mut ratatui_term, &mut stream, session_name);
+    let result = run_attached(&mut ratatui_term, &mut stream, window_name);
 
     // Ensure mouse capture is disabled before restoring terminal
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
@@ -321,44 +327,44 @@ fn cmd_attach(session_name: Option<&str>) -> Result<()> {
     result
 }
 
-/// Connect to the daemon, starting it if necessary.
-fn connect_to_daemon() -> Result<DaemonClient> {
-    ensure_daemon_running()?;
-    DaemonClient::connect()
+/// Connect to the server, starting it if necessary.
+fn connect_to_server() -> Result<ServerClient> {
+    ensure_server_running()?;
+    ServerClient::connect()
 }
 
-/// Ensure the daemon is running, starting it if necessary.
-fn ensure_daemon_running() -> Result<()> {
+/// Ensure the server is running, starting it if necessary.
+fn ensure_server_running() -> Result<()> {
     ensure_runtime_dir()?;
     let socket_path = get_socket_path();
 
-    // Try to connect to see if daemon is already running
-    if daemon_is_reachable(&socket_path) {
+    // Try to connect to see if server is already running
+    if server_is_reachable(&socket_path) {
         return Ok(());
     }
 
-    // Start daemon in background
-    start_daemon_background()?;
+    // Start server in background
+    start_server_background()?;
 
-    // Wait for daemon to be ready
+    // Wait for server to be ready
     for _ in 0..50 {
-        if daemon_is_reachable(&socket_path) {
+        if server_is_reachable(&socket_path) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
 
-    bail!("Daemon failed to start within timeout")
+    bail!("Server failed to start within timeout")
 }
 
-/// Check if the daemon is reachable at the given socket/lockfile path.
+/// Check if the server is reachable at the given socket/lockfile path.
 #[cfg(unix)]
-fn daemon_is_reachable(socket_path: &std::path::Path) -> bool {
+fn server_is_reachable(socket_path: &std::path::Path) -> bool {
     UnixStream::connect(socket_path).is_ok()
 }
 
 #[cfg(windows)]
-fn daemon_is_reachable(socket_path: &std::path::Path) -> bool {
+fn server_is_reachable(socket_path: &std::path::Path) -> bool {
     use std::fs;
     let port = fs::read_to_string(socket_path)
         .ok()
@@ -369,19 +375,19 @@ fn daemon_is_reachable(socket_path: &std::path::Path) -> bool {
     }
 }
 
-/// Start the daemon as a background process.
-fn start_daemon_background() -> Result<()> {
+/// Start the server as a background process.
+fn start_server_background() -> Result<()> {
     // Get path to current executable
     let exe = env::current_exe().context("Failed to get current executable path")?;
 
-    // Fork daemon process
+    // Fork server process
     Command::new(exe)
-        .arg("daemon")
+        .arg("server")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("Failed to spawn daemon process")?;
+        .context("Failed to spawn server process")?;
 
     Ok(())
 }
@@ -392,16 +398,16 @@ const SCROLL_THROTTLE_MS: u128 = 30;
 /// Time threshold for "fast" scrolling (events arriving faster than this = fast scroll)
 const SCROLL_FAST_THRESHOLD_MS: u128 = 15;
 
-/// Application state for daemon-connected mode.
-struct DaemonApp {
+/// Application state for server-connected mode.
+struct ServerApp {
     /// Terminal emulator for parsing PTY output
     term_emulator: Terminal,
-    /// Current session name
-    session_name: String,
-    /// Application UI state (focus, mode, sessions list)
+    /// Current window name
+    window_name: String,
+    /// Application UI state (focus, mode, windows list)
     app_state: AppState,
-    /// Per-session terminal scroll offsets (saved when switching away, restored when switching back)
-    session_scroll_offsets: HashMap<String, usize>,
+    /// Per-window terminal scroll offsets (saved when switching away, restored when switching back)
+    window_scroll_offsets: HashMap<String, usize>,
     /// Last time a scroll action was performed (for throttling)
     last_scroll_time: std::time::Instant,
     /// Last time any scroll event was received (for velocity calculation)
@@ -412,18 +418,18 @@ struct DaemonApp {
     timed_message: Option<(String, std::time::Instant)>,
 }
 
-impl DaemonApp {
-    fn new(rows: u16, cols: u16, session_name: &str, sessions: Vec<Session>) -> Self {
-        let mut app_state = AppState::with_sessions(sessions);
-        // If we have sessions, focus on terminal
-        if !app_state.sessions.is_empty() {
+impl ServerApp {
+    fn new(rows: u16, cols: u16, window_name: &str, windows: Vec<Window>) -> Self {
+        let mut app_state = AppState::with_windows(windows);
+        // If we have windows, focus on terminal
+        if !app_state.windows.is_empty() {
             app_state.focus = Focus::Terminal;
         }
         Self {
             term_emulator: Terminal::new(rows, cols),
-            session_name: session_name.to_string(),
+            window_name: window_name.to_string(),
             app_state,
-            session_scroll_offsets: HashMap::new(),
+            window_scroll_offsets: HashMap::new(),
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
@@ -431,14 +437,14 @@ impl DaemonApp {
         }
     }
 
-    /// Create app in welcome state (no sessions, sidebar focused).
+    /// Create app in welcome state (no windows, sidebar focused).
     fn new_welcome_state(rows: u16, cols: u16) -> Self {
         let app_state = AppState::default();
         Self {
             term_emulator: Terminal::new(rows, cols),
-            session_name: String::new(),
+            window_name: String::new(),
             app_state,
-            session_scroll_offsets: HashMap::new(),
+            window_scroll_offsets: HashMap::new(),
             last_scroll_time: std::time::Instant::now(),
             last_scroll_event_time: std::time::Instant::now(),
             scroll_event_count: 0,
@@ -461,7 +467,7 @@ impl DaemonApp {
         }
     }
 
-    /// Process data received from the daemon.
+    /// Process data received from the server.
     fn process_output(&mut self, data: &[u8]) {
         self.term_emulator.process(data);
     }
@@ -472,42 +478,42 @@ impl DaemonApp {
     }
 }
 
-/// Helper to send a message to the daemon and read the response.
-fn send_daemon_message(stream: &mut IpcStream, msg: ClientMessage) -> Result<DaemonResponse> {
+/// Helper to send a message to the server and read the response.
+fn send_server_message(stream: &mut IpcStream, msg: ClientMessage) -> Result<ServerResponse> {
     let encoded = encode_message(&msg)?;
     stream.write_all(&encoded)?;
     stream.flush()?;
     // Use a longer timeout for synchronous operations
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let response: DaemonResponse =
-        decode_message(stream).context("Failed to read daemon response")?;
+    let response: ServerResponse =
+        decode_message(stream).context("Failed to read server response")?;
     Ok(response)
 }
 
 /// Helper to send a sync message and wait for the response, skipping any in-flight
 /// async Output messages that arrived before the response.
 ///
-/// This solves a race condition where the daemon sends Output messages from the old
-/// session while the client is waiting for an Attached/Killed/etc. response. Without
-/// this, `send_daemon_message` would return an Output message instead of the expected
-/// response, causing session switches to silently fail and session A content to bleed
-/// into session B's terminal.
-fn send_daemon_message_sync(
+/// This solves a race condition where the server sends Output messages from the old
+/// window while the client is waiting for an Attached/Killed/etc. response. Without
+/// this, `send_server_message` would return an Output message instead of the expected
+/// response, causing window switches to silently fail and window A content to bleed
+/// into window B's terminal.
+fn send_server_message_sync(
     stream: &mut IpcStream,
     msg: ClientMessage,
-    app: &mut DaemonApp,
-) -> Result<DaemonResponse> {
+    app: &mut ServerApp,
+) -> Result<ServerResponse> {
     let encoded = encode_message(&msg)?;
     stream.write_all(&encoded)?;
     stream.flush()?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     loop {
-        let response: DaemonResponse =
-            decode_message(stream).context("Failed to read daemon response")?;
+        let response: ServerResponse =
+            decode_message(stream).context("Failed to read server response")?;
         match response {
-            // In-flight output from the old session: apply to the current terminal
-            // (still session A at this point) and keep waiting for the real response.
-            DaemonResponse::Output { data } => {
+            // In-flight output from the old window: apply to the current terminal
+            // (still window A at this point) and keep waiting for the real response.
+            ServerResponse::Output { data } => {
                 if !data.is_empty() {
                     app.process_output(&data);
                 }
@@ -521,19 +527,19 @@ fn send_daemon_message_sync(
 ///
 /// This function processes any buffered messages and reads any in-flight messages
 /// from the socket with a short timeout, preventing message interleaving when
-/// sync operations (like CreateSession, DeleteSession) are called while async
+/// sync operations (like CreateWindow, KillWindow) are called while async
 /// messages (like Preview, Output) may be pending.
 ///
 /// Returns Ok(()) on success, or an error if reading fails.
 fn drain_async_messages(
     msg_reader: &mut MessageReader,
     stream: &mut IpcStream,
-    app: &mut DaemonApp,
+    app: &mut ServerApp,
 ) -> Result<()> {
     use std::io;
 
     // 1. Process any complete messages already buffered
-    while let Some(response) = msg_reader.try_parse_buffered::<DaemonResponse>()? {
+    while let Some(response) = msg_reader.try_parse_buffered::<ServerResponse>()? {
         handle_drained_response(response, app);
     }
 
@@ -541,7 +547,7 @@ fn drain_async_messages(
     // This catches messages in flight but not yet buffered
     stream.set_read_timeout(Some(Duration::from_millis(50)))?;
     loop {
-        match msg_reader.try_read::<DaemonResponse>(stream) {
+        match msg_reader.try_read::<ServerResponse>(stream) {
             Ok(Some(response)) => {
                 handle_drained_response(response, app);
             }
@@ -572,19 +578,19 @@ fn drain_async_messages(
 }
 
 /// Handle a response that was drained before a sync operation.
-fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
+fn handle_drained_response(response: ServerResponse, app: &mut ServerApp) {
     match response {
-        DaemonResponse::Output { data } => {
+        ServerResponse::Output { data } => {
             // Process terminal output
             if !data.is_empty() {
                 app.process_output(&data);
             }
         }
-        DaemonResponse::Previewed {
+        ServerResponse::Previewed {
             terminal_state: Some(state_bytes),
             ..
         } => {
-            // Update preview - may be stale if we're about to switch sessions
+            // Update preview - may be stale if we're about to switch windows
             app.process_output(&state_bytes);
         }
         // Ignore Previewed with None terminal_state and other responses during drain -
@@ -597,9 +603,9 @@ fn handle_drained_response(response: DaemonResponse, app: &mut DaemonApp) {
 enum MainLoopDrainResult {
     /// Continue normal processing
     Continue,
-    /// Daemon is shutting down, break main loop
+    /// Server is shutting down, break main loop
     ShuttingDown,
-    /// Daemon sent an error message
+    /// Server sent an error message
     Error(String),
     /// Connection error (EOF, etc)
     ConnectionError(std::io::Error),
@@ -616,7 +622,7 @@ enum MainLoopDrainResult {
 fn drain_main_loop_messages(
     msg_reader: &mut MessageReader,
     stream: &mut IpcStream,
-    app: &mut DaemonApp,
+    app: &mut ServerApp,
     term_rows: u16,
     term_cols: u16,
 ) -> MainLoopDrainResult {
@@ -624,7 +630,7 @@ fn drain_main_loop_messages(
 
     // Read once from socket to get available data into buffer
     // We use a temporary read to avoid consuming a message, then process all buffered
-    let read_result = msg_reader.try_read::<DaemonResponse>(stream);
+    let read_result = msg_reader.try_read::<ServerResponse>(stream);
 
     // Handle the initial read result
     let first_response = match read_result {
@@ -646,7 +652,7 @@ fn drain_main_loop_messages(
     // Now drain any additional complete messages from the buffer without reading more
     // This is the key optimization: we may have received multiple messages in one read
     loop {
-        match msg_reader.try_parse_buffered::<DaemonResponse>() {
+        match msg_reader.try_parse_buffered::<ServerResponse>() {
             Ok(Some(response)) => {
                 match handle_main_loop_response(response, app, term_rows, term_cols) {
                     MainLoopDrainResult::Continue => {}
@@ -663,21 +669,21 @@ fn drain_main_loop_messages(
 
 /// Handle a single response in the main loop, returning the appropriate action.
 fn handle_main_loop_response(
-    response: DaemonResponse,
-    app: &mut DaemonApp,
+    response: ServerResponse,
+    app: &mut ServerApp,
     term_rows: u16,
     term_cols: u16,
 ) -> MainLoopDrainResult {
     match response {
-        DaemonResponse::Output { data } => {
+        ServerResponse::Output { data } => {
             if !data.is_empty() {
                 app.process_output(&data);
             }
             MainLoopDrainResult::Continue
         }
-        DaemonResponse::ShuttingDown => MainLoopDrainResult::ShuttingDown,
-        DaemonResponse::Error { message } => MainLoopDrainResult::Error(message),
-        DaemonResponse::Previewed { terminal_state, .. } => {
+        ServerResponse::ShuttingDown => MainLoopDrainResult::ShuttingDown,
+        ServerResponse::Error { message } => MainLoopDrainResult::Error(message),
+        ServerResponse::Previewed { terminal_state, .. } => {
             // Update terminal emulator with preview content
             app.term_emulator = Terminal::new(term_rows, term_cols);
             if let Some(state_bytes) = terminal_state {
@@ -689,13 +695,13 @@ fn handle_main_loop_response(
     }
 }
 
-/// Run the TUI, optionally attaching to a session.
-/// If requested_session is None, will attach to first existing session or show welcome state.
-/// If requested_session is Some, will attach to that session (creating if needed).
+/// Run the TUI, optionally attaching to a window.
+/// If requested_window is None, will attach to first existing window or show welcome state.
+/// If requested_window is Some, will attach to that window (creating if needed).
 fn run_attached(
     ratatui_term: &mut DefaultTerminal,
     stream: &mut IpcStream,
-    requested_session: Option<&str>,
+    requested_window: Option<&str>,
 ) -> Result<()> {
     // Get initial terminal size; only the sidebar consumes terminal columns.
     let size = ratatui_term.size()?;
@@ -706,67 +712,67 @@ fn run_attached(
     // Get current working directory
     let cwd = env::current_dir().ok();
 
-    // Load workspace info from daemon to get the active workspace name
-    let workspace_response = send_daemon_message(stream, ClientMessage::ListWorkspaces)?;
-    let (workspaces_list, active_workspace_name) = match workspace_response {
-        DaemonResponse::Workspaces {
-            workspaces,
-            active_workspace,
-        } => (workspaces, active_workspace),
-        DaemonResponse::Error { message } => {
-            bail!("Failed to list workspaces: {}", message);
+    // Load session info from server to get the active session name
+    let session_response = send_server_message(stream, ClientMessage::ListSessions)?;
+    let (sessions_list, active_session_name) = match session_response {
+        ServerResponse::Sessions {
+            sessions,
+            active_session,
+        } => (sessions, active_session),
+        ServerResponse::Error { message } => {
+            bail!("Failed to list sessions: {}", message);
         }
         other => {
-            bail!("Unexpected workspace response: {:?}", other);
+            bail!("Unexpected session response: {:?}", other);
         }
     };
-    let workspace_names: Vec<String> = workspaces_list
+    let session_names: Vec<String> = sessions_list
         .iter()
-        .map(|workspace| workspace.name.clone())
+        .map(|session| session.name.clone())
         .collect();
 
-    // Load session list from daemon
-    let session_list_response = send_daemon_message(stream, ClientMessage::List)?;
-    let mut daemon_sessions = match session_list_response {
-        DaemonResponse::Sessions { names } => names,
-        DaemonResponse::Error { message } => {
-            bail!("Failed to list sessions: {}", message);
+    // Load window list from server
+    let window_list_response = send_server_message(stream, ClientMessage::List)?;
+    let mut server_windows = match window_list_response {
+        ServerResponse::Windows { names } => names,
+        ServerResponse::Error { message } => {
+            bail!("Failed to list windows: {}", message);
         }
         other => {
             bail!("Unexpected response: {:?}", other);
         }
     };
 
-    // If no active sessions exist, check for stale sessions and auto-restore them
-    if daemon_sessions.is_empty() {
-        let stale_response = send_daemon_message(stream, ClientMessage::ListStale)?;
-        let stale_sessions = match stale_response {
-            DaemonResponse::StaleSessions { sessions } => sessions,
-            DaemonResponse::Error { message } => {
-                eprintln!("Warning: Failed to list stale sessions: {}", message);
+    // If no active windows exist, check for stale windows and auto-restore them
+    if server_windows.is_empty() {
+        let stale_response = send_server_message(stream, ClientMessage::ListStale)?;
+        let stale_windows = match stale_response {
+            ServerResponse::StaleWindows { windows } => windows,
+            ServerResponse::Error { message } => {
+                eprintln!("Warning: Failed to list stale windows: {}", message);
                 Vec::new()
             }
             _ => Vec::new(),
         };
 
-        // Auto-restore all stale sessions, sorted by last_active (most recent first)
-        let mut sorted_stale: Vec<_> = stale_sessions.into_iter().collect();
+        // Auto-restore all stale windows, sorted by last_active (most recent first)
+        let mut sorted_stale: Vec<_> = stale_windows.into_iter().collect();
         sorted_stale.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
         for stale in &sorted_stale {
-            let restore_response = send_daemon_message(
+            let restore_response = send_server_message(
                 stream,
                 ClientMessage::RestoreStale {
-                    session_name: stale.name.clone(),
+                    window_name: stale.name.clone(),
                 },
             )?;
             match restore_response {
-                DaemonResponse::Restored { .. } => {
+                ServerResponse::Restored { .. } => {
                     // Successfully restored
                 }
-                DaemonResponse::Error { message } => {
+                ServerResponse::Error { message } => {
                     eprintln!(
-                        "Warning: Failed to restore session '{}': {}",
+                        "Warning: Failed to restore window '{}': {}",
                         stale.name, message
                     );
                 }
@@ -774,49 +780,49 @@ fn run_attached(
             }
         }
 
-        // Re-fetch the session list after restoring
+        // Re-fetch the window list after restoring
         if !sorted_stale.is_empty() {
-            let refreshed_response = send_daemon_message(stream, ClientMessage::List)?;
-            daemon_sessions = match refreshed_response {
-                DaemonResponse::Sessions { names } => names,
+            let refreshed_response = send_server_message(stream, ClientMessage::List)?;
+            server_windows = match refreshed_response {
+                ServerResponse::Windows { names } => names,
                 _ => Vec::new(),
             };
         }
     }
 
-    // Convert daemon sessions to AppState sessions, filtered to active workspace
-    let sessions: Vec<Session> = daemon_sessions
+    // Convert server windows to AppState windows, filtered to active session
+    let windows: Vec<Window> = server_windows
         .iter()
-        .filter(|info| info.workspace_name == active_workspace_name)
+        .filter(|info| info.session_name == active_session_name)
         .map(|info| {
-            let mut session = Session::new(&info.name);
-            session.is_attached = info.is_attached;
-            session
+            let mut window = Window::new(&info.name);
+            window.is_attached = info.is_attached;
+            window
         })
         .collect();
 
-    // Determine which session to attach to (if any)
-    // - If explicit session requested, attach to it (creating if needed)
-    // - If no session requested but sessions exist, attach to first one
-    // - If no session requested and no sessions exist, start in welcome state
-    let session_to_attach: Option<String> = match requested_session {
+    // Determine which window to attach to (if any)
+    // - If explicit window requested, attach to it (creating if needed)
+    // - If no window requested but windows exist, attach to first one
+    // - If no window requested and no windows exist, start in welcome state
+    let window_to_attach: Option<String> = match requested_window {
         Some(name) => Some(name.to_string()),
         None => {
-            if sessions.is_empty() {
+            if windows.is_empty() {
                 None // Welcome state
             } else {
-                Some(sessions[0].name.clone()) // Attach to first existing session
+                Some(windows[0].name.clone()) // Attach to first existing window
             }
         }
     };
 
-    // Only attach if we have a session to attach to
-    let mut app = if let Some(session_name) = session_to_attach {
+    // Only attach if we have a window to attach to
+    let mut app = if let Some(window_name) = window_to_attach {
         // Send attach message
-        let attach_response = send_daemon_message(
+        let attach_response = send_server_message(
             stream,
             ClientMessage::Attach {
-                session_name: session_name.clone(),
+                window_name: window_name.clone(),
                 rows: term_rows,
                 cols: term_cols,
                 cwd: cwd.clone(),
@@ -824,12 +830,12 @@ fn run_attached(
         )?;
 
         let terminal_state = match attach_response {
-            DaemonResponse::Attached {
-                session_name: _,
+            ServerResponse::Attached {
+                window_name: _,
                 is_new,
                 terminal_state,
             } => (is_new, terminal_state),
-            DaemonResponse::Error { message } => {
+            ServerResponse::Error { message } => {
                 bail!("Failed to attach: {}", message);
             }
             other => {
@@ -837,24 +843,24 @@ fn run_attached(
             }
         };
 
-        // Build initial session list for AppState
-        let mut initial_sessions = sessions;
-        // If this was a new session, add it to the front of the list
+        // Build initial window list for AppState
+        let mut initial_windows = windows;
+        // If this was a new window, add it to the front of the list
         if terminal_state.0 {
-            initial_sessions.insert(0, Session::attached(&session_name));
+            initial_windows.insert(0, Window::attached(&window_name));
         } else {
-            // Mark the current session as attached
-            for s in &mut initial_sessions {
-                if s.name == session_name {
+            // Mark the current window as attached
+            for s in &mut initial_windows {
+                if s.name == window_name {
                     s.is_attached = true;
                 }
             }
         }
 
-        // Create app with session list
-        let mut app = DaemonApp::new(term_rows, term_cols, &session_name, initial_sessions);
-        app.app_state.workspace_name = active_workspace_name.clone();
-        app.app_state.workspaces = workspace_names.clone();
+        // Create app with window list
+        let mut app = ServerApp::new(term_rows, term_cols, &window_name, initial_windows);
+        app.app_state.session_name = active_session_name.clone();
+        app.app_state.sessions = session_names.clone();
 
         // Restore terminal state if reattaching
         if let Some(state_bytes) = terminal_state.1 {
@@ -863,10 +869,10 @@ fn run_attached(
 
         app
     } else {
-        // Welcome state - no sessions to attach to
-        let mut app = DaemonApp::new_welcome_state(term_rows, term_cols);
-        app.app_state.workspace_name = active_workspace_name.clone();
-        app.app_state.workspaces = workspace_names.clone();
+        // Welcome state - no windows to attach to
+        let mut app = ServerApp::new_welcome_state(term_rows, term_cols);
+        app.app_state.session_name = active_session_name.clone();
+        app.app_state.sessions = session_names.clone();
         app
     };
 
@@ -888,7 +894,7 @@ fn run_attached(
         match drain_result {
             MainLoopDrainResult::Continue => {}
             MainLoopDrainResult::ShuttingDown => break,
-            MainLoopDrainResult::Error(msg) => bail!("Daemon error: {}", msg),
+            MainLoopDrainResult::Error(msg) => bail!("Server error: {}", msg),
             MainLoopDrainResult::ConnectionError(e) => bail!("Connection error: {}", e),
         }
 
@@ -897,12 +903,12 @@ fn run_attached(
 
         // Hints only change the sidebar list viewport, not PTY geometry.
         // Render the UI once after processing all available messages
-        ratatui_term.draw(|frame| render_daemon_app(frame, &mut app))?;
+        ratatui_term.draw(|frame| render_server_app(frame, &mut app))?;
 
-        // Keep workspace overlay's visible_height in sync with actual terminal geometry.
+        // Keep session overlay's visible_height in sync with actual terminal geometry.
         // This enables select_next() to scroll the list when the selection moves off-screen.
         // Height = total rows - 1 (title row). Editing is done inline, no extra area.
-        if let AppMode::WorkspaceOverlay(ref mut ov) = app.app_state.mode {
+        if let AppMode::SessionOverlay(ref mut ov) = app.app_state.mode {
             let list_h = last_size.1.saturating_sub(1);
             ov.visible_height = list_h as usize;
         }
@@ -913,46 +919,46 @@ fn run_attached(
                 Event::Key(key) => {
                     // Route key through state machine.
                     let mut result = app.app_state.handle_key(key);
-                    let relative_workspace_focus =
-                        if matches!(result, EventResult::SwitchRelativeWorkspace { .. }) {
+                    let relative_session_focus =
+                        if matches!(result, EventResult::SwitchRelativeSession { .. }) {
                             Some(app.app_state.focus)
                         } else {
                             None
                         };
-                    // Relative workspace shortcuts used to require opening the chooser. Resolve
-                    // them here against the daemon-provided stable workspace list for direct switching.
-                    if let EventResult::SwitchRelativeWorkspace { offset } = result {
-                        let workspaces = &app.app_state.workspaces;
-                        if !workspaces.is_empty() {
-                            let current = workspaces
+                    // Relative session shortcuts used to require opening the chooser. Resolve
+                    // them here against the server-provided stable session list for direct switching.
+                    if let EventResult::SwitchRelativeSession { offset } = result {
+                        let sessions = &app.app_state.sessions;
+                        if !sessions.is_empty() {
+                            let current = sessions
                                 .iter()
-                                .position(|name| name == &app.app_state.workspace_name)
+                                .position(|name| name == &app.app_state.session_name)
                                 .unwrap_or(0) as isize;
                             let target =
-                                (current + offset).rem_euclid(workspaces.len() as isize) as usize;
-                            result = EventResult::SwitchWorkspace {
-                                name: workspaces[target].clone(),
+                                (current + offset).rem_euclid(sessions.len() as isize) as usize;
+                            result = EventResult::SwitchSession {
+                                name: sessions[target].clone(),
                             };
                         } else {
                             result = EventResult::Consumed;
                         }
                     }
-                    let requested_workspace_focus = relative_workspace_focus.or_else(|| {
-                        if matches!(result, EventResult::SwitchWorkspace { .. }) {
+                    let requested_session_focus = relative_session_focus.or_else(|| {
+                        if matches!(result, EventResult::SwitchSession { .. }) {
                             Some(Focus::Sidebar)
                         } else {
                             None
                         }
                     });
-                    let workspace_action = match &result {
-                        EventResult::OpenWorkspaceCreate => Some('C'),
-                        EventResult::OpenWorkspaceRename => Some('R'),
-                        EventResult::OpenWorkspaceDelete => Some('K'),
+                    let session_action = match &result {
+                        EventResult::OpenSessionCreate => Some('C'),
+                        EventResult::OpenSessionRename => Some('R'),
+                        EventResult::OpenSessionKill => Some('K'),
                         _ => None,
                     };
 
                     match result {
-                        EventResult::Quit => {
+                        EventResult::Detach => {
                             // Send detach message and exit
                             let detach_msg = ClientMessage::Detach;
                             let encoded = encode_message(&detach_msg)?;
@@ -960,16 +966,16 @@ fn run_attached(
                             stream.flush()?;
                             break;
                         }
-                        EventResult::CreateSession { name, session_type } => {
+                        EventResult::CreateWindow { name, window_type } => {
                             // Drain any pending async messages before sync operation
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
-                            // Create new session via daemon (use sync variant to skip any
-                            // remaining in-flight Output messages from the old session)
-                            let create_response = send_daemon_message_sync(
+                            // Create new window via server (use sync variant to skip any
+                            // remaining in-flight Output messages from the old window)
+                            let create_response = send_server_message_sync(
                                 stream,
                                 ClientMessage::Attach {
-                                    session_name: name.clone(),
+                                    window_name: name.clone(),
                                     rows: term_rows,
                                     cols: term_cols,
                                     cwd: cwd.clone(),
@@ -978,17 +984,17 @@ fn run_attached(
                             )?;
 
                             match create_response {
-                                DaemonResponse::Attached {
-                                    session_name: attached_name,
+                                ServerResponse::Attached {
+                                    window_name: attached_name,
                                     is_new: _,
                                     terminal_state: new_state,
                                 } => {
-                                    // Add session to local state
-                                    app.app_state.add_session(Session::attached(&attached_name));
-                                    app.session_name = attached_name;
+                                    // Add window to local state
+                                    app.app_state.add_window(Window::attached(&attached_name));
+                                    app.window_name = attached_name;
                                     app.app_state.focus = Focus::Terminal;
 
-                                    // Clear terminal emulator for new session
+                                    // Clear terminal emulator for new window
                                     app.term_emulator = Terminal::new(term_rows, term_cols);
 
                                     // Restore terminal state if reattaching
@@ -996,8 +1002,8 @@ fn run_attached(
                                         app.process_output(&state_bytes);
                                     }
 
-                                    // For agent sessions, send the claude command
-                                    if session_type == SessionType::Agent {
+                                    // For agent windows, send the claude command
+                                    if window_type == WindowType::Agent {
                                         let claude_cmd = b"claude\n";
                                         let input_msg = ClientMessage::Input {
                                             data: claude_cmd.to_vec(),
@@ -1007,40 +1013,40 @@ fn run_attached(
                                         stream.flush()?;
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to create session: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to create window: {}", message);
                                 }
                                 _ => {}
                             }
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::DeleteSession { name } => {
+                        EventResult::KillWindow { name } => {
                             // Drain any pending async messages before sync operation
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
-                            // Kill session via daemon
-                            let kill_response = send_daemon_message_sync(
+                            // Kill window via server
+                            let kill_response = send_server_message_sync(
                                 stream,
                                 ClientMessage::Kill {
-                                    session_name: name.clone(),
+                                    window_name: name.clone(),
                                 },
                                 &mut app,
                             )?;
 
                             match kill_response {
-                                DaemonResponse::Killed { .. } => {
-                                    // Remove scroll offset for the deleted session
-                                    app.session_scroll_offsets.remove(&name);
+                                ServerResponse::Killed { .. } => {
+                                    // Remove scroll offset for the deleted window
+                                    app.window_scroll_offsets.remove(&name);
 
-                                    // If we deleted the current session, switch to another
-                                    if app.session_name == name {
-                                        if let Some(session) = app.app_state.sessions.first() {
-                                            // Switch to first available session
-                                            let switch_response = send_daemon_message_sync(
+                                    // If we deleted the current window, switch to another
+                                    if app.window_name == name {
+                                        if let Some(window) = app.app_state.windows.first() {
+                                            // Switch to first available window
+                                            let switch_response = send_server_message_sync(
                                                 stream,
                                                 ClientMessage::Attach {
-                                                    session_name: session.name.clone(),
+                                                    window_name: window.name.clone(),
                                                     rows: term_rows,
                                                     cols: term_cols,
                                                     cwd: cwd.clone(),
@@ -1048,46 +1054,46 @@ fn run_attached(
                                                 &mut app,
                                             )?;
 
-                                            if let DaemonResponse::Attached {
-                                                session_name: attached_name,
+                                            if let ServerResponse::Attached {
+                                                window_name: attached_name,
                                                 terminal_state: new_state,
                                                 ..
                                             } = switch_response
                                             {
-                                                app.session_name = attached_name.clone();
+                                                app.window_name = attached_name.clone();
                                                 app.term_emulator =
                                                     Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
                                                 }
-                                                // Restore scroll position for the newly attached session
+                                                // Restore scroll position for the newly attached window
                                                 if let Some(&saved_offset) =
-                                                    app.session_scroll_offsets.get(&attached_name)
+                                                    app.window_scroll_offsets.get(&attached_name)
                                                 {
                                                     app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
                                         } else {
-                                            // No sessions left, clear terminal
-                                            app.session_name = String::new();
+                                            // No windows left, clear terminal
+                                            app.window_name = String::new();
                                             app.term_emulator = Terminal::new(term_rows, term_cols);
                                         }
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to delete session: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to kill window: {}", message);
                                 }
                                 _ => {}
                             }
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::RenameSession { old_name, new_name } => {
+                        EventResult::RenameWindow { old_name, new_name } => {
                             // Drain any pending async messages before sync operation
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
-                            // Rename session via daemon
-                            let rename_response = send_daemon_message_sync(
+                            // Rename window via server
+                            let rename_response = send_server_message_sync(
                                 stream,
                                 ClientMessage::Rename {
                                     old_name: old_name.clone(),
@@ -1097,28 +1103,28 @@ fn run_attached(
                             )?;
 
                             match rename_response {
-                                DaemonResponse::Renamed { .. } => {
-                                    // Update scroll offset HashMap key for renamed session
+                                ServerResponse::Renamed { .. } => {
+                                    // Update scroll offset HashMap key for renamed window
                                     if let Some(offset) =
-                                        app.session_scroll_offsets.remove(&old_name)
+                                        app.window_scroll_offsets.remove(&old_name)
                                     {
-                                        app.session_scroll_offsets.insert(new_name.clone(), offset);
+                                        app.window_scroll_offsets.insert(new_name.clone(), offset);
                                     }
-                                    // Update current session name if it was renamed
-                                    if app.session_name == old_name {
-                                        app.session_name = new_name;
+                                    // Update current window name if it was renamed
+                                    if app.window_name == old_name {
+                                        app.window_name = new_name;
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to rename session: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to rename window: {}", message);
                                     // Revert local state change
-                                    if let Some(session) = app
+                                    if let Some(window) = app
                                         .app_state
-                                        .sessions
+                                        .windows
                                         .iter_mut()
                                         .find(|s| s.name == new_name)
                                     {
-                                        session.name = old_name;
+                                        window.name = old_name;
                                     }
                                 }
                                 _ => {}
@@ -1126,33 +1132,33 @@ fn run_attached(
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::SwitchSession { name } => {
-                            // Only switch if it's a different session
-                            if name != app.session_name {
-                                // Save scroll position for current session before switching
+                        EventResult::SwitchWindow { name } => {
+                            // Only switch if it's a different window
+                            if name != app.window_name {
+                                // Save scroll position for current window before switching
                                 let current_scroll = app.term_emulator.get_scroll_offset();
                                 if current_scroll > 0 {
-                                    app.session_scroll_offsets
-                                        .insert(app.session_name.clone(), current_scroll);
+                                    app.window_scroll_offsets
+                                        .insert(app.window_name.clone(), current_scroll);
                                 } else {
-                                    app.session_scroll_offsets.remove(&app.session_name);
+                                    app.window_scroll_offsets.remove(&app.window_name);
                                 }
 
                                 // Drain any pending async messages before sync operation
                                 drain_async_messages(&mut msg_reader, stream, &mut app)?;
 
-                                // Detach from current session
-                                let _ = send_daemon_message_sync(
+                                // Detach from current window
+                                let _ = send_server_message_sync(
                                     stream,
                                     ClientMessage::Detach,
                                     &mut app,
                                 );
 
-                                // Attach to new session
-                                let switch_response = send_daemon_message_sync(
+                                // Attach to new window
+                                let switch_response = send_server_message_sync(
                                     stream,
                                     ClientMessage::Attach {
-                                        session_name: name.clone(),
+                                        window_name: name.clone(),
                                         rows: term_rows,
                                         cols: term_cols,
                                         cwd: cwd.clone(),
@@ -1161,25 +1167,25 @@ fn run_attached(
                                 )?;
 
                                 match switch_response {
-                                    DaemonResponse::Attached {
-                                        session_name: attached_name,
+                                    ServerResponse::Attached {
+                                        window_name: attached_name,
                                         terminal_state: new_state,
                                         ..
                                     } => {
-                                        app.session_name = attached_name.clone();
+                                        app.window_name = attached_name.clone();
                                         app.term_emulator = Terminal::new(term_rows, term_cols);
                                         if let Some(state_bytes) = new_state {
                                             app.process_output(&state_bytes);
                                         }
-                                        // Restore scroll position for the newly attached session
+                                        // Restore scroll position for the newly attached window
                                         if let Some(&saved_offset) =
-                                            app.session_scroll_offsets.get(&attached_name)
+                                            app.window_scroll_offsets.get(&attached_name)
                                         {
                                             app.term_emulator.scroll_up(saved_offset);
                                         }
                                     }
-                                    DaemonResponse::Error { message } => {
-                                        eprintln!("Failed to switch session: {}", message);
+                                    ServerResponse::Error { message } => {
+                                        eprintln!("Failed to switch window: {}", message);
                                     }
                                     _ => {}
                                 }
@@ -1188,12 +1194,12 @@ fn run_attached(
                             // Reset stream timeout after synchronous operation
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::PreviewSession { name } => {
-                            // Request terminal state preview for the selected session
+                        EventResult::PreviewWindow { name } => {
+                            // Request terminal state preview for the selected window
                             // Send the preview request asynchronously - response will be
                             // handled in the main message loop above
                             let preview_msg = ClientMessage::Preview {
-                                session_name: name.clone(),
+                                window_name: name.clone(),
                             };
                             let encoded = encode_message(&preview_msg)?;
                             stream.write_all(&encoded)?;
@@ -1226,40 +1232,40 @@ fn run_attached(
                                 app.show_timed_message("Unzoomed — sidebar visible");
                             }
                         }
-                        EventResult::OpenWorkspaceOverlay
-                        | EventResult::OpenWorkspaceCreate
-                        | EventResult::OpenWorkspaceRename
-                        | EventResult::OpenWorkspaceDelete => {
-                            // Fetch fresh workspace list from daemon before opening overlay
+                        EventResult::OpenSessionOverlay
+                        | EventResult::OpenSessionCreate
+                        | EventResult::OpenSessionRename
+                        | EventResult::OpenSessionKill => {
+                            // Fetch fresh session list from server before opening overlay
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let ws_response = send_daemon_message_sync(
+                            let session_response = send_server_message_sync(
                                 stream,
-                                ClientMessage::ListWorkspaces,
+                                ClientMessage::ListSessions,
                                 &mut app,
                             )?;
-                            let (workspaces, active) = if let DaemonResponse::Workspaces {
-                                workspaces,
-                                active_workspace,
-                            } = ws_response
+                            let (sessions, active) = if let ServerResponse::Sessions {
+                                sessions,
+                                active_session,
+                            } = session_response
                             {
                                 let names: Vec<String> =
-                                    workspaces.iter().map(|ws| ws.name.clone()).collect();
-                                (names, active_workspace)
+                                    sessions.iter().map(|session| session.name.clone()).collect();
+                                (names, active_session)
                             } else {
                                 (
-                                    app.app_state.workspaces.clone(),
-                                    app.app_state.workspace_name.clone(),
+                                    app.app_state.sessions.clone(),
+                                    app.app_state.session_name.clone(),
                                 )
                             };
-                            app.app_state.workspaces = workspaces.clone();
-                            app.app_state.workspace_name = active.clone();
-                            let mut overlay = WorkspaceOverlayState::new(workspaces, active);
-                            // Uppercase workspace commands act on the current workspace without
+                            app.app_state.sessions = sessions.clone();
+                            app.app_state.session_name = active.clone();
+                            let mut overlay = SessionOverlayState::new(sessions, active);
+                            // Uppercase session commands act on the current session without
                             // forcing an extra chooser keystroke, while reusing its inline editors.
-                            match workspace_action {
+                            match session_action {
                                 Some('C') => {
                                     overlay.selected_index = 0;
-                                    overlay.drafting_workspace =
+                                    overlay.drafting_session =
                                         Some(sidebar_tui::state::RenamingState::new(
                                             0,
                                             "",
@@ -1268,7 +1274,7 @@ fn run_attached(
                                 }
                                 Some('R') => {
                                     let name = overlay
-                                        .workspaces
+                                        .sessions
                                         .get(overlay.selected_index)
                                         .cloned()
                                         .unwrap_or_default();
@@ -1280,10 +1286,10 @@ fn run_attached(
                                         ));
                                 }
                                 Some('K') => {
-                                    let name = overlay.active_workspace.clone();
+                                    let name = overlay.active_session.clone();
                                     app.app_state.mode =
                                         AppMode::Confirming(sidebar_tui::state::ConfirmState::new(
-                                            sidebar_tui::state::ConfirmAction::DeleteWorkspace(
+                                            sidebar_tui::state::ConfirmAction::KillSession(
                                                 name,
                                             ),
                                             Focus::Sidebar,
@@ -1293,102 +1299,102 @@ fn run_attached(
                                 }
                                 _ => {}
                             }
-                            app.app_state.mode = AppMode::WorkspaceOverlay(overlay);
+                            app.app_state.mode = AppMode::SessionOverlay(overlay);
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::OpenMoveToWorkspaceOverlay { session_name } => {
-                            // Fetch fresh workspace list from daemon before opening move overlay
+                        EventResult::OpenMoveToSessionOverlay { window_name } => {
+                            // Fetch fresh session list from server before opening move overlay
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let ws_response = send_daemon_message_sync(
+                            let session_response = send_server_message_sync(
                                 stream,
-                                ClientMessage::ListWorkspaces,
+                                ClientMessage::ListSessions,
                                 &mut app,
                             )?;
-                            let (workspaces, active) = if let DaemonResponse::Workspaces {
-                                workspaces,
-                                active_workspace,
-                            } = ws_response
+                            let (sessions, active) = if let ServerResponse::Sessions {
+                                sessions,
+                                active_session,
+                            } = session_response
                             {
                                 let names: Vec<String> =
-                                    workspaces.iter().map(|ws| ws.name.clone()).collect();
-                                (names, active_workspace)
+                                    sessions.iter().map(|session| session.name.clone()).collect();
+                                (names, active_session)
                             } else {
                                 (
-                                    app.app_state.workspaces.clone(),
-                                    app.app_state.workspace_name.clone(),
+                                    app.app_state.sessions.clone(),
+                                    app.app_state.session_name.clone(),
                                 )
                             };
-                            app.app_state.workspaces = workspaces.clone();
+                            app.app_state.sessions = sessions.clone();
                             app.app_state.mode =
-                                AppMode::WorkspaceOverlay(WorkspaceOverlayState::new_move_mode(
-                                    workspaces,
+                                AppMode::SessionOverlay(SessionOverlayState::new_move_mode(
+                                    sessions,
                                     active,
-                                    session_name,
+                                    window_name,
                                 ));
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::SwitchWorkspace { name } => {
+                        EventResult::SwitchSession { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            // Save current workspace state before switching
-                            let current_ws = app.app_state.workspace_name.clone();
+                            // Save current session state before switching
+                            let current_session = app.app_state.session_name.clone();
                             let last_selected = app
                                 .app_state
-                                .sessions
+                                .windows
                                 .get(app.app_state.selected_index)
                                 .map(|s| s.name.clone());
-                            let focused_pane = match app.app_state.focus {
+                            let focused_region = match app.app_state.focus {
                                 Focus::Sidebar => "sidebar".to_string(),
                                 Focus::Terminal => "terminal".to_string(),
                             };
-                            let _ = send_daemon_message_sync(
+                            let _ = send_server_message_sync(
                                 stream,
-                                ClientMessage::SaveWorkspaceState {
-                                    workspace_name: current_ws,
-                                    last_selected_session: last_selected,
-                                    last_focused_pane: focused_pane,
+                                ClientMessage::SaveSessionState {
+                                    session_name: current_session,
+                                    last_selected_window: last_selected,
+                                    last_focused_region: focused_region,
                                     sidebar_scroll_offset: app.app_state.scroll_offset,
                                 },
                                 &mut app,
                             );
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
-                            let response = send_daemon_message_sync(
+                            let response = send_server_message_sync(
                                 stream,
-                                ClientMessage::SwitchWorkspace { name: name.clone() },
+                                ClientMessage::SwitchSession { name: name.clone() },
                                 &mut app,
                             )?;
                             match response {
-                                DaemonResponse::WorkspaceSwitched {
-                                    name: new_ws,
-                                    sessions: ws_sessions,
-                                    last_selected_session,
-                                    last_focused_pane,
+                                ServerResponse::SessionSwitched {
+                                    name: new_session,
+                                    windows: session_windows,
+                                    last_selected_window,
+                                    last_focused_region,
                                     sidebar_scroll_offset,
                                 } => {
-                                    // Update sessions from the response
-                                    app.app_state.sessions = ws_sessions
+                                    // Update windows from the response
+                                    app.app_state.windows = session_windows
                                         .iter()
-                                        .map(|s| Session::attached(&s.name))
+                                        .map(|s| Window::attached(&s.name))
                                         .collect();
-                                    app.app_state.workspace_name = new_ws;
+                                    app.app_state.session_name = new_session;
 
-                                    // Restore saved workspace state
+                                    // Restore saved session state
                                     app.app_state.scroll_offset = sidebar_scroll_offset;
                                     // Direct/chooser switching has explicit focus semantics; only CLI-style
-                                    // restoration should inherit the target workspace's saved pane.
+                                    // restoration should inherit the target session's saved pane.
                                     app.app_state.focus =
-                                        requested_workspace_focus.unwrap_or_else(|| {
-                                            if last_focused_pane == "sidebar" {
+                                        requested_session_focus.unwrap_or_else(|| {
+                                            if last_focused_region == "sidebar" {
                                                 Focus::Sidebar
                                             } else {
                                                 Focus::Terminal
                                             }
                                         });
 
-                                    // Restore last selected session index
-                                    if let Some(ref last_name) = last_selected_session {
+                                    // Restore last selected window index
+                                    if let Some(ref last_name) = last_selected_window {
                                         if let Some(idx) = app
                                             .app_state
-                                            .sessions
+                                            .windows
                                             .iter()
                                             .position(|s| &s.name == last_name)
                                         {
@@ -1400,227 +1406,227 @@ fn run_attached(
                                         app.app_state.selected_index = 0;
                                     }
 
-                                    // Save scroll position for current session before switching workspace
+                                    // Save scroll position for current window before switching session
                                     let current_scroll = app.term_emulator.get_scroll_offset();
                                     if current_scroll > 0 {
-                                        app.session_scroll_offsets
-                                            .insert(app.session_name.clone(), current_scroll);
+                                        app.window_scroll_offsets
+                                            .insert(app.window_name.clone(), current_scroll);
                                     } else {
-                                        app.session_scroll_offsets.remove(&app.session_name);
+                                        app.window_scroll_offsets.remove(&app.window_name);
                                     }
 
-                                    // If current session is not in new workspace, switch to last selected or first available
-                                    let target_session = last_selected_session
+                                    // If current window is not in new session, switch to last selected or first available
+                                    let target_window = last_selected_window
                                         .filter(|name| {
-                                            app.app_state.sessions.iter().any(|s| &s.name == name)
+                                            app.app_state.windows.iter().any(|s| &s.name == name)
                                         })
                                         .or_else(|| {
-                                            app.app_state.sessions.first().map(|s| s.name.clone())
+                                            app.app_state.windows.first().map(|s| s.name.clone())
                                         });
                                     if !app
                                         .app_state
-                                        .sessions
+                                        .windows
                                         .iter()
-                                        .any(|s| s.name == app.session_name)
+                                        .any(|s| s.name == app.window_name)
                                     {
-                                        if let Some(first) = target_session.or_else(|| {
-                                            app.app_state.sessions.first().map(|s| s.name.clone())
+                                        if let Some(first) = target_window.or_else(|| {
+                                            app.app_state.windows.first().map(|s| s.name.clone())
                                         }) {
-                                            let switch_response = send_daemon_message_sync(
+                                            let switch_response = send_server_message_sync(
                                                 stream,
                                                 ClientMessage::Attach {
-                                                    session_name: first.clone(),
+                                                    window_name: first.clone(),
                                                     rows: term_rows,
                                                     cols: term_cols,
                                                     cwd: cwd.clone(),
                                                 },
                                                 &mut app,
                                             )?;
-                                            if let DaemonResponse::Attached {
-                                                session_name: attached_name,
+                                            if let ServerResponse::Attached {
+                                                window_name: attached_name,
                                                 terminal_state: new_state,
                                                 ..
                                             } = switch_response
                                             {
-                                                app.session_name = attached_name.clone();
+                                                app.window_name = attached_name.clone();
                                                 app.term_emulator =
                                                     Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
                                                     app.process_output(&state_bytes);
                                                 }
-                                                // Restore scroll position for the newly attached session
+                                                // Restore scroll position for the newly attached window
                                                 if let Some(&saved_offset) =
-                                                    app.session_scroll_offsets.get(&attached_name)
+                                                    app.window_scroll_offsets.get(&attached_name)
                                                 {
                                                     app.term_emulator.scroll_up(saved_offset);
                                                 }
                                             }
                                         } else {
-                                            app.session_name = String::new();
+                                            app.window_name = String::new();
                                             app.term_emulator = Terminal::new(term_rows, term_cols);
                                         }
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to switch workspace: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to switch session: {}", message);
                                 }
                                 _ => {}
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::CreateWorkspace { name } => {
+                        EventResult::CreateSession { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(
+                            let response = send_server_message_sync(
                                 stream,
-                                ClientMessage::CreateWorkspace { name: name.clone() },
+                                ClientMessage::CreateSession { name: name.clone() },
                                 &mut app,
                             )?;
                             match response {
-                                DaemonResponse::WorkspaceCreated { name: new_ws } => {
-                                    // Add to local workspace list
-                                    if !app.app_state.workspaces.contains(&new_ws) {
-                                        app.app_state.workspaces.push(new_ws.clone());
-                                        app.app_state.workspaces.sort();
+                                ServerResponse::SessionCreated { name: new_session } => {
+                                    // Add to local session list
+                                    if !app.app_state.sessions.contains(&new_session) {
+                                        app.app_state.sessions.push(new_session.clone());
+                                        app.app_state.sessions.sort();
                                     }
                                     // Update overlay state if still open
-                                    if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                    if let AppMode::SessionOverlay(ref mut ov) =
                                         app.app_state.mode
                                     {
-                                        ov.workspaces = app.app_state.workspaces.clone();
+                                        ov.sessions = app.app_state.sessions.clone();
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to create workspace: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to create session: {}", message);
                                 }
                                 _ => {}
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::RenameWorkspace { old_name, new_name } => {
+                        EventResult::RenameSession { old_name, new_name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(
+                            let response = send_server_message_sync(
                                 stream,
-                                ClientMessage::RenameWorkspace {
+                                ClientMessage::RenameSession {
                                     old_name: old_name.clone(),
                                     new_name: new_name.clone(),
                                 },
                                 &mut app,
                             )?;
                             match response {
-                                DaemonResponse::WorkspaceRenamed {
+                                ServerResponse::SessionRenamed {
                                     old_name: old,
                                     new_name: new,
                                 } => {
-                                    // Update local workspace list
+                                    // Update local session list
                                     if let Some(pos) =
-                                        app.app_state.workspaces.iter().position(|w| w == &old)
+                                        app.app_state.sessions.iter().position(|w| w == &old)
                                     {
-                                        app.app_state.workspaces[pos] = new.clone();
-                                        app.app_state.workspaces.sort();
+                                        app.app_state.sessions[pos] = new.clone();
+                                        app.app_state.sessions.sort();
                                     }
-                                    if app.app_state.workspace_name == old {
-                                        app.app_state.workspace_name = new.clone();
+                                    if app.app_state.session_name == old {
+                                        app.app_state.session_name = new.clone();
                                     }
                                     // Update overlay state if still open
-                                    if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                    if let AppMode::SessionOverlay(ref mut ov) =
                                         app.app_state.mode
                                     {
-                                        ov.workspaces = app.app_state.workspaces.clone();
-                                        if ov.active_workspace == old {
-                                            ov.active_workspace = new.clone();
+                                        ov.sessions = app.app_state.sessions.clone();
+                                        if ov.active_session == old {
+                                            ov.active_session = new.clone();
                                         }
                                         ov.selected_index = ov
                                             .selected_index
-                                            .min(ov.workspaces.len().saturating_sub(1));
+                                            .min(ov.sessions.len().saturating_sub(1));
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to rename workspace: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to rename session: {}", message);
                                 }
                                 _ => {}
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::DeleteWorkspace { name } => {
+                        EventResult::KillSession { name } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(
+                            let response = send_server_message_sync(
                                 stream,
-                                ClientMessage::DeleteWorkspace { name: name.clone() },
+                                ClientMessage::KillSession { name: name.clone() },
                                 &mut app,
                             )?;
                             match response {
-                                DaemonResponse::WorkspaceDeleted { .. } => {
-                                    // Refresh workspace list from daemon (handles auto-created Default)
-                                    let ws_response = send_daemon_message_sync(
+                                ServerResponse::SessionKilled { .. } => {
+                                    // Refresh session list from server (handles auto-created Default)
+                                    let session_response = send_server_message_sync(
                                         stream,
-                                        ClientMessage::ListWorkspaces,
+                                        ClientMessage::ListSessions,
                                         &mut app,
                                     )?;
-                                    if let DaemonResponse::Workspaces {
-                                        workspaces,
-                                        active_workspace,
-                                    } = ws_response
+                                    if let ServerResponse::Sessions {
+                                        sessions,
+                                        active_session,
+                                    } = session_response
                                     {
                                         let names: Vec<String> =
-                                            workspaces.into_iter().map(|w| w.name).collect();
-                                        app.app_state.workspaces = names.clone();
-                                        app.app_state.workspace_name = active_workspace.clone();
+                                            sessions.into_iter().map(|w| w.name).collect();
+                                        app.app_state.sessions = names.clone();
+                                        app.app_state.session_name = active_session.clone();
                                         // Update overlay state if still open
-                                        if let AppMode::WorkspaceOverlay(ref mut ov) =
+                                        if let AppMode::SessionOverlay(ref mut ov) =
                                             app.app_state.mode
                                         {
-                                            ov.workspaces = names;
-                                            ov.active_workspace = active_workspace;
+                                            ov.sessions = names;
+                                            ov.active_session = active_session;
                                             ov.selected_index = ov
                                                 .selected_index
-                                                .min(ov.workspaces.len().saturating_sub(1));
+                                                .min(ov.sessions.len().saturating_sub(1));
                                         }
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to delete workspace: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to kill session: {}", message);
                                 }
                                 _ => {}
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::MoveSessionToWorkspace {
+                        EventResult::MoveWindowToSession {
+                            window_name,
                             session_name,
-                            workspace_name,
                         } => {
                             drain_async_messages(&mut msg_reader, stream, &mut app)?;
-                            let response = send_daemon_message_sync(
+                            let response = send_server_message_sync(
                                 stream,
-                                ClientMessage::MoveSessionToWorkspace {
+                                ClientMessage::MoveWindowToSession {
+                                    window_name: window_name.clone(),
                                     session_name: session_name.clone(),
-                                    workspace_name: workspace_name.clone(),
                                 },
                                 &mut app,
                             )?;
                             match response {
-                                DaemonResponse::SessionMoved { .. } => {
-                                    // Remove session from local list (it's now in another workspace)
-                                    app.app_state.sessions.retain(|s| s.name != session_name);
-                                    // If we moved the current session away, switch to another
-                                    if app.session_name == session_name {
-                                        if let Some(next) = app.app_state.sessions.first() {
-                                            let switch_response = send_daemon_message_sync(
+                                ServerResponse::WindowMoved { .. } => {
+                                    // Remove window from local list (it's now in another session)
+                                    app.app_state.windows.retain(|s| s.name != window_name);
+                                    // If we moved the current window away, switch to another
+                                    if app.window_name == window_name {
+                                        if let Some(next) = app.app_state.windows.first() {
+                                            let switch_response = send_server_message_sync(
                                                 stream,
                                                 ClientMessage::Attach {
-                                                    session_name: next.name.clone(),
+                                                    window_name: next.name.clone(),
                                                     rows: term_rows,
                                                     cols: term_cols,
                                                     cwd: cwd.clone(),
                                                 },
                                                 &mut app,
                                             )?;
-                                            if let DaemonResponse::Attached {
-                                                session_name: attached_name,
+                                            if let ServerResponse::Attached {
+                                                window_name: attached_name,
                                                 terminal_state: new_state,
                                                 ..
                                             } = switch_response
                                             {
-                                                app.session_name = attached_name;
+                                                app.window_name = attached_name;
                                                 app.term_emulator =
                                                     Terminal::new(term_rows, term_cols);
                                                 if let Some(state_bytes) = new_state {
@@ -1628,22 +1634,22 @@ fn run_attached(
                                                 }
                                             }
                                         } else {
-                                            app.session_name = String::new();
+                                            app.window_name = String::new();
                                             app.term_emulator = Terminal::new(term_rows, term_cols);
                                         }
                                     }
                                 }
-                                DaemonResponse::Error { message } => {
-                                    eprintln!("Failed to move session: {}", message);
+                                ServerResponse::Error { message } => {
+                                    eprintln!("Failed to move window: {}", message);
                                 }
                                 _ => {}
                             }
                             stream.set_read_timeout(Some(Duration::from_millis(10)))?;
                         }
-                        EventResult::ReorderSession { .. } => {
+                        EventResult::ReorderWindow { .. } => {
                             // The state machine already changed the visible stable order.
                         }
-                        EventResult::SwitchRelativeWorkspace { .. } => {
+                        EventResult::SwitchRelativeSession { .. } => {
                             unreachable!("resolved before dispatch")
                         }
                         EventResult::Consumed => {
@@ -1653,7 +1659,7 @@ fn run_attached(
                             // Event not consumed - only forward to terminal if terminal is focused and in Normal mode
                             if app.app_state.focus == Focus::Terminal
                                 && matches!(app.app_state.mode, AppMode::Normal)
-                                && !app.session_name.is_empty()
+                                && !app.window_name.is_empty()
                             {
                                 let bytes = key_to_bytes(&key);
                                 if !bytes.is_empty() {
@@ -1675,7 +1681,7 @@ fn run_attached(
                         term_rows = height;
                         app.resize(term_rows, term_cols);
 
-                        // Send resize to daemon
+                        // Send resize to server
                         let resize_msg = ClientMessage::Resize {
                             rows: term_rows,
                             cols: term_cols,
@@ -1692,7 +1698,7 @@ fn run_attached(
                     // Behavior depends on whether a full-screen app is running:
                     // - Normal terminal (shell prompt, etc.): scroll through TUI history
                     // - Full-screen app (vim, less, htop via alt screen): forward to PTY
-                    if matches!(app.app_state.mode, AppMode::Normal) && !app.session_name.is_empty()
+                    if matches!(app.app_state.mode, AppMode::Normal) && !app.window_name.is_empty()
                     {
                         match mouse_event.kind {
                             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -1847,8 +1853,8 @@ fn render_sidebar_hints(
     list_area
 }
 
-/// Render the application UI with daemon-connected terminal emulator.
-fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
+/// Render the application UI with server-connected terminal emulator.
+fn render_server_app(frame: &mut Frame, app: &mut ServerApp) {
     // Calculate hint bar height first
     let mut hint_bar = hint_bar_for_state(&app.app_state);
     // Apply timed message if one is active (overrides normal bindings display)
@@ -1858,9 +1864,9 @@ fn render_daemon_app(frame: &mut Frame, app: &mut DaemonApp) {
     let (sidebar_area, main_area) = app_layout(frame.area(), app.app_state.zoomed);
     let sidebar_area = render_sidebar_hints(frame, sidebar_area, &app.app_state, hint_bar);
 
-    if let AppMode::WorkspaceOverlay(ref overlay) = app.app_state.mode {
+    if let AppMode::SessionOverlay(ref overlay) = app.app_state.mode {
         // The chooser occupies the right side; hints stay in the sidebar.
-        render_workspace_overlay(frame, main_area, overlay);
+        render_session_overlay(frame, main_area, overlay);
     } else if matches!(app.app_state.mode, AppMode::Help) {
         render_keybinding_help(frame, main_area);
     } else if app.app_state.zoomed {
@@ -1902,9 +1908,9 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
     let (sidebar_area, main_area) = app_layout(frame.area(), state.zoomed);
     let sidebar_area = render_sidebar_hints(frame, sidebar_area, state, hint_bar_for_state(state));
 
-    if let AppMode::WorkspaceOverlay(ref overlay) = state.mode {
+    if let AppMode::SessionOverlay(ref overlay) = state.mode {
         // The chooser occupies the right side; hints stay in the sidebar.
-        render_workspace_overlay(frame, main_area, overlay);
+        render_session_overlay(frame, main_area, overlay);
     } else if matches!(state.mode, AppMode::Help) {
         render_keybinding_help(frame, main_area);
     } else {
@@ -1920,7 +1926,7 @@ pub fn render_with_state(frame: &mut Frame, state: &AppState) {
 /// Render the discoverable command reference requested by `?`.
 fn render_keybinding_help(frame: &mut Frame, area: Rect) {
     let help = Paragraph::new(
-        "Sidebar commands\n\n↑/↓ j/k  Browse windows     Enter/Toggle  Focus window\n1-9       Highlight window   n/p           Next/previous window\nl         Last window        c/a           New terminal/agent\nr/,       Rename window      &/Delete      Delete window\nm         Move window        s             Workspaces\nC/R/K     Create/rename/delete workspace\nP/N       Previous/next workspace\nz         Hide sidebar       S             Mouse/text selection\nd         Detach             Esc/q         Cancel browsing\n\nGlobal: Ctrl+Space, Ctrl+B, Cmd+Space, Cmd+B toggle focus\nAlt+1-9 and Alt+arrows switch directly; Alt+Shift+Left/Right reorders.\n\nPress Esc, q, or ? to close."
+        "Sidebar commands\n\n↑/↓ j/k  Browse windows     Enter/Toggle  Focus window\n1-9       Highlight window   n/p           Next/previous window\nl         Last window        c/a           New window/agent\nr/,       Rename window      &/Delete      Kill window\nm         Move window        s             Sessions\nC/R/K     Create/rename/kill session\nP/N       Previous/next session\nz         Hide sidebar       S             Mouse/text selection\nd         Detach             Esc/q         Cancel browsing\n\nGlobal: Ctrl+Space, Ctrl+B, Cmd+Space, Cmd+B toggle focus\nAlt+1-9 and Alt+arrows switch directly; Alt+Shift+Left/Right reorders.\n\nPress Esc, q, or ? to close."
     )
     .block(Block::default().title(" Keybindings ").borders(Borders::ALL))
     .style(Style::default().fg(colors::WHITE));
@@ -1971,22 +1977,22 @@ fn render_terminal_emulator_with_state(
     }
 }
 
-/// Render the workspace chooser in the right-hand pane.
-fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOverlayState) {
+/// Render the session chooser in the right-hand pane.
+fn render_session_overlay(frame: &mut Frame, area: Rect, overlay: &SessionOverlayState) {
     // Full-screen overlay: clear the area and fill it.
     frame.render_widget(Clear, area);
 
     // Determine title based on mode
     let title_text = match &overlay.mode {
-        WorkspaceOverlayMode::Normal => "Workspaces",
-        WorkspaceOverlayMode::MoveSession { .. } => "Move to Workspace",
+        SessionOverlayMode::Normal => "Sessions",
+        SessionOverlayMode::MoveWindow { .. } => "Move to Session",
     };
 
     // Layout: title row (1) + list (rest). Editing is done inline in the list.
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let (title_area, list_area) = (chunks[0], chunks[1]);
 
-    // Render title: "Workspaces" in purple, left aligned with 1 char of left padding
+    // Render title: "Sessions" in purple, left aligned with 1 char of left padding
     let title_para = Paragraph::new(Line::from(Span::styled(
         format!(" {}", title_text),
         Style::default().fg(colors::PURPLE),
@@ -1994,10 +2000,10 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
     frame.render_widget(title_para, title_area);
 
     // Build virtual list:
-    //   - If drafting: virtual[0] = draft row, virtual[i+1] = workspaces[i]
-    //   - Otherwise: virtual[i] = workspaces[i]
-    let is_drafting = overlay.drafting_workspace.is_some();
-    let total_count = overlay.workspaces.len() + if is_drafting { 1 } else { 0 };
+    //   - If drafting: virtual[0] = draft row, virtual[i+1] = sessions[i]
+    //   - Otherwise: virtual[i] = sessions[i]
+    let is_drafting = overlay.drafting_session.is_some();
+    let total_count = overlay.sessions.len() + if is_drafting { 1 } else { 0 };
     let max_visible = list_area.height as usize;
     let visible_start = overlay.scroll_offset;
     let visible_end = (visible_start + max_visible).min(total_count);
@@ -2008,19 +2014,19 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
 
             if is_drafting && virtual_index == 0 {
                 // Draft row: shown at top, selected, with the current draft name
-                let draft = overlay.drafting_workspace.as_ref().unwrap();
+                let draft = overlay.drafting_session.as_ref().unwrap();
                 let display = format!("   {}", draft.new_name);
                 let style = Style::default().fg(Color::White).bg(Color::Indexed(238));
                 ListItem::new(Line::from(Span::styled(display, style)))
             } else {
-                // Workspace row (shift index by 1 when a draft row exists above)
-                let workspace_index = if is_drafting {
+                // Session row (shift index by 1 when a draft row exists above)
+                let session_index = if is_drafting {
                     virtual_index - 1
                 } else {
                     virtual_index
                 };
-                let name = &overlay.workspaces[workspace_index];
-                let is_active = *name == overlay.active_workspace;
+                let name = &overlay.sessions[session_index];
+                let is_active = *name == overlay.active_session;
 
                 // If renaming this selected row, show the in-progress rename text instead
                 let display_name = if overlay.renaming.is_some() && is_selected {
@@ -2072,14 +2078,14 @@ fn render_workspace_overlay(frame: &mut Frame, area: Rect, overlay: &WorkspaceOv
     }
 
     // Set cursor position for inline text editing.
-    // All workspace rows have a 3-char prefix (" * " or "   "), so cursor_x = list_area.x + 3 + cursor_position.
+    // All session rows have a 3-char prefix (" * " or "   "), so cursor_x = list_area.x + 3 + cursor_position.
     let selected_row_in_view =
         overlay.selected_index >= visible_start && overlay.selected_index < visible_end;
     if selected_row_in_view {
         let row = (overlay.selected_index - visible_start) as u16;
         let cursor_pos = if is_drafting && overlay.selected_index == 0 {
             overlay
-                .drafting_workspace
+                .drafting_session
                 .as_ref()
                 .map(|d| d.cursor_position)
         } else if overlay.renaming.is_some() {
@@ -2118,7 +2124,7 @@ mod tests {
 
         assert!(
             content.contains("Default"),
-            "Should contain workspace name 'Default', got: {}",
+            "Should contain session name 'Default', got: {}",
             content
         );
     }
@@ -2158,7 +2164,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
 
-        // Workspace name starts at position 2 in the top frame.
+        // Session name starts at position 2 in the top frame.
         let cell = &buffer[(2, 0)];
         assert_eq!(
             cell.fg,
@@ -2184,10 +2190,10 @@ mod tests {
             title_content.push_str(cell.symbol());
         }
 
-        // The workspace name should start at the beginning of the frame title.
+        // The session name should start at the beginning of the frame title.
         assert!(
             title_content.starts_with("Default"),
-            "Title should be left-aligned workspace name, got: '{}'",
+            "Title should be left-aligned session name, got: '{}'",
             title_content
         );
     }
@@ -2294,10 +2300,10 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // The sidebar workspace name title should still appear
+        // The sidebar session name title should still appear
         assert!(
             content.contains("Default"),
-            "Should contain workspace name 'Default', got: {}",
+            "Should contain session name 'Default', got: {}",
             content
         );
     }
@@ -2357,59 +2363,59 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_q_is_quit_key() {
-        // Ctrl+Q should trigger quit
+    fn test_ctrl_q_is_detach_key() {
+        // Ctrl+Q should trigger detach
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        let is_quit = key.modifiers == KeyModifiers::CONTROL
+        let is_detach = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
-        assert!(is_quit, "Ctrl+Q should be a quit key");
+        assert!(is_detach, "Ctrl+Q should be a detach key");
     }
 
     #[test]
-    fn test_ctrl_b_is_quit_key() {
-        // Ctrl+B should trigger quit
+    fn test_ctrl_b_is_detach_key() {
+        // Ctrl+B should trigger detach
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
-        let is_quit = key.modifiers == KeyModifiers::CONTROL
+        let is_detach = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
-        assert!(is_quit, "Ctrl+B should be a quit key");
+        assert!(is_detach, "Ctrl+B should be a detach key");
     }
 
     #[test]
-    fn test_ctrl_other_is_not_quit_key() {
-        // Ctrl+X should not trigger quit
+    fn test_ctrl_other_is_not_detach_key() {
+        // Ctrl+X should not trigger detach
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-        let is_quit = key.modifiers == KeyModifiers::CONTROL
+        let is_detach = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
-        assert!(!is_quit, "Ctrl+X should not be a quit key");
+        assert!(!is_detach, "Ctrl+X should not be a detach key");
     }
 
     #[test]
-    fn test_plain_q_is_not_quit_key() {
-        // Plain 'q' without Ctrl should not trigger quit
+    fn test_plain_q_is_not_detach_key() {
+        // Plain 'q' without Ctrl should not trigger detach
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        let is_quit = key.modifiers == KeyModifiers::CONTROL
+        let is_detach = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
-        assert!(!is_quit, "Plain 'q' should not be a quit key");
+        assert!(!is_detach, "Plain 'q' should not be a detach key");
     }
 
     #[test]
-    fn test_plain_b_is_not_quit_key() {
-        // Plain 'b' without Ctrl should not trigger quit
+    fn test_plain_b_is_not_detach_key() {
+        // Plain 'b' without Ctrl should not trigger detach
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
-        let is_quit = key.modifiers == KeyModifiers::CONTROL
+        let is_detach = key.modifiers == KeyModifiers::CONTROL
             && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('b'));
-        assert!(!is_quit, "Plain 'b' should not be a quit key");
+        assert!(!is_detach, "Plain 'b' should not be a detach key");
     }
 
     #[test]
-    fn test_daemon_app_creation() {
-        let app = DaemonApp::new(24, 80, "test", vec![]);
-        assert_eq!(app.session_name, "test");
+    fn test_server_app_creation() {
+        let app = ServerApp::new(24, 80, "test", vec![]);
+        assert_eq!(app.window_name, "test");
     }
 
     #[test]
-    fn test_daemon_app_process_output() {
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+    fn test_server_app_process_output() {
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
         app.process_output(b"Hello, World!");
         // Verify terminal emulator received the data
         let contents = app.term_emulator.contents();
@@ -2417,8 +2423,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_app_resize() {
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+    fn test_server_app_resize() {
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
         app.resize(30, 100);
         // Verify resize happened (no panics)
     }
@@ -2431,18 +2437,18 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_kill() {
-        let cli = Cli::try_parse_from(["sb", "kill", "mysession"]).unwrap();
+        let cli = Cli::try_parse_from(["sb", "kill", "mywindow"]).unwrap();
         match cli.command {
-            Some(Commands::Kill { session }) => assert_eq!(session, "mysession"),
+            Some(Commands::Kill { window }) => assert_eq!(window, "mywindow"),
             _ => panic!("Expected Kill command"),
         }
     }
 
     #[test]
     fn test_cli_parsing_attach() {
-        let cli = Cli::try_parse_from(["sb", "attach", "mysession"]).unwrap();
+        let cli = Cli::try_parse_from(["sb", "attach", "mywindow"]).unwrap();
         match cli.command {
-            Some(Commands::Attach { session }) => assert_eq!(session, "mysession"),
+            Some(Commands::Attach { window }) => assert_eq!(window, "mywindow"),
             _ => panic!("Expected Attach command"),
         }
     }
@@ -2451,29 +2457,29 @@ mod tests {
     fn test_cli_parsing_attach_default() {
         let cli = Cli::try_parse_from(["sb", "attach"]).unwrap();
         match cli.command {
-            Some(Commands::Attach { session }) => assert_eq!(session, "main"),
+            Some(Commands::Attach { window }) => assert_eq!(window, "main"),
             _ => panic!("Expected Attach command"),
         }
     }
 
     #[test]
-    fn test_cli_parsing_daemon() {
-        let cli = Cli::try_parse_from(["sb", "daemon"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Daemon)));
+    fn test_cli_parsing_server() {
+        let cli = Cli::try_parse_from(["sb", "server"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Server)));
     }
 
     #[test]
     fn test_cli_parsing_no_command() {
         let cli = Cli::try_parse_from(["sb"]).unwrap();
         assert!(cli.command.is_none());
-        assert!(cli.session.is_none()); // No default session - will show welcome state or first existing
+        assert!(cli.window.is_none()); // No default window - will show welcome state or first existing
     }
 
     #[test]
-    fn test_cli_parsing_session_flag() {
-        let cli = Cli::try_parse_from(["sb", "-s", "mysession"]).unwrap();
+    fn test_cli_parsing_window_flag() {
+        let cli = Cli::try_parse_from(["sb", "-s", "mywindow"]).unwrap();
         assert!(cli.command.is_none());
-        assert_eq!(cli.session, Some("mysession".to_string()));
+        assert_eq!(cli.window, Some("mywindow".to_string()));
     }
 
     #[test]
@@ -2484,18 +2490,18 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_restore() {
-        let cli = Cli::try_parse_from(["sb", "restore", "old-session"]).unwrap();
+        let cli = Cli::try_parse_from(["sb", "restore", "old-window"]).unwrap();
         match cli.command {
-            Some(Commands::Restore { session }) => assert_eq!(session, "old-session"),
+            Some(Commands::Restore { window }) => assert_eq!(window, "old-window"),
             _ => panic!("Expected Restore command"),
         }
     }
 
     #[test]
     fn test_cli_parsing_forget() {
-        let cli = Cli::try_parse_from(["sb", "forget", "old-session"]).unwrap();
+        let cli = Cli::try_parse_from(["sb", "forget", "old-window"]).unwrap();
         match cli.command {
-            Some(Commands::Forget { session }) => assert_eq!(session, "old-session"),
+            Some(Commands::Forget { window }) => assert_eq!(window, "old-window"),
             _ => panic!("Expected Forget command"),
         }
     }
@@ -2547,7 +2553,7 @@ mod tests {
         // Per spec line 91: "Mouse scrolling when the Sidebar TUI is opened at all,
         // regardless of focus should scroll the terminal pane's visible history."
         // This test documents that focus is NOT a condition for mouse scroll handling.
-        // The only conditions are: Normal mode, mouse in terminal area, session exists.
+        // The only conditions are: Normal mode, mouse in terminal area, window exists.
         use sidebar_tui::state::{AppMode, AppState, Focus};
 
         let mut state = AppState {
@@ -2575,10 +2581,10 @@ mod tests {
     #[test]
     fn test_hint_changes_leave_terminal_cells_and_geometry_unchanged() {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let mut app = DaemonApp::new_welcome_state(24, 52);
+        let mut app = ServerApp::new_welcome_state(24, 52);
         app.term_emulator.process(b"\x1b[1;1HA\x1b[24;52HZ");
         terminal
-            .draw(|frame| render_daemon_app(frame, &mut app))
+            .draw(|frame| render_server_app(frame, &mut app))
             .unwrap();
         let before = terminal.backend().buffer().clone();
         assert_eq!(before[(28, 0)].symbol(), "A");
@@ -2587,7 +2593,7 @@ mod tests {
             app.app_state.focus = focus;
             app.timed_message = None;
             terminal
-                .draw(|frame| render_daemon_app(frame, &mut app))
+                .draw(|frame| render_server_app(frame, &mut app))
                 .unwrap();
             for y in 0..24 {
                 for x in 28..80 {
@@ -2596,7 +2602,7 @@ mod tests {
             }
             app.show_timed_message("A longer temporary message that wraps inside the sidebar");
             terminal
-                .draw(|frame| render_daemon_app(frame, &mut app))
+                .draw(|frame| render_server_app(frame, &mut app))
                 .unwrap();
             for y in 0..24 {
                 for x in 28..80 {
@@ -2650,7 +2656,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // In default state (sidebar focused, welcome state), should show "n New" and "q Quit"
+        // In default state (sidebar focused, welcome state), should show "n New" and "d Detach"
         assert!(
             content.contains("n New") || content.contains("New"),
             "Hint bar should show 'New' keybinding, got: {}",
@@ -2659,7 +2665,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hint_bar_shows_quit_path() {
+    fn test_hint_bar_shows_detach_path() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2745,13 +2751,13 @@ mod tests {
 
     #[test]
     fn test_drafting_mode_shows_blank_terminal() {
-        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+        use sidebar_tui::state::{AppState, DraftingState, WindowType};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2772,13 +2778,13 @@ mod tests {
 
     #[test]
     fn test_drafting_mode_terminal_is_unframed() {
-        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+        use sidebar_tui::state::{AppState, DraftingState, WindowType};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2794,13 +2800,13 @@ mod tests {
 
     #[test]
     fn test_drafting_mode_sidebar_border_is_focused() {
-        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+        use sidebar_tui::state::{AppState, DraftingState, WindowType};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2822,13 +2828,13 @@ mod tests {
 
     #[test]
     fn test_drafting_mode_hint_bar_shows_correct_bindings() {
-        use sidebar_tui::state::{AppState, DraftingState, SessionType};
+        use sidebar_tui::state::{AppState, DraftingState, WindowType};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2853,7 +2859,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_mode_hint_bar_shows_session_type_options() {
+    fn test_create_mode_hint_bar_shows_window_type_options() {
         use sidebar_tui::state::AppState;
 
         let backend = TestBackend::new(80, 24);
@@ -2873,27 +2879,27 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // Hint bar should show "t Terminal Session" and "a Agent Session" in create mode
+        // Hint bar should show "t Terminal Window" and "a Agent Window" in create mode
         assert!(
-            content.contains("Terminal Session"),
-            "Hint bar should show 'Terminal Session' in create mode, got: {}",
+            content.contains("Terminal Window"),
+            "Hint bar should show 'Terminal Window' in create mode, got: {}",
             content
         );
         assert!(
-            content.contains("Agent Session"),
-            "Hint bar should show 'Agent Session' in create mode, got: {}",
+            content.contains("Agent Window"),
+            "Hint bar should show 'Agent Window' in create mode, got: {}",
             content
         );
     }
 
     #[test]
     fn test_renaming_mode_hint_bar_shows_correct_bindings() {
-        use sidebar_tui::state::{AppState, RenamingState, Session};
+        use sidebar_tui::state::{AppState, RenamingState, Window};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.mode = AppMode::Renaming(RenamingState::new(0, "test", Focus::Sidebar));
 
         terminal
@@ -2917,14 +2923,14 @@ mod tests {
     }
 
     #[test]
-    fn test_quit_confirmation_shows_prompt_message() {
+    fn test_detach_confirmation_shows_prompt_message() {
         use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2935,23 +2941,23 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // Should show quit confirmation message
+        // Should show detach confirmation message
         assert!(
-            content.contains("Quit Sidebar TUI?"),
-            "Hint bar should show quit confirmation message, got: {}",
+            content.contains("Detach Sidebar TUI?"),
+            "Hint bar should show detach confirmation message, got: {}",
             content
         );
     }
 
     #[test]
-    fn test_quit_confirmation_shows_yes_no_bindings() {
+    fn test_detach_confirmation_shows_yes_no_bindings() {
         use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2976,14 +2982,14 @@ mod tests {
     }
 
     #[test]
-    fn test_quit_confirmation_has_no_background() {
+    fn test_detach_confirmation_has_no_background() {
         use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -2999,21 +3005,21 @@ mod tests {
         assert_eq!(
             cell.bg,
             ratatui::style::Color::Reset,
-            "Quit confirmation hint should preserve the terminal background, got: {:?}",
+            "Detach confirmation hint should preserve the terminal background, got: {:?}",
             cell.bg
         );
     }
 
     #[test]
     fn test_delete_confirmation_shows_prompt_message() {
-        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Session};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Window};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.mode = AppMode::Confirming(ConfirmState::new(
-            ConfirmAction::DeleteSession(0),
+            ConfirmAction::KillWindow(0),
             Focus::Sidebar,
         ));
 
@@ -3026,7 +3032,7 @@ mod tests {
 
         // Should show delete confirmation message
         assert!(
-            content.contains("Delete this session") && content.contains("permanently?"),
+            content.contains("Kill this window") && content.contains("permanently?"),
             "Hint bar should show delete confirmation message, got: {}",
             content
         );
@@ -3034,14 +3040,14 @@ mod tests {
 
     #[test]
     fn test_delete_confirmation_has_no_background() {
-        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Session};
+        use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState, Window};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.mode = AppMode::Confirming(ConfirmState::new(
-            ConfirmAction::DeleteSession(0),
+            ConfirmAction::KillWindow(0),
             Focus::Sidebar,
         ));
 
@@ -3063,14 +3069,14 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmation_quit_path_shows_n_to_quit() {
+    fn test_confirmation_detach_path_shows_n_to_detach() {
         use sidebar_tui::state::{AppState, ConfirmAction, ConfirmState};
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -3081,11 +3087,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer_to_string(buffer);
 
-        // During confirmation, quit path should show "n → q Quit"
-        // (pressing n cancels, then q quits)
+        // During confirmation, detach path should show "n → d Detach"
+        // (pressing n cancels, then q detachs)
         assert!(
             content.contains("n →") || content.contains("n → q"),
-            "Confirmation quit path should show 'n →' path, got: {}",
+            "Confirmation detach path should show 'n →' path, got: {}",
             content
         );
     }
@@ -3093,8 +3099,8 @@ mod tests {
     #[test]
     fn test_handle_drained_response_output() {
         // Test that Output responses are processed correctly
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Output {
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Output {
             data: b"Hello, World!".to_vec(),
         };
 
@@ -3111,8 +3117,8 @@ mod tests {
     #[test]
     fn test_handle_drained_response_empty_output() {
         // Test that empty Output responses are handled without panics
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Output { data: vec![] };
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Output { data: vec![] };
 
         // Should not panic
         handle_drained_response(response, &mut app);
@@ -3121,9 +3127,9 @@ mod tests {
     #[test]
     fn test_handle_drained_response_previewed() {
         // Test that Previewed responses update terminal state
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Previewed {
-            session_name: "preview".to_string(),
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Previewed {
+            window_name: "preview".to_string(),
             terminal_state: Some(b"Preview content".to_vec()),
         };
 
@@ -3140,9 +3146,9 @@ mod tests {
     #[test]
     fn test_handle_drained_response_previewed_none() {
         // Test that Previewed response with no terminal state is handled
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Previewed {
-            session_name: "preview".to_string(),
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Previewed {
+            window_name: "preview".to_string(),
             terminal_state: None,
         };
 
@@ -3153,22 +3159,22 @@ mod tests {
     #[test]
     fn test_handle_drained_response_ignores_other_responses() {
         // Test that other responses are safely ignored during drain
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
 
         // These should all be safely ignored
         handle_drained_response(
-            DaemonResponse::Attached {
-                session_name: "test".to_string(),
+            ServerResponse::Attached {
+                window_name: "test".to_string(),
                 is_new: true,
                 terminal_state: None,
             },
             &mut app,
         );
 
-        handle_drained_response(DaemonResponse::Detached, &mut app);
+        handle_drained_response(ServerResponse::Detached, &mut app);
 
         handle_drained_response(
-            DaemonResponse::Error {
+            ServerResponse::Error {
                 message: "test error".to_string(),
             },
             &mut app,
@@ -3186,8 +3192,8 @@ mod tests {
     #[test]
     fn test_handle_main_loop_response_output() {
         // Test that Output messages are processed correctly
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Output {
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Output {
             data: b"hello".to_vec(),
         };
 
@@ -3199,8 +3205,8 @@ mod tests {
     #[test]
     fn test_handle_main_loop_response_shutting_down() {
         // Test that ShuttingDown triggers loop break
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::ShuttingDown;
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::ShuttingDown;
 
         let result = handle_main_loop_response(response, &mut app, 24, 80);
         assert!(matches!(result, MainLoopDrainResult::ShuttingDown));
@@ -3209,8 +3215,8 @@ mod tests {
     #[test]
     fn test_handle_main_loop_response_error() {
         // Test that Error responses return error result
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Error {
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Error {
             message: "test error".to_string(),
         };
 
@@ -3221,9 +3227,9 @@ mod tests {
     #[test]
     fn test_handle_main_loop_response_previewed() {
         // Test that Previewed messages update the terminal
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
-        let response = DaemonResponse::Previewed {
-            session_name: "preview".to_string(),
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
+        let response = ServerResponse::Previewed {
+            window_name: "preview".to_string(),
             terminal_state: Some(b"preview content".to_vec()),
         };
 
@@ -3235,11 +3241,11 @@ mod tests {
     #[test]
     fn test_handle_main_loop_response_other() {
         // Test that other responses are safely ignored with Continue
-        let mut app = DaemonApp::new(24, 80, "test", vec![]);
+        let mut app = ServerApp::new(24, 80, "test", vec![]);
 
         let result = handle_main_loop_response(
-            DaemonResponse::Attached {
-                session_name: "test".to_string(),
+            ServerResponse::Attached {
+                window_name: "test".to_string(),
                 is_new: true,
                 terminal_state: None,
             },
@@ -3249,7 +3255,7 @@ mod tests {
         );
         assert!(matches!(result, MainLoopDrainResult::Continue));
 
-        let result = handle_main_loop_response(DaemonResponse::Detached, &mut app, 24, 80);
+        let result = handle_main_loop_response(ServerResponse::Detached, &mut app, 24, 80);
         assert!(matches!(result, MainLoopDrainResult::Continue));
     }
 }

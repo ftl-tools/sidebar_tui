@@ -32,7 +32,7 @@ pub enum PtyEvent {
     Exited,
 }
 
-/// Handle to a running PTY session.
+/// Handle to a running PTY window.
 pub struct PtyHandle {
     /// Receiver for PTY output events.
     pub rx: Receiver<PtyEvent>,
@@ -178,7 +178,7 @@ pub fn spawn_shell_with_env(
 
     // Remove CLAUDECODE env var to prevent "nested Claude Code session" errors.
     // When sb is run from within a Claude Code session, it inherits this env var,
-    // which would cause any `claude` command run in terminal sessions to fail.
+    // which would cause any `claude` command run in terminal windows to fail.
     cmd.env_remove("CLAUDECODE");
 
     // Set TERM to xterm-256color so applications know they can output colors.
@@ -187,7 +187,7 @@ pub fn spawn_shell_with_env(
     cmd.env("TERM", "xterm-256color");
 
     // Inject environment variables if provided
-    // These are restored from a previous session
+    // These are restored from a previous window
     if let Some(env) = environment {
         for (key, value) in env {
             cmd.env(key, value);
@@ -410,7 +410,7 @@ mod tests {
         // Set CLAUDECODE in our process environment
         // Safety: This test runs serially, so modifying env vars is safe here
         unsafe {
-            std::env::set_var("CLAUDECODE", "test_session_id");
+            std::env::set_var("CLAUDECODE", "test_window_id");
         }
 
         // Spawn a shell
@@ -432,7 +432,7 @@ mod tests {
                     if output_collected.contains("CLAUDECODE_IS=\r")
                         || output_collected.contains("CLAUDECODE_IS=\n")
                         || (output_collected.contains("CLAUDECODE_IS=")
-                            && !output_collected.contains("CLAUDECODE_IS=test_session_id"))
+                            && !output_collected.contains("CLAUDECODE_IS=test_window_id"))
                     {
                         // Clean up the env var we set
                         // Safety: This test runs serially, so modifying env vars is safe here
@@ -443,7 +443,7 @@ mod tests {
                         return;
                     }
                     // If the original value appears, that's a failure
-                    if output_collected.contains("CLAUDECODE_IS=test_session_id") {
+                    if output_collected.contains("CLAUDECODE_IS=test_window_id") {
                         // Clean up the env var we set
                         unsafe {
                             std::env::remove_var("CLAUDECODE");

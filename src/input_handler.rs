@@ -6,13 +6,13 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::state::{
-    AppMode, AppState, ConfirmAction, ConfirmState, EventResult, Focus, RenamingState, SessionType,
-    WorkspaceOverlayMode,
+    AppMode, AppState, ConfirmAction, ConfirmState, EventResult, Focus, RenamingState, WindowType,
+    SessionOverlayMode,
 };
 
 impl AppState {
     /// Handle a key event based on current mode and focus.
-    /// Returns EventResult indicating if the event was consumed, not consumed, or quit requested.
+    /// Returns EventResult indicating if the event was consumed, not consumed, or detach requested.
     pub fn handle_key(&mut self, key: KeyEvent) -> EventResult {
         // Check if we're in a modal state first (modal states take precedence)
         match &self.mode {
@@ -28,8 +28,8 @@ impl AppState {
             AppMode::Renaming(_) => {
                 return self.handle_renaming_key(key);
             }
-            AppMode::WorkspaceOverlay(_) => {
-                return self.handle_workspace_overlay_key(key);
+            AppMode::SessionOverlay(_) => {
+                return self.handle_session_overlay_key(key);
             }
             AppMode::Help => {
                 if matches!(
@@ -60,9 +60,9 @@ impl AppState {
             || key.code == KeyCode::Null
     }
 
-    fn selected_session_event(&mut self, commit: bool) -> EventResult {
+    fn selected_window_event(&mut self, commit: bool) -> EventResult {
         let Some(name) = self
-            .sessions
+            .windows
             .get(self.selected_index)
             .map(|s| s.name.clone())
         else {
@@ -73,20 +73,20 @@ impl AppState {
         };
         if commit {
             self.focus_terminal();
-            EventResult::SwitchSession { name }
+            EventResult::SwitchWindow { name }
         } else {
-            EventResult::PreviewSession { name }
+            EventResult::PreviewWindow { name }
         }
     }
 
-    /// Handle shortcuts that intentionally work from either normal pane.
+    /// Handle shortcuts that intentionally work from either normal focus region.
     fn handle_direct_shortcut(&mut self, key: KeyEvent) -> Option<EventResult> {
         if Self::is_toggle_key(&key) {
             return Some(if self.focus == Focus::Terminal {
                 self.focus_sidebar();
                 EventResult::Consumed
             } else {
-                self.selected_session_event(true)
+                self.selected_window_event(true)
             });
         }
         if !key.modifiers.contains(KeyModifiers::ALT) {
@@ -98,42 +98,42 @@ impl AppState {
         let result = match key.code {
             KeyCode::Char(c @ '1'..='9') => {
                 let index = (c as u8 - b'1') as usize;
-                if index < self.sessions.len() {
+                if index < self.windows.len() {
                     self.selected_index = index;
-                    self.selected_session_event(commit)
+                    self.selected_window_event(commit)
                 } else {
                     EventResult::Consumed
                 }
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.reorder_selected(-1);
-                EventResult::ReorderSession { offset: -1 }
+                EventResult::ReorderWindow { offset: -1 }
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.reorder_selected(1);
-                EventResult::ReorderSession { offset: 1 }
+                EventResult::ReorderWindow { offset: 1 }
             }
             KeyCode::Left | KeyCode::Right => {
                 if key.code == KeyCode::Left {
-                    if self.selected_index == 0 && !self.sessions.is_empty() {
-                        self.selected_index = self.sessions.len() - 1;
+                    if self.selected_index == 0 && !self.windows.is_empty() {
+                        self.selected_index = self.windows.len() - 1;
                     } else {
                         self.select_previous();
                     }
-                } else if !self.sessions.is_empty() {
-                    self.selected_index = (self.selected_index + 1) % self.sessions.len();
+                } else if !self.windows.is_empty() {
+                    self.selected_index = (self.selected_index + 1) % self.windows.len();
                 }
-                self.selected_session_event(commit)
+                self.selected_window_event(commit)
             }
-            KeyCode::Up => EventResult::SwitchRelativeWorkspace { offset: -1 },
-            KeyCode::Down => EventResult::SwitchRelativeWorkspace { offset: 1 },
+            KeyCode::Up => EventResult::SwitchRelativeSession { offset: -1 },
+            KeyCode::Down => EventResult::SwitchRelativeSession { offset: 1 },
             _ => return None,
         };
         if commit
             && self.selected_index != origin
-            && matches!(result, EventResult::SwitchSession { .. })
+            && matches!(result, EventResult::SwitchWindow { .. })
         {
-            self.previous_session = Some(origin);
+            self.previous_window = Some(origin);
         }
         Some(result)
     }
@@ -153,11 +153,11 @@ impl AppState {
         // Some terminals report Shift+letter as lowercase plus SHIFT instead of an uppercase char.
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             match key.code {
-                KeyCode::Char('c') => return EventResult::OpenWorkspaceCreate,
-                KeyCode::Char('r') => return EventResult::OpenWorkspaceRename,
-                KeyCode::Char('k') => return EventResult::OpenWorkspaceDelete,
-                KeyCode::Char('p') => return EventResult::SwitchRelativeWorkspace { offset: -1 },
-                KeyCode::Char('n') => return EventResult::SwitchRelativeWorkspace { offset: 1 },
+                KeyCode::Char('c') => return EventResult::OpenSessionCreate,
+                KeyCode::Char('r') => return EventResult::OpenSessionRename,
+                KeyCode::Char('k') => return EventResult::OpenSessionKill,
+                KeyCode::Char('p') => return EventResult::SwitchRelativeSession { offset: -1 },
+                KeyCode::Char('n') => return EventResult::SwitchRelativeSession { offset: 1 },
                 KeyCode::Char('s') => {
                     self.mouse_mode = !self.mouse_mode;
                     return EventResult::ToggleMouseMode;
@@ -169,79 +169,79 @@ impl AppState {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.select_previous();
-                self.selected_session_event(false)
+                self.selected_window_event(false)
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
-                self.selected_session_event(false)
+                self.selected_window_event(false)
             }
-            KeyCode::Enter => self.selected_session_event(true),
+            KeyCode::Enter => self.selected_window_event(true),
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.cancel_browsing();
-                self.selected_session_event(true)
+                self.selected_window_event(true)
             }
             KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                 // The old two-step n→t prompt slowed the common path; c now drafts a terminal directly.
-                self.start_drafting(SessionType::Terminal);
+                self.start_drafting(WindowType::Terminal);
                 EventResult::Consumed
             }
             KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.start_drafting(SessionType::Agent);
+                self.start_drafting(WindowType::Agent);
                 EventResult::Consumed
             }
             KeyCode::Char('n') | KeyCode::Char('p') => {
-                if !self.sessions.is_empty() {
+                if !self.windows.is_empty() {
                     if key.code == KeyCode::Char('n') {
-                        self.selected_index = (self.selected_index + 1) % self.sessions.len();
+                        self.selected_index = (self.selected_index + 1) % self.windows.len();
                     } else if self.selected_index == 0 {
-                        self.selected_index = self.sessions.len() - 1;
+                        self.selected_index = self.windows.len() - 1;
                     } else {
                         self.selected_index -= 1;
                     }
                 }
-                self.selected_session_event(false)
+                self.selected_window_event(false)
             }
             KeyCode::Char('1'..='9') => {
                 if let KeyCode::Char(c) = key.code {
                     let index = (c as u8 - b'1') as usize;
-                    if index < self.sessions.len() {
+                    if index < self.windows.len() {
                         self.selected_index = index;
                     }
                 }
-                self.selected_session_event(false)
+                self.selected_window_event(false)
             }
             KeyCode::Char('l') => {
                 self.jump_back();
-                self.selected_session_event(true)
+                self.selected_window_event(true)
             }
             KeyCode::Char('r') | KeyCode::Char(',') => {
-                if !self.sessions.is_empty() {
+                if !self.windows.is_empty() {
                     self.start_renaming();
                 }
                 EventResult::Consumed
             }
             KeyCode::Char('&') | KeyCode::Delete => {
-                if !self.sessions.is_empty() {
-                    self.request_confirmation(ConfirmAction::DeleteSession(self.selected_index));
+                if !self.windows.is_empty() {
+                    self.request_confirmation(ConfirmAction::KillWindow(self.selected_index));
                 }
                 EventResult::Consumed
             }
             KeyCode::Char('m') => self
-                .sessions
+                .windows
                 .get(self.selected_index)
-                .map(|session| EventResult::OpenMoveToWorkspaceOverlay {
-                    session_name: session.name.clone(),
+                .map(|window| EventResult::OpenMoveToSessionOverlay {
+                    window_name: window.name.clone(),
                 })
                 .unwrap_or(EventResult::Consumed),
             KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                EventResult::OpenWorkspaceOverlay
+                EventResult::OpenSessionOverlay
             }
             KeyCode::Char('w') => EventResult::Consumed,
-            KeyCode::Char('C') => EventResult::OpenWorkspaceCreate,
-            KeyCode::Char('R') | KeyCode::Char('$') => EventResult::OpenWorkspaceRename,
-            KeyCode::Char('K') => EventResult::OpenWorkspaceDelete,
-            KeyCode::Char('P') => EventResult::SwitchRelativeWorkspace { offset: -1 },
-            KeyCode::Char('N') => EventResult::SwitchRelativeWorkspace { offset: 1 },
+            KeyCode::Char('C') => EventResult::OpenSessionCreate,
+            KeyCode::Char('R') | KeyCode::Char('$') => EventResult::OpenSessionRename,
+            KeyCode::Char('K') => EventResult::OpenSessionKill,
+            KeyCode::Char('P') => EventResult::SwitchRelativeSession { offset: -1 },
+            KeyCode::Char('N') => EventResult::SwitchRelativeSession { offset: 1 },
             KeyCode::Char('S') => {
                 self.mouse_mode = !self.mouse_mode;
                 EventResult::ToggleMouseMode
@@ -252,7 +252,7 @@ impl AppState {
                 EventResult::ToggleZoom
             }
             KeyCode::Char('d') => {
-                self.request_confirmation(ConfirmAction::Quit);
+                self.request_confirmation(ConfirmAction::Detach);
                 EventResult::Consumed
             }
             KeyCode::Char('?') => {
@@ -274,18 +274,18 @@ impl AppState {
         EventResult::NotConsumed
     }
 
-    /// Handle key events in create mode (selecting session type: t or a).
-    /// Transitions into drafting mode so the user can type a custom session name.
+    /// Handle key events in create mode (selecting window type: t or a).
+    /// Transitions into drafting mode so the user can type a custom window name.
     fn handle_create_mode_key(&mut self, key: KeyEvent) -> EventResult {
         match key.code {
-            // Terminal session: enter drafting mode for user to type a name
+            // Terminal window: enter drafting mode for user to type a name
             KeyCode::Char('t') => {
-                self.start_drafting(SessionType::Terminal);
+                self.start_drafting(WindowType::Terminal);
                 EventResult::Consumed
             }
-            // Agent session: enter drafting mode for user to type a name
+            // Agent window: enter drafting mode for user to type a name
             KeyCode::Char('a') => {
-                self.start_drafting(SessionType::Agent);
+                self.start_drafting(WindowType::Agent);
                 EventResult::Consumed
             }
             // Cancel
@@ -297,23 +297,23 @@ impl AppState {
         }
     }
 
-    /// Handle key events while drafting a new session name.
+    /// Handle key events while drafting a new window name.
     fn handle_drafting_key(&mut self, key: KeyEvent) -> EventResult {
         if let AppMode::Drafting(ref mut draft) = self.mode {
             match key.code {
-                // Create the session
+                // Create the window
                 KeyCode::Enter => {
-                    let session_type = draft.session_type;
+                    let window_type = draft.window_type;
                     // Empty names are now optional; generate the same collision-safe name used elsewhere.
                     let name = if draft.name.trim().is_empty() {
                         let existing: Vec<&str> =
-                            self.sessions.iter().map(|s| s.name.as_str()).collect();
-                        crate::name_generator::generate_unique_session_name(&existing)
+                            self.windows.iter().map(|s| s.name.as_str()).collect();
+                        crate::name_generator::generate_unique_window_name(&existing)
                     } else {
                         draft.name.trim().to_string()
                     };
                     self.mode = AppMode::Normal;
-                    EventResult::CreateSession { name, session_type }
+                    EventResult::CreateWindow { name, window_type }
                 }
                 // Cancel drafting
                 KeyCode::Esc => {
@@ -346,28 +346,28 @@ impl AppState {
         }
     }
 
-    /// Handle key events while renaming a session.
+    /// Handle key events while renaming a window.
     fn handle_renaming_key(&mut self, key: KeyEvent) -> EventResult {
         if let AppMode::Renaming(ref mut rename) = self.mode {
             match key.code {
                 // Complete rename
                 KeyCode::Enter => {
-                    let index = rename.session_index;
+                    let index = rename.window_index;
                     let new_name = rename.new_name.clone();
                     // Get old name before updating local state
                     let old_name = self
-                        .sessions
+                        .windows
                         .get(index)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
                     if !new_name.is_empty() && !old_name.is_empty() {
                         // Update local state
-                        self.rename_session(index, new_name.clone());
+                        self.rename_window(index, new_name.clone());
                         self.mode = AppMode::Normal;
                         // Sticky command mode keeps focus in the sidebar after editing.
                         self.focus = Focus::Sidebar;
-                        // Return RenameSession event for daemon to handle
-                        return EventResult::RenameSession { old_name, new_name };
+                        // Return RenameWindow event for server to handle
+                        return EventResult::RenameWindow { old_name, new_name };
                     }
                     self.mode = AppMode::Normal;
                     // Keep the visible command mode active even when the name is unchanged.
@@ -405,51 +405,51 @@ impl AppState {
         }
     }
 
-    /// Handle key events while the workspace overlay is open.
-    fn handle_workspace_overlay_key(&mut self, key: KeyEvent) -> EventResult {
-        if let AppMode::WorkspaceOverlay(ref mut overlay) = self.mode {
-            // If we're in drafting mode (creating a new workspace), handle text input
-            if overlay.drafting_workspace.is_some() {
+    /// Handle key events while the session overlay is open.
+    fn handle_session_overlay_key(&mut self, key: KeyEvent) -> EventResult {
+        if let AppMode::SessionOverlay(ref mut overlay) = self.mode {
+            // If we're in drafting mode (creating a new session), handle text input
+            if overlay.drafting_session.is_some() {
                 match key.code {
                     KeyCode::Enter => {
                         let name = overlay
-                            .drafting_workspace
+                            .drafting_session
                             .as_ref()
                             .map(|d| d.new_name.trim().to_string())
                             .unwrap_or_default();
                         if name.is_empty() {
-                            overlay.drafting_workspace = None;
+                            overlay.drafting_session = None;
                         } else {
                             let name_clone = name.clone();
-                            overlay.drafting_workspace = None;
-                            return EventResult::CreateWorkspace { name: name_clone };
+                            overlay.drafting_session = None;
+                            return EventResult::CreateSession { name: name_clone };
                         }
                         return EventResult::Consumed;
                     }
                     KeyCode::Esc => {
-                        overlay.drafting_workspace = None;
+                        overlay.drafting_session = None;
                         return EventResult::Consumed;
                     }
                     KeyCode::Char(c) => {
-                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                        if let Some(ref mut draft) = overlay.drafting_session {
                             draft.insert_char(c);
                         }
                         return EventResult::Consumed;
                     }
                     KeyCode::Backspace => {
-                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                        if let Some(ref mut draft) = overlay.drafting_session {
                             draft.delete_char();
                         }
                         return EventResult::Consumed;
                     }
                     KeyCode::Left => {
-                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                        if let Some(ref mut draft) = overlay.drafting_session {
                             draft.move_cursor_left();
                         }
                         return EventResult::Consumed;
                     }
                     KeyCode::Right => {
-                        if let Some(ref mut draft) = overlay.drafting_workspace {
+                        if let Some(ref mut draft) = overlay.drafting_session {
                             draft.move_cursor_right();
                         }
                         return EventResult::Consumed;
@@ -458,7 +458,7 @@ impl AppState {
                 }
             }
 
-            // If we're renaming a workspace, handle text input
+            // If we're renaming a session, handle text input
             if overlay.renaming.is_some() {
                 match key.code {
                     KeyCode::Enter => {
@@ -469,13 +469,13 @@ impl AppState {
                             .unwrap_or_default();
                         if !new_name.is_empty() {
                             let old_name = overlay
-                                .workspaces
+                                .sessions
                                 .get(overlay.selected_index)
                                 .cloned()
                                 .unwrap_or_default();
                             if !old_name.is_empty() {
                                 overlay.renaming = None;
-                                return EventResult::RenameWorkspace { old_name, new_name };
+                                return EventResult::RenameSession { old_name, new_name };
                             }
                         }
                         overlay.renaming = None;
@@ -522,45 +522,45 @@ impl AppState {
                 }
                 // Navigate down
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                    if let AppMode::SessionOverlay(ref mut ov) = self.mode {
                         ov.select_next();
                     }
                     return EventResult::Consumed;
                 }
                 // Navigate up
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                    if let AppMode::SessionOverlay(ref mut ov) = self.mode {
                         ov.select_previous();
                     }
                     return EventResult::Consumed;
                 }
-                // Select (switch to workspace) or move session to workspace
+                // Select (switch to session) or move window to session
                 KeyCode::Enter => {
-                    let (mode, selected, workspaces, active_workspace) =
-                        if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                    let (mode, selected, sessions, active_session) =
+                        if let AppMode::SessionOverlay(ref ov) = self.mode {
                             (
                                 ov.mode.clone(),
                                 ov.selected_index,
-                                ov.workspaces.clone(),
-                                ov.active_workspace.clone(),
+                                ov.sessions.clone(),
+                                ov.active_session.clone(),
                             )
                         } else {
                             return EventResult::Consumed;
                         };
-                    let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
+                    let session_name = sessions.get(selected).cloned().unwrap_or_default();
                     self.mode = AppMode::Normal;
                     return match mode {
-                        WorkspaceOverlayMode::Normal => EventResult::SwitchWorkspace {
-                            name: workspace_name,
+                        SessionOverlayMode::Normal => EventResult::SwitchSession {
+                            name: session_name,
                         },
-                        WorkspaceOverlayMode::MoveSession { session_name } => {
-                            // Spec: "If the selected workspace is the current workspace, do nothing."
-                            if workspace_name == active_workspace {
+                        SessionOverlayMode::MoveWindow { window_name } => {
+                            // Spec: "If the selected session is the current session, do nothing."
+                            if session_name == active_session {
                                 EventResult::Consumed
                             } else {
-                                EventResult::MoveSessionToWorkspace {
+                                EventResult::MoveWindowToSession {
+                                    window_name,
                                     session_name,
-                                    workspace_name,
                                 }
                             }
                         }
@@ -570,27 +570,27 @@ impl AppState {
                 KeyCode::Char('C') => {
                     let is_move_mode = matches!(
                         self.mode,
-                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                        AppMode::SessionOverlay(ref ov) if matches!(ov.mode, SessionOverlayMode::MoveWindow { .. })
                     );
                     if !is_move_mode {
-                        if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                        if let AppMode::SessionOverlay(ref mut ov) = self.mode {
                             // Inline draft: scroll to top so draft row at virtual index 0 is visible
                             ov.selected_index = 0;
                             ov.scroll_offset = 0;
-                            ov.drafting_workspace = Some(RenamingState::new(0, "", self.focus));
+                            ov.drafting_session = Some(RenamingState::new(0, "", self.focus));
                         }
                     }
                     return EventResult::Consumed;
                 }
-                // Rename selected workspace (disabled in move mode)
+                // Rename selected session (disabled in move mode)
                 KeyCode::Char('R') | KeyCode::Char('$') => {
                     let is_move_mode = matches!(
                         self.mode,
-                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                        AppMode::SessionOverlay(ref ov) if matches!(ov.mode, SessionOverlayMode::MoveWindow { .. })
                     );
                     if !is_move_mode {
-                        let selected_name = if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
-                            ov.workspaces
+                        let selected_name = if let AppMode::SessionOverlay(ref ov) = self.mode {
+                            ov.sessions
                                 .get(ov.selected_index)
                                 .cloned()
                                 .unwrap_or_default()
@@ -598,7 +598,7 @@ impl AppState {
                             String::new()
                         };
                         if !selected_name.is_empty() {
-                            if let AppMode::WorkspaceOverlay(ref mut ov) = self.mode {
+                            if let AppMode::SessionOverlay(ref mut ov) = self.mode {
                                 ov.renaming =
                                     Some(RenamingState::new(0, &selected_name, Focus::Sidebar));
                             }
@@ -606,31 +606,31 @@ impl AppState {
                     }
                     return EventResult::Consumed;
                 }
-                // Delete selected workspace (disabled in move mode) - shows confirmation
+                // Delete selected session (disabled in move mode) - shows confirmation
                 KeyCode::Char('K') => {
                     let is_move_mode = matches!(
                         self.mode,
-                        AppMode::WorkspaceOverlay(ref ov) if matches!(ov.mode, WorkspaceOverlayMode::MoveSession { .. })
+                        AppMode::SessionOverlay(ref ov) if matches!(ov.mode, SessionOverlayMode::MoveWindow { .. })
                     );
                     if !is_move_mode {
-                        let (selected, workspaces, active) =
-                            if let AppMode::WorkspaceOverlay(ref ov) = self.mode {
+                        let (selected, sessions, active) =
+                            if let AppMode::SessionOverlay(ref ov) = self.mode {
                                 (
                                     ov.selected_index,
-                                    ov.workspaces.clone(),
-                                    ov.active_workspace.clone(),
+                                    ov.sessions.clone(),
+                                    ov.active_session.clone(),
                                 )
                             } else {
                                 return EventResult::Consumed;
                             };
-                        let workspace_name = workspaces.get(selected).cloned().unwrap_or_default();
-                        // Don't try to delete an empty workspace name
-                        if workspace_name.is_empty() {
+                        let session_name = sessions.get(selected).cloned().unwrap_or_default();
+                        // Don't try to delete an empty session name
+                        if session_name.is_empty() {
                             return EventResult::Consumed;
                         }
                         // Close overlay and show confirmation
                         self.mode = AppMode::Confirming(ConfirmState::new(
-                            ConfirmAction::DeleteWorkspace(workspace_name),
+                            ConfirmAction::KillSession(session_name),
                             if active == "Default" {
                                 self.focus
                             } else {
@@ -649,42 +649,42 @@ impl AppState {
     /// Handle key events for confirmation prompts.
     fn handle_confirming_key(&mut self, key: KeyEvent) -> EventResult {
         if let AppMode::Confirming(ref confirm) = self.mode {
-            // Check if 'q' should also confirm (only for Quit action)
-            let is_quit_confirm =
-                matches!(confirm.action, ConfirmAction::Quit) && key.code == KeyCode::Char('q');
+            // Check if 'q' should also confirm (only for Detach action)
+            let is_detach_confirm =
+                matches!(confirm.action, ConfirmAction::Detach) && key.code == KeyCode::Char('q');
 
             match key.code {
-                // Confirm (yes, or 'q' for quit specifically)
+                // Confirm (yes, or 'q' for detach specifically)
                 KeyCode::Char('y') => {
                     let action = confirm.action.clone();
                     self.mode = AppMode::Normal;
                     match action {
-                        ConfirmAction::Quit => EventResult::Quit,
-                        ConfirmAction::DeleteSession(index) => {
-                            // Get the session name before removing from local state
+                        ConfirmAction::Detach => EventResult::Detach,
+                        ConfirmAction::KillWindow(index) => {
+                            // Get the window name before removing from local state
                             let name = self
-                                .sessions
+                                .windows
                                 .get(index)
                                 .map(|s| s.name.clone())
                                 .unwrap_or_default();
                             if !name.is_empty() {
                                 // Remove from local state
-                                self.remove_session(index);
-                                // Return DeleteSession event for daemon to handle
-                                EventResult::DeleteSession { name }
+                                self.remove_window(index);
+                                // Return KillWindow event for server to handle
+                                EventResult::KillWindow { name }
                             } else {
                                 EventResult::Consumed
                             }
                         }
-                        ConfirmAction::DeleteWorkspace(name) => {
-                            EventResult::DeleteWorkspace { name }
+                        ConfirmAction::KillSession(name) => {
+                            EventResult::KillSession { name }
                         }
                     }
                 }
-                // 'q' is alternative to 'y' for quit confirmation only
-                KeyCode::Char('q') if is_quit_confirm => {
+                // 'q' is alternative to 'y' for detach confirmation only
+                KeyCode::Char('q') if is_detach_confirm => {
                     self.mode = AppMode::Normal;
-                    EventResult::Quit
+                    EventResult::Detach
                 }
                 // Cancel (no)
                 KeyCode::Char('n') | KeyCode::Esc => {
@@ -702,7 +702,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ConfirmState, DraftingState, RenamingState, Session};
+    use crate::state::{ConfirmState, DraftingState, RenamingState, Window};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -720,134 +720,134 @@ mod tests {
 
     #[test]
     fn test_sidebar_up_down_navigation() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.focus = Focus::Sidebar;
 
         assert_eq!(state.selected_index, 0);
 
         let result = state.handle_key(key(KeyCode::Down));
-        // Navigation returns PreviewSession for live preview
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
+        // Navigation returns PreviewWindow for live preview
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
         let result = state.handle_key(key(KeyCode::Down));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
         // At bottom, should stay but still return preview for current selection
         let result = state.handle_key(key(KeyCode::Down));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
         let result = state.handle_key(key(KeyCode::Up));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
         let result = state.handle_key(key(KeyCode::Up));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
 
         // At top, should stay but still return preview for current selection
         let result = state.handle_key(key(KeyCode::Up));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
     }
 
     #[test]
     fn test_sidebar_vim_jk_navigation() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.focus = Focus::Sidebar;
 
         assert_eq!(state.selected_index, 0);
 
-        // j moves down (vim-style) and returns PreviewSession
+        // j moves down (vim-style) and returns PreviewWindow
         let result = state.handle_key(key(KeyCode::Char('j')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
         let result = state.handle_key(key(KeyCode::Char('j')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
         // At bottom, should stay but still return preview
         let result = state.handle_key(key(KeyCode::Char('j')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "c"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "c"));
         assert_eq!(state.selected_index, 2);
 
-        // k moves up (vim-style) and returns PreviewSession
+        // k moves up (vim-style) and returns PreviewWindow
         let result = state.handle_key(key(KeyCode::Char('k')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "b"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "b"));
         assert_eq!(state.selected_index, 1);
 
         let result = state.handle_key(key(KeyCode::Char('k')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
 
         // At top, should stay but still return preview
         let result = state.handle_key(key(KeyCode::Char('k')));
-        assert!(matches!(result, EventResult::PreviewSession { name } if name == "a"));
+        assert!(matches!(result, EventResult::PreviewWindow { name } if name == "a"));
         assert_eq!(state.selected_index, 0);
     }
 
     #[test]
     fn test_sidebar_enter_focuses_terminal() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Enter));
-        // Now returns SwitchSession instead of Consumed
-        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
+        // Now returns SwitchWindow instead of Consumed
+        assert!(matches!(result, EventResult::SwitchWindow { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_space_focuses_terminal() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Char(' ')));
-        // Now returns SwitchSession instead of Consumed
-        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
+        // Now returns SwitchWindow instead of Consumed
+        assert!(matches!(result, EventResult::SwitchWindow { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_right_focuses_terminal() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Right));
-        // Now returns SwitchSession instead of Consumed
-        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
+        // Now returns SwitchWindow instead of Consumed
+        assert!(matches!(result, EventResult::SwitchWindow { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_tab_focuses_terminal() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.focus = Focus::Sidebar;
 
         let result = state.handle_key(key(KeyCode::Tab));
         // Tab should focus terminal just like Enter, Space, and Right
-        assert!(matches!(result, EventResult::SwitchSession { name } if name == "test"));
+        assert!(matches!(result, EventResult::SwitchWindow { name } if name == "test"));
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_enter_focuses_terminal_in_welcome_state() {
-        // In welcome state (no sessions), Enter should still focus the terminal so the
+        // In welcome state (no windows), Enter should still focus the terminal so the
         // welcome text keybinding updates dynamically (shows ctrl+n instead of n).
         let mut state = AppState {
             focus: Focus::Sidebar,
@@ -856,19 +856,19 @@ mod tests {
 
         let result = state.handle_key(key(KeyCode::Enter));
         assert_eq!(result, EventResult::Consumed);
-        assert_eq!(state.focus, Focus::Terminal); // Should switch to terminal even with no sessions
+        assert_eq!(state.focus, Focus::Terminal); // Should switch to terminal even with no windows
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_esc_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("a"), Session::new("b")],
+            windows: vec![Window::new("a"), Window::new("b")],
             focus: Focus::Sidebar,
             selected_index: 0,
             ..Default::default()
         };
-        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_terminal(); // Sets previous_window to 0
         state.focus_sidebar();
         state.select_next(); // Now at 1
 
@@ -908,12 +908,12 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_ctrl_b_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("a"), Session::new("b")],
+            windows: vec![Window::new("a"), Window::new("b")],
             focus: Focus::Sidebar,
             selected_index: 0,
             ..Default::default()
         };
-        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_terminal(); // Sets previous_window to 0
         state.focus_sidebar();
         state.select_next(); // Now at 1
 
@@ -928,12 +928,12 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_ctrl_t_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("a"), Session::new("b")],
+            windows: vec![Window::new("a"), Window::new("b")],
             focus: Focus::Sidebar,
             selected_index: 0,
             ..Default::default()
         };
-        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_terminal(); // Sets previous_window to 0
         state.focus_sidebar();
         state.select_next(); // Now at 1
 
@@ -948,12 +948,12 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_b_jump_back() {
         let mut state = AppState {
-            sessions: vec![Session::new("a"), Session::new("b")],
+            windows: vec![Window::new("a"), Window::new("b")],
             focus: Focus::Sidebar,
             selected_index: 0,
             ..Default::default()
         };
-        state.focus_terminal(); // Sets previous_session to 0
+        state.focus_terminal(); // Sets previous_window to 0
         state.focus_sidebar();
         state.select_next(); // Now at 1
 
@@ -968,7 +968,7 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_sidebar_d_requests_delete_confirmation() {
         let mut state = AppState {
-            sessions: vec![Session::new("test")],
+            windows: vec![Window::new("test")],
             focus: Focus::Sidebar,
             ..Default::default()
         };
@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_)));
         if let AppMode::Confirming(ref confirm) = state.mode {
-            assert!(matches!(confirm.action, ConfirmAction::DeleteSession(0)));
+            assert!(matches!(confirm.action, ConfirmAction::KillWindow(0)));
         }
     }
 
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn test_sidebar_r_starts_renaming() {
         let mut state = AppState {
-            sessions: vec![Session::new("old_name")],
+            windows: vec![Window::new("old_name")],
             focus: Focus::Sidebar,
             ..Default::default()
         };
@@ -1019,7 +1019,7 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_sidebar_q_requests_quit_confirmation() {
+    fn test_sidebar_q_requests_detach_confirmation() {
         let mut state = AppState {
             focus: Focus::Sidebar,
             ..Default::default()
@@ -1029,7 +1029,7 @@ mod tests {
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_)));
         if let AppMode::Confirming(ref confirm) = state.mode {
-            assert_eq!(confirm.action, ConfirmAction::Quit);
+            assert_eq!(confirm.action, ConfirmAction::Detach);
         }
     }
 
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_terminal_ctrl_q_requests_quit_confirmation() {
+    fn test_terminal_ctrl_q_requests_detach_confirmation() {
         let mut state = AppState {
             focus: Focus::Terminal,
             ..Default::default()
@@ -1099,13 +1099,13 @@ mod tests {
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_)));
         if let AppMode::Confirming(ref confirm) = state.mode {
-            assert_eq!(confirm.action, ConfirmAction::Quit);
+            assert_eq!(confirm.action, ConfirmAction::Detach);
         }
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_sidebar_ctrl_q_requests_quit_confirmation() {
+    fn test_sidebar_ctrl_q_requests_detach_confirmation() {
         let mut state = AppState {
             focus: Focus::Sidebar,
             ..Default::default()
@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_)));
         if let AppMode::Confirming(ref confirm) = state.mode {
-            assert_eq!(confirm.action, ConfirmAction::Quit);
+            assert_eq!(confirm.action, ConfirmAction::Detach);
         }
     }
 
@@ -1135,7 +1135,7 @@ mod tests {
         // Should transition to Drafting mode for user to type a name
         match &state.mode {
             AppMode::Drafting(draft) => {
-                assert_eq!(draft.session_type, SessionType::Terminal);
+                assert_eq!(draft.window_type, WindowType::Terminal);
                 assert!(draft.name.is_empty(), "Draft name should start empty");
             }
             _ => panic!("Expected Drafting mode, got {:?}", state.mode),
@@ -1156,7 +1156,7 @@ mod tests {
         // Should transition to Drafting mode for user to type a name
         match &state.mode {
             AppMode::Drafting(draft) => {
-                assert_eq!(draft.session_type, SessionType::Agent);
+                assert_eq!(draft.window_type, WindowType::Agent);
                 assert!(draft.name.is_empty(), "Draft name should start empty");
             }
             _ => panic!("Expected Drafting mode, got {:?}", state.mode),
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn test_drafting_character_input() {
         let mut state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1217,7 +1217,7 @@ mod tests {
     #[test]
     fn test_drafting_backspace() {
         let mut state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1235,7 +1235,7 @@ mod tests {
     #[test]
     fn test_drafting_cursor_movement() {
         let mut state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1261,9 +1261,9 @@ mod tests {
     }
 
     #[test]
-    fn test_drafting_enter_creates_session() {
+    fn test_drafting_enter_creates_window() {
         let mut state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1273,10 +1273,10 @@ mod tests {
         state.handle_key(key(KeyCode::Char('t')));
 
         let result = state.handle_key(key(KeyCode::Enter));
-        assert!(matches!(result, EventResult::CreateSession { .. }));
-        if let EventResult::CreateSession { name, session_type } = result {
+        assert!(matches!(result, EventResult::CreateWindow { .. }));
+        if let EventResult::CreateWindow { name, window_type } = result {
             assert_eq!(name, "test");
-            assert_eq!(session_type, SessionType::Terminal);
+            assert_eq!(window_type, WindowType::Terminal);
         }
         assert!(matches!(state.mode, AppMode::Normal));
     }
@@ -1285,7 +1285,7 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_drafting_enter_with_empty_name_does_nothing() {
         let mut state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1298,7 +1298,7 @@ mod tests {
     fn test_drafting_esc_cancels() {
         let mut state = AppState {
             focus: Focus::Terminal,
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Terminal)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Terminal)),
             ..Default::default()
         };
 
@@ -1314,7 +1314,7 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_renaming_enter_completes_rename() {
         let mut state = AppState {
-            sessions: vec![Session::new("old")],
+            windows: vec![Window::new("old")],
             focus: Focus::Sidebar,
             mode: AppMode::Renaming(RenamingState::new(0, "old", Focus::Sidebar)),
             ..Default::default()
@@ -1329,20 +1329,20 @@ mod tests {
         state.handle_key(key(KeyCode::Char('w')));
 
         let result = state.handle_key(key(KeyCode::Enter));
-        // Now returns RenameSession instead of Consumed
+        // Now returns RenameWindow instead of Consumed
         assert!(
-            matches!(result, EventResult::RenameSession { old_name, new_name }
+            matches!(result, EventResult::RenameWindow { old_name, new_name }
             if old_name == "old" && new_name == "new")
         );
         assert!(matches!(state.mode, AppMode::Normal));
-        assert_eq!(state.sessions[0].name, "new");
+        assert_eq!(state.windows[0].name, "new");
         assert_eq!(state.focus, Focus::Terminal); // Per spec: rename confirm focuses terminal pane
     }
 
     #[test]
     fn test_renaming_esc_cancels() {
         let mut state = AppState {
-            sessions: vec![Session::new("original")],
+            windows: vec![Window::new("original")],
             focus: Focus::Sidebar,
             mode: AppMode::Renaming(RenamingState::new(0, "original", Focus::Sidebar)),
             ..Default::default()
@@ -1354,7 +1354,7 @@ mod tests {
         let result = state.handle_key(key(KeyCode::Esc));
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Normal));
-        assert_eq!(state.sessions[0].name, "original"); // Unchanged
+        assert_eq!(state.windows[0].name, "original"); // Unchanged
         assert_eq!(state.focus, Focus::Sidebar); // Restored
     }
 
@@ -1364,9 +1364,9 @@ mod tests {
         // Per spec: "Exit rename mode and focus on the terminal pane" — always Terminal, regardless
         // of where focus was when renaming started.
         let mut state = AppState {
-            sessions: vec![Session::new("session")],
+            windows: vec![Window::new("window")],
             focus: Focus::Terminal,
-            mode: AppMode::Renaming(RenamingState::new(0, "session", Focus::Terminal)),
+            mode: AppMode::Renaming(RenamingState::new(0, "window", Focus::Terminal)),
             ..Default::default()
         };
 
@@ -1383,47 +1383,47 @@ mod tests {
         state.handle_key(key(KeyCode::Char('w')));
 
         let result = state.handle_key(key(KeyCode::Enter));
-        assert!(matches!(result, EventResult::RenameSession { .. }));
+        assert!(matches!(result, EventResult::RenameWindow { .. }));
         assert_eq!(state.focus, Focus::Terminal); // Always focuses terminal after rename confirm
     }
 
     // === Confirmation Mode Tests ===
 
     #[test]
-    fn test_confirm_quit_y_returns_quit() {
+    fn test_confirm_detach_y_returns_detach() {
         let mut state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('y')));
-        assert_eq!(result, EventResult::Quit);
+        assert_eq!(result, EventResult::Detach);
         assert!(matches!(state.mode, AppMode::Normal));
     }
 
     #[test]
-    fn test_confirm_delete_y_removes_session() {
+    fn test_confirm_delete_y_removes_window() {
         let mut state = AppState {
-            sessions: vec![Session::new("a"), Session::new("b")],
+            windows: vec![Window::new("a"), Window::new("b")],
             mode: AppMode::Confirming(ConfirmState::new(
-                ConfirmAction::DeleteSession(0),
+                ConfirmAction::KillWindow(0),
                 Focus::Sidebar,
             )),
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('y')));
-        // Now returns DeleteSession instead of Consumed
-        assert!(matches!(result, EventResult::DeleteSession { name } if name == "a"));
-        assert_eq!(state.sessions.len(), 1);
-        assert_eq!(state.sessions[0].name, "b");
+        // Now returns KillWindow instead of Consumed
+        assert!(matches!(result, EventResult::KillWindow { name } if name == "a"));
+        assert_eq!(state.windows.len(), 1);
+        assert_eq!(state.windows[0].name, "b");
     }
 
     #[test]
     fn test_confirm_n_cancels() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1437,7 +1437,7 @@ mod tests {
     fn test_confirm_esc_cancels() {
         let mut state = AppState {
             focus: Focus::Terminal,
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Terminal)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Terminal)),
             ..Default::default()
         };
 
@@ -1450,7 +1450,7 @@ mod tests {
     #[test]
     fn test_confirm_other_keys_consumed() {
         let mut state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -1460,33 +1460,33 @@ mod tests {
     }
 
     #[test]
-    fn test_confirm_quit_q_returns_quit() {
+    fn test_confirm_detach_q_returns_detach() {
         let mut state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('q')));
-        assert_eq!(result, EventResult::Quit);
+        assert_eq!(result, EventResult::Detach);
         assert!(matches!(state.mode, AppMode::Normal));
     }
 
     #[test]
     fn test_confirm_delete_q_does_not_confirm() {
         let mut state = AppState {
-            sessions: vec![Session::new("test")],
+            windows: vec![Window::new("test")],
             mode: AppMode::Confirming(ConfirmState::new(
-                ConfirmAction::DeleteSession(0),
+                ConfirmAction::KillWindow(0),
                 Focus::Sidebar,
             )),
             ..Default::default()
         };
 
         let result = state.handle_key(key(KeyCode::Char('q')));
-        // 'q' should NOT confirm delete - only quit confirmation
+        // 'q' should NOT confirm delete - only detach confirmation
         assert_eq!(result, EventResult::Consumed);
         assert!(matches!(state.mode, AppMode::Confirming(_))); // Still confirming
-        assert_eq!(state.sessions.len(), 1); // Session not deleted
+        assert_eq!(state.windows.len(), 1); // Window not deleted
     }
 
     // === Mouse Mode Toggle Tests ===
@@ -1627,39 +1627,39 @@ mod tests {
         );
     }
 
-    // === Workspace Overlay Tests ===
+    // === Session Overlay Tests ===
 
-    fn workspace_overlay_state(
-        workspaces: Vec<&str>,
+    fn session_overlay_state(
+        sessions: Vec<&str>,
         active: &str,
-    ) -> crate::state::WorkspaceOverlayState {
-        crate::state::WorkspaceOverlayState::new(
-            workspaces.into_iter().map(|s| s.to_string()).collect(),
+    ) -> crate::state::SessionOverlayState {
+        crate::state::SessionOverlayState::new(
+            sessions.into_iter().map(|s| s.to_string()).collect(),
             active.to_string(),
         )
     }
 
     #[test]
-    fn test_m_key_opens_move_to_workspace_overlay() {
+    fn test_m_key_opens_move_to_session_overlay() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            sessions: vec![Session::new("mysession")],
-            workspaces: vec!["Default".to_string(), "Work".to_string()],
+            windows: vec![Window::new("mywindow")],
+            sessions: vec!["Default".to_string(), "Work".to_string()],
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Char('m')));
         assert!(
-            matches!(result, EventResult::OpenMoveToWorkspaceOverlay { ref session_name } if session_name == "mysession"),
-            "Expected OpenMoveToWorkspaceOverlay, got {:?}",
+            matches!(result, EventResult::OpenMoveToSessionOverlay { ref window_name } if window_name == "mywindow"),
+            "Expected OpenMoveToSessionOverlay, got {:?}",
             result
         );
     }
 
     #[test]
-    fn test_m_key_does_nothing_with_no_sessions() {
+    fn test_m_key_does_nothing_with_no_windows() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            sessions: vec![],
+            windows: vec![],
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Char('m')));
@@ -1668,9 +1668,9 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_overlay_esc_closes() {
+    fn test_session_overlay_esc_closes() {
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(
+            mode: AppMode::SessionOverlay(session_overlay_state(
                 vec!["Default", "Work"],
                 "Default",
             )),
@@ -1682,45 +1682,45 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_overlay_navigate_down() {
+    fn test_session_overlay_navigate_down() {
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(
+            mode: AppMode::SessionOverlay(session_overlay_state(
                 vec!["Default", "Work"],
                 "Default",
             )),
             ..Default::default()
         };
         state.handle_key(key(KeyCode::Down));
-        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+        if let AppMode::SessionOverlay(ref ov) = state.mode {
             assert_eq!(ov.selected_index, 1);
         } else {
-            panic!("Expected WorkspaceOverlay mode");
+            panic!("Expected SessionOverlay mode");
         }
     }
 
     #[test]
-    fn test_workspace_overlay_navigate_up() {
+    fn test_session_overlay_navigate_up() {
         let ov = {
-            let mut ov = workspace_overlay_state(vec!["Default", "Work"], "Work");
+            let mut ov = session_overlay_state(vec!["Default", "Work"], "Work");
             ov.selected_index = 1;
             ov
         };
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         state.handle_key(key(KeyCode::Up));
-        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+        if let AppMode::SessionOverlay(ref ov) = state.mode {
             assert_eq!(ov.selected_index, 0);
         } else {
-            panic!("Expected WorkspaceOverlay mode");
+            panic!("Expected SessionOverlay mode");
         }
     }
 
     #[test]
-    fn test_workspace_overlay_enter_switches_workspace() {
+    fn test_session_overlay_enter_switches_session() {
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(
+            mode: AppMode::SessionOverlay(session_overlay_state(
                 vec!["Default", "Work"],
                 "Default",
             )),
@@ -1730,131 +1730,131 @@ mod tests {
         state.handle_key(key(KeyCode::Down));
         let result = state.handle_key(key(KeyCode::Enter));
         assert!(
-            matches!(result, EventResult::SwitchWorkspace { ref name } if name == "Work"),
-            "Expected SwitchWorkspace(Work), got {:?}",
+            matches!(result, EventResult::SwitchSession { ref name } if name == "Work"),
+            "Expected SwitchSession(Work), got {:?}",
             result
         );
         assert_eq!(state.mode, AppMode::Normal);
     }
 
     #[test]
-    fn test_workspace_overlay_move_mode_enter_moves_session() {
-        use crate::state::WorkspaceOverlayState;
+    fn test_session_overlay_move_mode_enter_moves_window() {
+        use crate::state::SessionOverlayState;
         let ov = {
-            let mut ov = WorkspaceOverlayState::new_move_mode(
+            let mut ov = SessionOverlayState::new_move_mode(
                 vec!["Default".to_string(), "Work".to_string()],
                 "Default".to_string(),
-                "mysession".to_string(),
+                "mywindow".to_string(),
             );
             ov.selected_index = 1; // Select "Work"
             ov
         };
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Enter));
         assert!(
-            matches!(result, EventResult::MoveSessionToWorkspace { ref session_name, ref workspace_name }
-                if session_name == "mysession" && workspace_name == "Work"),
-            "Expected MoveSessionToWorkspace, got {:?}",
+            matches!(result, EventResult::MoveWindowToSession { ref window_name, ref session_name }
+                if window_name == "mywindow" && session_name == "Work"),
+            "Expected MoveWindowToSession, got {:?}",
             result
         );
         assert_eq!(state.mode, AppMode::Normal);
     }
 
     #[test]
-    fn test_workspace_overlay_move_mode_n_does_nothing() {
-        use crate::state::WorkspaceOverlayState;
-        let ov = WorkspaceOverlayState::new_move_mode(
+    fn test_session_overlay_move_mode_n_does_nothing() {
+        use crate::state::SessionOverlayState;
+        let ov = SessionOverlayState::new_move_mode(
             vec!["Default".to_string(), "Work".to_string()],
             "Default".to_string(),
-            "mysession".to_string(),
+            "mywindow".to_string(),
         );
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         // 'n' should be ignored in move mode
         let result = state.handle_key(key(KeyCode::Char('n')));
         assert_eq!(result, EventResult::Consumed);
-        // No drafting_workspace should be set
-        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+        // No drafting_session should be set
+        if let AppMode::SessionOverlay(ref ov) = state.mode {
             assert!(
-                ov.drafting_workspace.is_none(),
-                "drafting_workspace should not be set in move mode"
+                ov.drafting_session.is_none(),
+                "drafting_session should not be set in move mode"
             );
         }
     }
 
     #[test]
-    fn test_workspace_overlay_move_mode_d_does_nothing() {
-        use crate::state::WorkspaceOverlayState;
-        let ov = WorkspaceOverlayState::new_move_mode(
+    fn test_session_overlay_move_mode_d_does_nothing() {
+        use crate::state::SessionOverlayState;
+        let ov = SessionOverlayState::new_move_mode(
             vec!["Default".to_string(), "Work".to_string()],
             "Default".to_string(),
-            "mysession".to_string(),
+            "mywindow".to_string(),
         );
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         // 'd' should not delete in move mode
         state.handle_key(key(KeyCode::Down)); // select Work
         let result = state.handle_key(key(KeyCode::Char('d')));
         assert_eq!(result, EventResult::Consumed);
-        // Mode should still be WorkspaceOverlay (not Normal)
-        assert!(matches!(state.mode, AppMode::WorkspaceOverlay(_)));
+        // Mode should still be SessionOverlay (not Normal)
+        assert!(matches!(state.mode, AppMode::SessionOverlay(_)));
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_workspace_overlay_normal_mode_n_creates_workspace() {
+    fn test_session_overlay_normal_mode_n_creates_session() {
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(vec!["Default"], "Default")),
+            mode: AppMode::SessionOverlay(session_overlay_state(vec!["Default"], "Default")),
             ..Default::default()
         };
         state.handle_key(key(KeyCode::Char('n')));
-        if let AppMode::WorkspaceOverlay(ref ov) = state.mode {
+        if let AppMode::SessionOverlay(ref ov) = state.mode {
             assert!(
-                ov.drafting_workspace.is_some(),
-                "drafting_workspace should be set after 'n'"
+                ov.drafting_session.is_some(),
+                "drafting_session should be set after 'n'"
             );
         } else {
-            panic!("Expected WorkspaceOverlay mode");
+            panic!("Expected SessionOverlay mode");
         }
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_ctrl_w_opens_workspace_overlay() {
+    fn test_ctrl_w_opens_session_overlay() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            workspaces: vec!["Default".to_string()],
+            sessions: vec!["Default".to_string()],
             ..Default::default()
         };
         let result = state.handle_key(ctrl_key('w'));
-        assert_eq!(result, EventResult::OpenWorkspaceOverlay);
+        assert_eq!(result, EventResult::OpenSessionOverlay);
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_w_opens_workspace_overlay_from_sidebar() {
+    fn test_w_opens_session_overlay_from_sidebar() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            workspaces: vec!["Default".to_string()],
+            sessions: vec!["Default".to_string()],
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(result, EventResult::OpenWorkspaceOverlay);
+        assert_eq!(result, EventResult::OpenSessionOverlay);
     }
 
     #[test]
-    fn test_w_does_not_open_workspace_overlay_from_terminal() {
+    fn test_w_does_not_open_session_overlay_from_terminal() {
         // bare 'w' should NOT open overlay from terminal (only ctrl+w)
         let mut state = AppState {
             focus: Focus::Terminal,
-            workspaces: vec!["Default".to_string()],
+            sessions: vec!["Default".to_string()],
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Char('w')));
@@ -1864,9 +1864,9 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_workspace_overlay_q_shows_quit_confirmation() {
+    fn test_session_overlay_q_shows_detach_confirmation() {
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(workspace_overlay_state(
+            mode: AppMode::SessionOverlay(session_overlay_state(
                 vec!["Default", "Work"],
                 "Default",
             )),
@@ -1874,7 +1874,7 @@ mod tests {
         };
         let result = state.handle_key(key(KeyCode::Char('q')));
         assert_eq!(result, EventResult::Consumed);
-        // Overlay should be closed and quit confirmation should be shown
+        // Overlay should be closed and detach confirmation should be shown
         assert!(
             matches!(state.mode, AppMode::Confirming(_)),
             "Mode should be Confirming after 'q'"
@@ -1882,23 +1882,23 @@ mod tests {
         if let AppMode::Confirming(ref confirm) = state.mode {
             assert_eq!(
                 confirm.action,
-                ConfirmAction::Quit,
-                "Should be Quit confirmation"
+                ConfirmAction::Detach,
+                "Should be Detach confirmation"
             );
         }
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_workspace_overlay_move_mode_q_shows_quit_confirmation() {
-        use crate::state::WorkspaceOverlayState;
-        let ov = WorkspaceOverlayState::new_move_mode(
+    fn test_session_overlay_move_mode_q_shows_detach_confirmation() {
+        use crate::state::SessionOverlayState;
+        let ov = SessionOverlayState::new_move_mode(
             vec!["Default".to_string(), "Work".to_string()],
             "Default".to_string(),
-            "mysession".to_string(),
+            "mywindow".to_string(),
         );
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Char('q')));
@@ -1910,25 +1910,25 @@ mod tests {
     }
 
     #[test]
-    fn test_move_to_same_workspace_is_noop() {
-        // Spec: "If the selected workspace is the current workspace, do nothing."
-        use crate::state::WorkspaceOverlayState;
-        let ov = WorkspaceOverlayState::new_move_mode(
+    fn test_move_to_same_session_is_noop() {
+        // Spec: "If the selected session is the current session, do nothing."
+        use crate::state::SessionOverlayState;
+        let ov = SessionOverlayState::new_move_mode(
             vec!["Default".to_string(), "Work".to_string()],
-            "Default".to_string(), // active workspace
-            "mysession".to_string(),
+            "Default".to_string(), // active session
+            "mywindow".to_string(),
         );
         // selected_index is 0, which is "Default" (same as active)
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Enter));
-        // Should be Consumed (no-op), not MoveSessionToWorkspace
+        // Should be Consumed (no-op), not MoveWindowToSession
         assert_eq!(
             result,
             EventResult::Consumed,
-            "Moving to same workspace should be a no-op (Consumed), got {:?}",
+            "Moving to same session should be a no-op (Consumed), got {:?}",
             result
         );
         // Overlay should be closed
@@ -1939,45 +1939,45 @@ mod tests {
     }
 
     #[test]
-    fn test_move_to_different_workspace_works() {
-        use crate::state::WorkspaceOverlayState;
-        let mut ov = WorkspaceOverlayState::new_move_mode(
+    fn test_move_to_different_session_works() {
+        use crate::state::SessionOverlayState;
+        let mut ov = SessionOverlayState::new_move_mode(
             vec!["Default".to_string(), "Work".to_string()],
-            "Default".to_string(), // active workspace
-            "mysession".to_string(),
+            "Default".to_string(), // active session
+            "mywindow".to_string(),
         );
         // Select "Work" (index 1)
         ov.selected_index = 1;
         let mut state = AppState {
-            mode: AppMode::WorkspaceOverlay(ov),
+            mode: AppMode::SessionOverlay(ov),
             ..Default::default()
         };
         let result = state.handle_key(key(KeyCode::Enter));
         assert!(
-            matches!(result, EventResult::MoveSessionToWorkspace {
-                ref session_name, ref workspace_name
-            } if session_name == "mysession" && workspace_name == "Work"),
-            "Moving to different workspace should emit MoveSessionToWorkspace, got {:?}",
+            matches!(result, EventResult::MoveWindowToSession {
+                ref window_name, ref session_name
+            } if window_name == "mywindow" && session_name == "Work"),
+            "Moving to different session should emit MoveWindowToSession, got {:?}",
             result
         );
     }
 
     #[test]
     fn tmux_toggle_commits_and_ctrl_space_legacy_null_is_supported() {
-        let mut state = AppState::with_sessions(vec![Session::new("one"), Session::new("two")]);
+        let mut state = AppState::with_windows(vec![Window::new("one"), Window::new("two")]);
         state.focus = Focus::Terminal;
         assert_eq!(state.handle_key(ctrl_key('b')), EventResult::Consumed);
         assert_eq!(state.focus, Focus::Sidebar);
         state.selected_index = 1;
         assert!(
-            matches!(state.handle_key(key(KeyCode::Null)), EventResult::SwitchSession { name } if name == "two")
+            matches!(state.handle_key(key(KeyCode::Null)), EventResult::SwitchWindow { name } if name == "two")
         );
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
     fn tmux_sidebar_commands_create_browse_delete_and_detach() {
-        let mut state = AppState::with_sessions(vec![Session::new("one"), Session::new("two")]);
+        let mut state = AppState::with_windows(vec![Window::new("one"), Window::new("two")]);
         state.focus = Focus::Sidebar;
         assert!(matches!(
             state.handle_key(key(KeyCode::Char('c'))),
@@ -1986,7 +1986,7 @@ mod tests {
         assert!(matches!(state.mode, AppMode::Drafting(_)));
         state.mode = AppMode::Normal;
         assert!(
-            matches!(state.handle_key(key(KeyCode::Char('n'))), EventResult::PreviewSession { name } if name == "two")
+            matches!(state.handle_key(key(KeyCode::Char('n'))), EventResult::PreviewWindow { name } if name == "two")
         );
         assert_eq!(
             state.handle_key(key(KeyCode::Delete)),
@@ -1995,7 +1995,7 @@ mod tests {
         assert!(matches!(
             state.mode,
             AppMode::Confirming(ConfirmState {
-                action: ConfirmAction::DeleteSession(1),
+                action: ConfirmAction::KillWindow(1),
                 ..
             })
         ));
@@ -2007,7 +2007,7 @@ mod tests {
         assert!(matches!(
             state.mode,
             AppMode::Confirming(ConfirmState {
-                action: ConfirmAction::Quit,
+                action: ConfirmAction::Detach,
                 ..
             })
         ));
@@ -2030,22 +2030,22 @@ mod tests {
 
     #[test]
     fn direct_alt_shortcuts_switch_and_reorder() {
-        let mut state = AppState::with_sessions(vec![Session::new("one"), Session::new("two")]);
+        let mut state = AppState::with_windows(vec![Window::new("one"), Window::new("two")]);
         state.focus = Focus::Terminal;
         assert!(
-            matches!(state.handle_key(modified_key(KeyCode::Char('2'), KeyModifiers::ALT)), EventResult::SwitchSession { name } if name == "two")
+            matches!(state.handle_key(modified_key(KeyCode::Char('2'), KeyModifiers::ALT)), EventResult::SwitchWindow { name } if name == "two")
         );
         assert_eq!(
             state.handle_key(modified_key(
                 KeyCode::Left,
                 KeyModifiers::ALT | KeyModifiers::SHIFT
             )),
-            EventResult::ReorderSession { offset: -1 }
+            EventResult::ReorderWindow { offset: -1 }
         );
-        assert_eq!(state.sessions[0].name, "two");
+        assert_eq!(state.windows[0].name, "two");
         assert_eq!(
             state.handle_key(modified_key(KeyCode::Down, KeyModifiers::ALT)),
-            EventResult::SwitchRelativeWorkspace { offset: 1 }
+            EventResult::SwitchRelativeSession { offset: 1 }
         );
     }
 
@@ -2055,7 +2055,7 @@ mod tests {
             focus: Focus::Sidebar,
             ..Default::default()
         };
-        state.start_drafting(SessionType::Terminal);
+        state.start_drafting(WindowType::Terminal);
         assert_eq!(state.handle_key(ctrl_key('b')), EventResult::Consumed);
         assert_eq!(state.focus, Focus::Sidebar);
         assert!(matches!(state.mode, AppMode::Drafting(_)));

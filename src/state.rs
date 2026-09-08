@@ -1,32 +1,36 @@
 //! Application state management for Sidebar TUI.
 //!
-//! This module defines the core state types for managing focus, modes, and sessions
+//! This module defines the core state types for managing focus, modes, and windows
 //! following patterns from gitui, Zellij, and ratatui examples.
+//!
+//! Old workspaces are now sessions and old sessions are windows, matching tmux.
+//! Each window currently has one terminal pane; the sidebar is a UI region, not a pane.
+//! Detach leaves windows running; killing a window or session terminates its processes.
 
-/// Which pane currently has keyboard focus.
+/// Which region currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// Sidebar pane is focused (session list).
+    /// Sidebar region is focused (window list).
     #[default]
     Sidebar,
     /// Terminal pane is focused.
     Terminal,
 }
 
-/// Type of session being created.
+/// Type of window being created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionType {
-    /// Standard terminal session.
+pub enum WindowType {
+    /// Standard terminal window.
     Terminal,
-    /// Agent session (runs `claude` command on creation).
+    /// Agent window (runs `claude` command on creation).
     Agent,
 }
 
-/// State for drafting a new session name.
+/// State for drafting a new window name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DraftingState {
-    /// Type of session being created (Terminal or Agent).
-    pub session_type: SessionType,
+    /// Type of window being created (Terminal or Agent).
+    pub window_type: WindowType,
     /// Current draft name being typed.
     pub name: String,
     /// Cursor position within the name (byte index).
@@ -36,17 +40,17 @@ pub struct DraftingState {
 }
 
 impl DraftingState {
-    /// Create a new DraftingState for the given session type.
-    pub fn new(session_type: SessionType, previous_focus: Focus) -> Self {
+    /// Create a new DraftingState for the given window type.
+    pub fn new(window_type: WindowType, previous_focus: Focus) -> Self {
         Self {
-            session_type,
+            window_type,
             name: String::new(),
             cursor_position: 0,
             previous_focus,
         }
     }
 
-    /// Insert a character at the cursor position if it's a valid session name character.
+    /// Insert a character at the cursor position if it's a valid window name character.
     /// Valid characters: a-z, A-Z, 0-9, space, hyphen, underscore, period.
     pub fn insert_char(&mut self, c: char) {
         if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' || c == '.' {
@@ -91,11 +95,11 @@ impl DraftingState {
     }
 }
 
-/// State for renaming an existing session.
+/// State for renaming an existing window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenamingState {
-    /// Index of the session being renamed in the sessions list.
-    pub session_index: usize,
+    /// Index of the window being renamed in the windows list.
+    pub window_index: usize,
     /// New name being typed.
     pub new_name: String,
     /// Cursor position within the new name (byte index).
@@ -105,18 +109,18 @@ pub struct RenamingState {
 }
 
 impl RenamingState {
-    /// Create a new RenamingState from an existing session.
-    pub fn new(session_index: usize, current_name: &str, previous_focus: Focus) -> Self {
+    /// Create a new RenamingState from an existing window.
+    pub fn new(window_index: usize, current_name: &str, previous_focus: Focus) -> Self {
         let cursor_position = current_name.len();
         Self {
-            session_index,
+            window_index,
             new_name: current_name.to_string(),
             cursor_position,
             previous_focus,
         }
     }
 
-    /// Insert a character at the cursor position if it's a valid session name character.
+    /// Insert a character at the cursor position if it's a valid window name character.
     pub fn insert_char(&mut self, c: char) {
         if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' || c == '.' {
             self.new_name.insert(self.cursor_position, c);
@@ -162,12 +166,12 @@ impl RenamingState {
 /// Action that requires confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
-    /// Delete a session by its index.
-    DeleteSession(usize),
-    /// Delete a workspace (and all its sessions) by name.
-    DeleteWorkspace(String),
-    /// Quit the TUI.
-    Quit,
+    /// Kill a window by its index.
+    KillWindow(usize),
+    /// Kill a session (and all its windows) by name.
+    KillSession(String),
+    /// Detach the TUI.
+    Detach,
 }
 
 /// State for showing a confirmation prompt.
@@ -191,11 +195,11 @@ impl ConfirmState {
     /// Get the confirmation prompt message.
     pub fn message(&self) -> &'static str {
         match &self.action {
-            ConfirmAction::DeleteSession(_) => "Delete this session permanently?",
-            ConfirmAction::DeleteWorkspace(_) => {
-                "Delete workspace and ALL its sessions permanently?"
+            ConfirmAction::KillWindow(_) => "Kill this window permanently?",
+            ConfirmAction::KillSession(_) => {
+                "Kill session and ALL its windows permanently?"
             }
-            ConfirmAction::Quit => "Quit Sidebar TUI?",
+            ConfirmAction::Detach => "Detach Sidebar TUI?",
         }
     }
 
@@ -203,82 +207,82 @@ impl ConfirmState {
     pub fn is_important(&self) -> bool {
         matches!(
             &self.action,
-            ConfirmAction::DeleteSession(_) | ConfirmAction::DeleteWorkspace(_)
+            ConfirmAction::KillWindow(_) | ConfirmAction::KillSession(_)
         )
     }
 }
 
-/// Mode for the workspace overlay.
+/// Mode for the session overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkspaceOverlayMode {
-    /// Normal workspace management mode.
+pub enum SessionOverlayMode {
+    /// Normal session management mode.
     Normal,
-    /// Move-to-workspace mode (triggered by 'm' in sidebar).
-    MoveSession {
-        /// Name of the session being moved.
-        session_name: String,
+    /// Move-to-session mode (triggered by 'm' in sidebar).
+    MoveWindow {
+        /// Name of the window being moved.
+        window_name: String,
     },
 }
 
-/// State for the workspace overlay.
+/// State for the session overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceOverlayState {
-    /// List of all workspaces (sorted alphabetically).
-    pub workspaces: Vec<String>,
-    /// Name of the currently active workspace.
-    pub active_workspace: String,
-    /// Index of the selected workspace in the list.
+pub struct SessionOverlayState {
+    /// List of all sessions (sorted alphabetically).
+    pub sessions: Vec<String>,
+    /// Name of the currently active session.
+    pub active_session: String,
+    /// Index of the selected session in the list.
     pub selected_index: usize,
-    /// Scroll offset for the workspace list.
+    /// Scroll offset for the session list.
     pub scroll_offset: usize,
-    /// Last known visible height of the workspace list area (updated each render cycle).
+    /// Last known visible height of the session list area (updated each render cycle).
     pub visible_height: usize,
-    /// Mode of the overlay (normal or move-to-workspace).
-    pub mode: WorkspaceOverlayMode,
+    /// Mode of the overlay (normal or move-to-session).
+    pub mode: SessionOverlayMode,
     /// If renaming: the new name being typed.
     pub renaming: Option<RenamingState>,
-    /// If creating new workspace: the draft name being typed.
-    pub drafting_workspace: Option<RenamingState>,
+    /// If creating new session: the draft name being typed.
+    pub drafting_session: Option<RenamingState>,
 }
 
-impl WorkspaceOverlayState {
+impl SessionOverlayState {
     /// Create a new overlay state in normal mode.
-    pub fn new(workspaces: Vec<String>, active_workspace: String) -> Self {
-        let selected_index = workspaces
+    pub fn new(sessions: Vec<String>, active_session: String) -> Self {
+        let selected_index = sessions
             .iter()
-            .position(|w| w == &active_workspace)
+            .position(|w| w == &active_session)
             .unwrap_or(0);
         Self {
-            workspaces,
-            active_workspace,
+            sessions,
+            active_session,
             selected_index,
             scroll_offset: 0,
             visible_height: 20,
-            mode: WorkspaceOverlayMode::Normal,
+            mode: SessionOverlayMode::Normal,
             renaming: None,
-            drafting_workspace: None,
+            drafting_session: None,
         }
     }
 
-    /// Create overlay state in move-to-workspace mode.
+    /// Create overlay state in move-to-session mode.
     pub fn new_move_mode(
-        workspaces: Vec<String>,
-        active_workspace: String,
-        session_name: String,
+        sessions: Vec<String>,
+        active_session: String,
+        window_name: String,
     ) -> Self {
-        let selected_index = workspaces
+        let selected_index = sessions
             .iter()
-            .position(|w| w == &active_workspace)
+            .position(|w| w == &active_session)
             .unwrap_or(0);
         Self {
-            workspaces,
-            active_workspace: active_workspace.clone(),
+            sessions,
+            active_session: active_session.clone(),
             selected_index,
             scroll_offset: 0,
             visible_height: 20,
-            mode: WorkspaceOverlayMode::MoveSession { session_name },
+            mode: SessionOverlayMode::MoveWindow { window_name },
             renaming: None,
-            drafting_workspace: None,
+            drafting_session: None,
         }
     }
 
@@ -294,8 +298,8 @@ impl WorkspaceOverlayState {
 
     /// Move selection down.
     pub fn select_next(&mut self) {
-        let count = self.workspaces.len()
-            + if self.drafting_workspace.is_some() {
+        let count = self.sessions.len()
+            + if self.drafting_session.is_some() {
                 1
             } else {
                 0
@@ -310,19 +314,19 @@ impl WorkspaceOverlayState {
         }
     }
 
-    /// Get the selected workspace name (None if drafting new).
-    pub fn selected_workspace(&self) -> Option<&str> {
-        if let Some(drafting) = &self.drafting_workspace {
+    /// Get the selected session name (None if drafting new).
+    pub fn selected_session(&self) -> Option<&str> {
+        if let Some(drafting) = &self.drafting_session {
             // The draft row is at index 0
             if self.selected_index == 0 {
                 return None;
             }
             let _ = drafting;
-            self.workspaces
+            self.sessions
                 .get(self.selected_index.saturating_sub(1))
                 .map(|s| s.as_str())
         } else {
-            self.workspaces.get(self.selected_index).map(|s| s.as_str())
+            self.sessions.get(self.selected_index).map(|s| s.as_str())
         }
     }
 }
@@ -334,19 +338,19 @@ pub enum AppMode {
     /// Normal operation - input depends on current focus.
     #[default]
     Normal,
-    /// Create mode - waiting for user to select session type (t or a).
+    /// Create mode - waiting for user to select window type (t or a).
     CreateMode {
         /// Focus before entering create mode (to restore on cancel).
         previous_focus: Focus,
     },
-    /// Drafting a new session name.
+    /// Drafting a new window name.
     Drafting(DraftingState),
-    /// Renaming an existing session.
+    /// Renaming an existing window.
     Renaming(RenamingState),
     /// Showing a confirmation prompt.
     Confirming(ConfirmState),
-    /// Workspace overlay is open.
-    WorkspaceOverlay(WorkspaceOverlayState),
+    /// Session overlay is open.
+    SessionOverlay(SessionOverlayState),
     /// Full sidebar command reference opened with `?`.
     Help,
 }
@@ -363,17 +367,17 @@ impl AppMode {
     }
 }
 
-/// A terminal session in the sidebar list.
+/// A terminal window in the sidebar list.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Session {
-    /// Session name displayed in the sidebar.
+pub struct Window {
+    /// Window name displayed in the sidebar.
     pub name: String,
-    /// Whether this session is currently attached (active in this TUI).
+    /// Whether this window is currently attached (active in this TUI).
     pub is_attached: bool,
 }
 
-impl Session {
-    /// Create a new Session with the given name.
+impl Window {
+    /// Create a new Window with the given name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -381,7 +385,7 @@ impl Session {
         }
     }
 
-    /// Create a new attached Session.
+    /// Create a new attached Window.
     pub fn attached(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -397,36 +401,36 @@ pub enum EventResult {
     Consumed,
     /// Event was not consumed (may be handled by caller).
     NotConsumed,
-    /// User requested to quit the TUI.
-    Quit,
-    /// Create a new session with the given name and type.
-    CreateSession {
-        /// Name for the new session.
+    /// User requested to detach the TUI.
+    Detach,
+    /// Create a new window with the given name and type.
+    CreateWindow {
+        /// Name for the new window.
         name: String,
-        /// Type of session (Terminal or Agent).
-        session_type: SessionType,
+        /// Type of window (Terminal or Agent).
+        window_type: WindowType,
     },
-    /// Delete a session by name.
-    DeleteSession {
-        /// Name of the session to delete.
+    /// Kill a window by name.
+    KillWindow {
+        /// Name of the window to kill.
         name: String,
     },
-    /// Rename a session.
-    RenameSession {
-        /// Old session name.
+    /// Rename a window.
+    RenameWindow {
+        /// Old window name.
         old_name: String,
-        /// New session name.
+        /// New window name.
         new_name: String,
     },
-    /// Switch to a different session by name.
-    SwitchSession {
-        /// Name of the session to switch to.
+    /// Switch to a different window by name.
+    SwitchWindow {
+        /// Name of the window to switch to.
         name: String,
     },
-    /// Preview a session's terminal content (without fully attaching).
+    /// Preview a window's terminal content (without fully attaching).
     /// Used when navigating the sidebar to show a live preview.
-    PreviewSession {
-        /// Name of the session to preview.
+    PreviewWindow {
+        /// Name of the window to preview.
         name: String,
     },
     /// Toggle mouse capture mode.
@@ -436,72 +440,72 @@ pub enum EventResult {
     /// Toggle zoom mode: expands terminal pane to full width by hiding the sidebar.
     /// Allows clean text selection of terminal-only content in editors like VSCode.
     ToggleZoom,
-    /// Switch to the previous/next workspace in display order.
-    SwitchRelativeWorkspace {
+    /// Switch to the previous/next session in display order.
+    SwitchRelativeSession {
         offset: isize,
     },
     /// Reorder the selected window locally in display order.
-    ReorderSession {
+    ReorderWindow {
         offset: isize,
     },
-    /// Open workspace management and immediately start the requested action.
-    OpenWorkspaceCreate,
-    OpenWorkspaceRename,
-    OpenWorkspaceDelete,
-    /// Open workspace overlay in normal mode.
-    OpenWorkspaceOverlay,
-    /// Open workspace overlay in move-to-workspace mode.
-    OpenMoveToWorkspaceOverlay {
-        /// The session to move.
-        session_name: String,
+    /// Open session management and immediately start the requested action.
+    OpenSessionCreate,
+    OpenSessionRename,
+    OpenSessionKill,
+    /// Open session overlay in normal mode.
+    OpenSessionOverlay,
+    /// Open session overlay in move-to-session mode.
+    OpenMoveToSessionOverlay {
+        /// The window to move.
+        window_name: String,
     },
-    /// Switch to a different workspace.
-    SwitchWorkspace {
-        /// Name of the workspace to switch to.
+    /// Switch to a different session.
+    SwitchSession {
+        /// Name of the session to switch to.
         name: String,
     },
-    /// Create a new workspace.
-    CreateWorkspace {
-        /// Name for the new workspace.
+    /// Create a new session.
+    CreateSession {
+        /// Name for the new session.
         name: String,
     },
-    /// Rename a workspace.
-    RenameWorkspace {
-        /// Old workspace name.
+    /// Rename a session.
+    RenameSession {
+        /// Old session name.
         old_name: String,
-        /// New workspace name.
+        /// New session name.
         new_name: String,
     },
-    /// Delete a workspace and all its sessions.
-    DeleteWorkspace {
-        /// Name of the workspace to delete.
+    /// Kill a session and all its windows.
+    KillSession {
+        /// Name of the session to kill.
         name: String,
     },
-    /// Move a session to a different workspace.
-    MoveSessionToWorkspace {
-        /// Name of the session to move.
+    /// Move a window to a different session.
+    MoveWindowToSession {
+        /// Name of the window to move.
+        window_name: String,
+        /// Name of the destination session.
         session_name: String,
-        /// Name of the destination workspace.
-        workspace_name: String,
     },
 }
 
 /// Main application state.
 #[derive(Debug, Clone)]
 pub struct AppState {
-    /// Which pane currently has focus.
+    /// Which region currently has focus.
     pub focus: Focus,
     /// Current application mode (Normal, CreateMode, Drafting, etc.).
     pub mode: AppMode,
-    /// List of terminal sessions (ordered by most recently used).
-    pub sessions: Vec<Session>,
-    /// Index of the currently selected session in the sidebar.
+    /// List of terminal windows (ordered by most recently used).
+    pub windows: Vec<Window>,
+    /// Index of the currently selected window in the sidebar.
     pub selected_index: usize,
-    /// Scroll offset for the sidebar session list.
+    /// Scroll offset for the sidebar window list.
     pub scroll_offset: usize,
-    /// Previously active session index for `l` (last window).
-    pub previous_session: Option<usize>,
-    /// Session that was active when sidebar browsing began; Esc/q restores it.
+    /// Previously active window index for `l` (last window).
+    pub previous_window: Option<usize>,
+    /// Window that was active when sidebar browsing began; Esc/q restores it.
     pub browsing_origin: Option<usize>,
     /// Whether mouse capture is enabled (for scroll wheel support).
     /// When disabled, native terminal text selection works.
@@ -509,10 +513,10 @@ pub struct AppState {
     /// Whether the terminal pane is zoomed to full width (sidebar hidden).
     /// Used to allow clean text selection of only terminal content in editors like VSCode.
     pub zoomed: bool,
-    /// The name of the currently active workspace.
-    pub workspace_name: String,
-    /// List of all workspace names (for the workspace overlay).
-    pub workspaces: Vec<String>,
+    /// The name of the currently active session.
+    pub session_name: String,
+    /// List of all session names (for the session overlay).
+    pub sessions: Vec<String>,
 }
 
 impl Default for AppState {
@@ -520,36 +524,36 @@ impl Default for AppState {
         Self {
             focus: Focus::default(),
             mode: AppMode::default(),
-            sessions: Vec::new(),
+            windows: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
-            previous_session: None,
+            previous_window: None,
             browsing_origin: None,
             mouse_mode: true,
             zoomed: false,
-            workspace_name: "Default".to_string(),
-            workspaces: vec!["Default".to_string()],
+            session_name: "Default".to_string(),
+            sessions: vec!["Default".to_string()],
         }
     }
 }
 
 impl AppState {
-    /// Create a new AppState with the given sessions.
-    pub fn with_sessions(sessions: Vec<Session>) -> Self {
+    /// Create a new AppState with the given windows.
+    pub fn with_windows(windows: Vec<Window>) -> Self {
         Self {
-            sessions,
+            windows,
             ..Default::default()
         }
     }
 
-    /// Check if we're in the welcome state (no sessions).
+    /// Check if we're in the welcome state (no windows).
     pub fn is_welcome_state(&self) -> bool {
-        self.sessions.is_empty() && matches!(self.mode, AppMode::Normal)
+        self.windows.is_empty() && matches!(self.mode, AppMode::Normal)
     }
 
-    /// Get the currently selected session, if any.
-    pub fn selected_session(&self) -> Option<&Session> {
-        self.sessions.get(self.selected_index)
+    /// Get the currently selected window, if any.
+    pub fn selected_window(&self) -> Option<&Window> {
+        self.windows.get(self.selected_index)
     }
 
     /// Move selection up in the sidebar.
@@ -565,26 +569,26 @@ impl AppState {
 
     /// Move selection down in the sidebar.
     pub fn select_next(&mut self) {
-        if self.selected_index + 1 < self.sessions.len() {
+        if self.selected_index + 1 < self.windows.len() {
             self.selected_index += 1;
             // Note: scroll_offset adjustment will be handled during rendering
             // based on visible area height
         }
     }
 
-    /// Commit the highlighted session and focus the terminal pane.
+    /// Commit the highlighted window and focus the terminal pane.
     pub fn focus_terminal(&mut self) {
         // The old implementation overwrote history with the selected index, making `l`
         // and browse cancellation unable to recover the window active before browsing.
         if let Some(origin) = self.browsing_origin.take() {
             if origin != self.selected_index {
-                self.previous_session = Some(origin);
+                self.previous_window = Some(origin);
             }
         }
         self.focus = Focus::Terminal;
     }
 
-    /// Focus on the sidebar pane. Also exits zoom mode (sidebar was hidden while zoomed).
+    /// Focus on the sidebar region. Also exits zoom mode (sidebar was hidden while zoomed).
     pub fn focus_sidebar(&mut self) {
         // Snapshot once so live previews can be cancelled without committing selection.
         if self.focus == Focus::Terminal {
@@ -602,13 +606,13 @@ impl AppState {
         };
     }
 
-    /// Start drafting a new session with the given type.
-    pub fn start_drafting(&mut self, session_type: SessionType) {
+    /// Start drafting a new window with the given type.
+    pub fn start_drafting(&mut self, window_type: WindowType) {
         let previous_focus = match &self.mode {
             AppMode::CreateMode { previous_focus } => *previous_focus,
             _ => self.focus,
         };
-        self.mode = AppMode::Drafting(DraftingState::new(session_type, previous_focus));
+        self.mode = AppMode::Drafting(DraftingState::new(window_type, previous_focus));
         // Focus moves to the draft row in sidebar
         self.focus = Focus::Sidebar;
     }
@@ -621,10 +625,10 @@ impl AppState {
         self.mode = AppMode::Normal;
     }
 
-    /// Start renaming the selected session.
+    /// Start renaming the selected window.
     pub fn start_renaming(&mut self) {
-        if let Some(session) = self.selected_session() {
-            let state = RenamingState::new(self.selected_index, &session.name, self.focus);
+        if let Some(window) = self.selected_window() {
+            let state = RenamingState::new(self.selected_index, &window.name, self.focus);
             self.mode = AppMode::Renaming(state);
         }
     }
@@ -658,64 +662,64 @@ impl AppState {
         self.mode = AppMode::Normal;
     }
 
-    /// Cancel sidebar browsing and restore the session active when browsing began.
+    /// Cancel sidebar browsing and restore the window active when browsing began.
     pub fn cancel_browsing(&mut self) {
         if let Some(origin) = self.browsing_origin.take() {
-            if origin < self.sessions.len() {
+            if origin < self.windows.len() {
                 self.selected_index = origin;
             }
         }
         self.focus = Focus::Terminal;
     }
 
-    /// Switch to the previously active session and focus it.
+    /// Switch to the previously active window and focus it.
     pub fn jump_back(&mut self) {
-        if let Some(previous) = self.previous_session {
-            if previous < self.sessions.len() {
+        if let Some(previous) = self.previous_window {
+            if previous < self.windows.len() {
                 let current = self.selected_index;
                 self.selected_index = previous;
-                self.previous_session = Some(current);
+                self.previous_window = Some(current);
             }
         }
         self.browsing_origin = None;
         self.focus = Focus::Terminal;
     }
 
-    /// Move the highlighted session by one stable display position.
+    /// Move the highlighted window by one stable display position.
     pub fn reorder_selected(&mut self, offset: isize) {
-        if self.sessions.is_empty() {
+        if self.windows.is_empty() {
             return;
         }
         let target = (self.selected_index as isize + offset)
-            .clamp(0, self.sessions.len().saturating_sub(1) as isize) as usize;
+            .clamp(0, self.windows.len().saturating_sub(1) as isize) as usize;
         if target != self.selected_index {
-            self.sessions.swap(self.selected_index, target);
+            self.windows.swap(self.selected_index, target);
             self.selected_index = target;
         }
     }
 
-    /// Add a new session to the top of the list.
-    pub fn add_session(&mut self, session: Session) {
-        self.sessions.insert(0, session);
-        // Keep selection on the new session
+    /// Add a new window to the top of the list.
+    pub fn add_window(&mut self, window: Window) {
+        self.windows.insert(0, window);
+        // Keep selection on the new window
         self.selected_index = 0;
         self.scroll_offset = 0;
     }
 
-    /// Remove a session by index. Returns true if removed.
-    pub fn remove_session(&mut self, index: usize) -> bool {
-        if index < self.sessions.len() {
-            self.sessions.remove(index);
+    /// Remove a window by index. Returns true if removed.
+    pub fn remove_window(&mut self, index: usize) -> bool {
+        if index < self.windows.len() {
+            self.windows.remove(index);
             // Adjust selection if necessary
-            if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
-                self.selected_index = self.sessions.len() - 1;
+            if self.selected_index >= self.windows.len() && !self.windows.is_empty() {
+                self.selected_index = self.windows.len() - 1;
             }
-            // Adjust previous_session
-            if let Some(prev) = self.previous_session {
+            // Adjust previous_window
+            if let Some(prev) = self.previous_window {
                 use std::cmp::Ordering;
                 match prev.cmp(&index) {
-                    Ordering::Equal => self.previous_session = None,
-                    Ordering::Greater => self.previous_session = Some(prev - 1),
+                    Ordering::Equal => self.previous_window = None,
+                    Ordering::Greater => self.previous_window = Some(prev - 1),
                     Ordering::Less => {}
                 }
             }
@@ -725,36 +729,36 @@ impl AppState {
         }
     }
 
-    /// Rename a session by index. Returns true if renamed.
-    pub fn rename_session(&mut self, index: usize, new_name: String) -> bool {
-        if let Some(session) = self.sessions.get_mut(index) {
-            session.name = new_name;
+    /// Rename a window by index. Returns true if renamed.
+    pub fn rename_window(&mut self, index: usize, new_name: String) -> bool {
+        if let Some(window) = self.windows.get_mut(index) {
+            window.name = new_name;
             true
         } else {
             false
         }
     }
 
-    /// Move a session to the top of the list (most recently used).
-    /// Used when a session becomes active (e.g., user sends input).
-    pub fn move_session_to_top(&mut self, index: usize) {
-        if index > 0 && index < self.sessions.len() {
-            let session = self.sessions.remove(index);
-            self.sessions.insert(0, session);
-            // Adjust selected_index to keep selection on the same session
+    /// Move a window to the top of the list (most recently used).
+    /// Used when a window becomes active (e.g., user sends input).
+    pub fn move_window_to_top(&mut self, index: usize) {
+        if index > 0 && index < self.windows.len() {
+            let window = self.windows.remove(index);
+            self.windows.insert(0, window);
+            // Adjust selected_index to keep selection on the same window
             if self.selected_index == index {
                 self.selected_index = 0;
             } else if self.selected_index < index {
-                // Session was below selection, no adjustment needed
+                // Window was below selection, no adjustment needed
             } else {
-                // This shouldn't happen since we only move sessions above the selection
+                // This shouldn't happen since we only move windows above the selection
             }
-            // Adjust previous_session
-            if let Some(prev) = self.previous_session {
+            // Adjust previous_window
+            if let Some(prev) = self.previous_window {
                 if prev == index {
-                    self.previous_session = Some(0);
+                    self.previous_window = Some(0);
                 } else if prev < index {
-                    self.previous_session = Some(prev + 1);
+                    self.previous_window = Some(prev + 1);
                 }
             }
             // Adjust scroll_offset if needed
@@ -764,17 +768,17 @@ impl AppState {
         }
     }
 
-    /// Move the currently selected session to the top of the list.
+    /// Move the currently selected window to the top of the list.
     pub fn move_selected_to_top(&mut self) {
-        if self.selected_index > 0 && !self.sessions.is_empty() {
-            let session = self.sessions.remove(self.selected_index);
-            self.sessions.insert(0, session);
-            // Adjust previous_session
-            if let Some(prev) = self.previous_session {
+        if self.selected_index > 0 && !self.windows.is_empty() {
+            let window = self.windows.remove(self.selected_index);
+            self.windows.insert(0, window);
+            // Adjust previous_window
+            if let Some(prev) = self.previous_window {
                 if prev == self.selected_index {
-                    self.previous_session = Some(0);
+                    self.previous_window = Some(0);
                 } else if prev < self.selected_index {
-                    self.previous_session = Some(prev + 1);
+                    self.previous_window = Some(prev + 1);
                 }
             }
             self.selected_index = 0;
@@ -800,19 +804,19 @@ mod tests {
         assert_ne!(Focus::Sidebar, Focus::Terminal);
     }
 
-    // SessionType tests
+    // WindowType tests
     #[test]
-    fn test_session_type_equality() {
-        assert_eq!(SessionType::Terminal, SessionType::Terminal);
-        assert_eq!(SessionType::Agent, SessionType::Agent);
-        assert_ne!(SessionType::Terminal, SessionType::Agent);
+    fn test_window_type_equality() {
+        assert_eq!(WindowType::Terminal, WindowType::Terminal);
+        assert_eq!(WindowType::Agent, WindowType::Agent);
+        assert_ne!(WindowType::Terminal, WindowType::Agent);
     }
 
     // DraftingState tests
     #[test]
     fn test_drafting_state_new() {
-        let state = DraftingState::new(SessionType::Terminal, Focus::Terminal);
-        assert_eq!(state.session_type, SessionType::Terminal);
+        let state = DraftingState::new(WindowType::Terminal, Focus::Terminal);
+        assert_eq!(state.window_type, WindowType::Terminal);
         assert_eq!(state.name, "");
         assert_eq!(state.cursor_position, 0);
         assert_eq!(state.previous_focus, Focus::Terminal);
@@ -820,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_drafting_state_insert_valid_chars() {
-        let mut state = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut state = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         state.insert_char('a');
         assert_eq!(state.name, "a");
         state.insert_char('B');
@@ -840,7 +844,7 @@ mod tests {
 
     #[test]
     fn test_drafting_state_insert_invalid_chars_ignored() {
-        let mut state = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut state = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         state.insert_char('!');
         assert_eq!(state.name, "");
         state.insert_char('@');
@@ -853,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_drafting_state_delete_char() {
-        let mut state = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut state = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         state.insert_char('a');
         state.insert_char('b');
         state.insert_char('c');
@@ -865,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_drafting_state_delete_at_start_does_nothing() {
-        let mut state = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut state = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         state.delete_char();
         assert_eq!(state.name, "");
         assert_eq!(state.cursor_position, 0);
@@ -873,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_drafting_state_cursor_movement() {
-        let mut state = DraftingState::new(SessionType::Terminal, Focus::Sidebar);
+        let mut state = DraftingState::new(WindowType::Terminal, Focus::Sidebar);
         state.insert_char('a');
         state.insert_char('b');
         state.insert_char('c');
@@ -905,7 +909,7 @@ mod tests {
     #[test]
     fn test_renaming_state_new() {
         let state = RenamingState::new(2, "old_name", Focus::Sidebar);
-        assert_eq!(state.session_index, 2);
+        assert_eq!(state.window_index, 2);
         assert_eq!(state.new_name, "old_name");
         assert_eq!(state.cursor_position, 8); // At end
         assert_eq!(state.previous_focus, Focus::Sidebar);
@@ -925,37 +929,37 @@ mod tests {
     // ConfirmAction tests
     #[test]
     fn test_confirm_action_equality() {
-        assert_eq!(ConfirmAction::Quit, ConfirmAction::Quit);
+        assert_eq!(ConfirmAction::Detach, ConfirmAction::Detach);
         assert_eq!(
-            ConfirmAction::DeleteSession(0),
-            ConfirmAction::DeleteSession(0)
+            ConfirmAction::KillWindow(0),
+            ConfirmAction::KillWindow(0)
         );
         assert_ne!(
-            ConfirmAction::DeleteSession(0),
-            ConfirmAction::DeleteSession(1)
+            ConfirmAction::KillWindow(0),
+            ConfirmAction::KillWindow(1)
         );
-        assert_ne!(ConfirmAction::Quit, ConfirmAction::DeleteSession(0));
+        assert_ne!(ConfirmAction::Detach, ConfirmAction::KillWindow(0));
     }
 
     // ConfirmState tests
     #[test]
-    fn test_confirm_state_message_quit() {
-        let state = ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar);
-        assert_eq!(state.message(), "Quit Sidebar TUI?");
+    fn test_confirm_state_message_detach() {
+        let state = ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar);
+        assert_eq!(state.message(), "Detach Sidebar TUI?");
     }
 
     #[test]
     fn test_confirm_state_message_delete() {
-        let state = ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar);
-        assert_eq!(state.message(), "Delete this session permanently?");
+        let state = ConfirmState::new(ConfirmAction::KillWindow(0), Focus::Sidebar);
+        assert_eq!(state.message(), "Kill this window permanently?");
     }
 
     #[test]
     fn test_confirm_state_is_important() {
-        let quit_state = ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar);
-        assert!(!quit_state.is_important());
+        let detach_state = ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar);
+        assert!(!detach_state.is_important());
 
-        let delete_state = ConfirmState::new(ConfirmAction::DeleteSession(0), Focus::Sidebar);
+        let delete_state = ConfirmState::new(ConfirmAction::KillWindow(0), Focus::Sidebar);
         assert!(delete_state.is_important());
     }
 
@@ -975,12 +979,12 @@ mod tests {
             .is_text_input()
         );
         assert!(
-            AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar))
+            AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar))
                 .is_text_input()
         );
         assert!(AppMode::Renaming(RenamingState::new(0, "test", Focus::Sidebar)).is_text_input());
         assert!(
-            !AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar))
+            !AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar))
                 .is_text_input()
         );
     }
@@ -995,27 +999,27 @@ mod tests {
             .is_modal()
         );
         assert!(
-            AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)).is_modal()
+            AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)).is_modal()
         );
         assert!(AppMode::Renaming(RenamingState::new(0, "test", Focus::Sidebar)).is_modal());
         assert!(
-            AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)).is_modal()
+            AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)).is_modal()
         );
     }
 
-    // Session tests
+    // Window tests
     #[test]
-    fn test_session_new() {
-        let session = Session::new("my-session");
-        assert_eq!(session.name, "my-session");
-        assert!(!session.is_attached);
+    fn test_window_new() {
+        let window = Window::new("my-window");
+        assert_eq!(window.name, "my-window");
+        assert!(!window.is_attached);
     }
 
     #[test]
-    fn test_session_attached() {
-        let session = Session::attached("main");
-        assert_eq!(session.name, "main");
-        assert!(session.is_attached);
+    fn test_window_attached() {
+        let window = Window::attached("main");
+        assert_eq!(window.name, "main");
+        assert!(window.is_attached);
     }
 
     // EventResult tests
@@ -1023,7 +1027,7 @@ mod tests {
     fn test_event_result_equality() {
         assert_eq!(EventResult::Consumed, EventResult::Consumed);
         assert_eq!(EventResult::NotConsumed, EventResult::NotConsumed);
-        assert_eq!(EventResult::Quit, EventResult::Quit);
+        assert_eq!(EventResult::Detach, EventResult::Detach);
         assert_ne!(EventResult::Consumed, EventResult::NotConsumed);
     }
 
@@ -1033,18 +1037,18 @@ mod tests {
         let state = AppState::default();
         assert_eq!(state.focus, Focus::Sidebar);
         assert_eq!(state.mode, AppMode::Normal);
-        assert!(state.sessions.is_empty());
+        assert!(state.windows.is_empty());
         assert_eq!(state.selected_index, 0);
         assert_eq!(state.scroll_offset, 0);
-        assert!(state.previous_session.is_none());
+        assert!(state.previous_window.is_none());
     }
 
     #[test]
-    fn test_app_state_with_sessions() {
-        let sessions = vec![Session::new("session1"), Session::new("session2")];
-        let state = AppState::with_sessions(sessions);
-        assert_eq!(state.sessions.len(), 2);
-        assert_eq!(state.sessions[0].name, "session1");
+    fn test_app_state_with_windows() {
+        let windows = vec![Window::new("window1"), Window::new("window2")];
+        let state = AppState::with_windows(windows);
+        assert_eq!(state.windows.len(), 2);
+        assert_eq!(state.windows[0].name, "window1");
     }
 
     #[test]
@@ -1052,8 +1056,8 @@ mod tests {
         let empty_state = AppState::default();
         assert!(empty_state.is_welcome_state());
 
-        let with_sessions = AppState::with_sessions(vec![Session::new("test")]);
-        assert!(!with_sessions.is_welcome_state());
+        let with_windows = AppState::with_windows(vec![Window::new("test")]);
+        assert!(!with_windows.is_welcome_state());
 
         let modal_state = AppState {
             mode: AppMode::CreateMode {
@@ -1065,20 +1069,20 @@ mod tests {
     }
 
     #[test]
-    fn test_app_state_selected_session() {
+    fn test_app_state_selected_window() {
         let state = AppState::default();
-        assert!(state.selected_session().is_none());
+        assert!(state.selected_window().is_none());
 
-        let state = AppState::with_sessions(vec![Session::new("test")]);
-        assert_eq!(state.selected_session().unwrap().name, "test");
+        let state = AppState::with_windows(vec![Window::new("test")]);
+        assert_eq!(state.selected_window().unwrap().name, "test");
     }
 
     #[test]
     fn test_app_state_select_navigation() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("session1"),
-            Session::new("session2"),
-            Session::new("session3"),
+        let mut state = AppState::with_windows(vec![
+            Window::new("window1"),
+            Window::new("window2"),
+            Window::new("window3"),
         ]);
 
         assert_eq!(state.selected_index, 0);
@@ -1107,12 +1111,12 @@ mod tests {
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_app_state_focus_terminal() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.selected_index = 0;
 
         state.focus_terminal();
         assert_eq!(state.focus, Focus::Terminal);
-        assert_eq!(state.previous_session, Some(0));
+        assert_eq!(state.previous_window, Some(0));
     }
 
     #[test]
@@ -1152,10 +1156,10 @@ mod tests {
             ..Default::default()
         };
 
-        state.start_drafting(SessionType::Agent);
+        state.start_drafting(WindowType::Agent);
         match &state.mode {
             AppMode::Drafting(draft) => {
-                assert_eq!(draft.session_type, SessionType::Agent);
+                assert_eq!(draft.window_type, WindowType::Agent);
                 assert_eq!(draft.previous_focus, Focus::Terminal);
             }
             _ => panic!("Expected Drafting"),
@@ -1167,7 +1171,7 @@ mod tests {
     fn test_app_state_cancel_drafting() {
         let mut state = AppState {
             focus: Focus::Sidebar,
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Terminal)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Terminal)),
             ..Default::default()
         };
 
@@ -1178,13 +1182,13 @@ mod tests {
 
     #[test]
     fn test_app_state_start_renaming() {
-        let mut state = AppState::with_sessions(vec![Session::new("old_name")]);
+        let mut state = AppState::with_windows(vec![Window::new("old_name")]);
         state.focus = Focus::Sidebar;
 
         state.start_renaming();
         match &state.mode {
             AppMode::Renaming(rename) => {
-                assert_eq!(rename.session_index, 0);
+                assert_eq!(rename.window_index, 0);
                 assert_eq!(rename.new_name, "old_name");
                 assert_eq!(rename.previous_focus, Focus::Sidebar);
             }
@@ -1194,7 +1198,7 @@ mod tests {
 
     #[test]
     fn test_app_state_cancel_renaming() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
         state.focus = Focus::Terminal;
         state.focus_sidebar();
         state.start_renaming();
@@ -1211,10 +1215,10 @@ mod tests {
             ..Default::default()
         };
 
-        state.request_confirmation(ConfirmAction::Quit);
+        state.request_confirmation(ConfirmAction::Detach);
         match &state.mode {
             AppMode::Confirming(confirm) => {
-                assert_eq!(confirm.action, ConfirmAction::Quit);
+                assert_eq!(confirm.action, ConfirmAction::Detach);
                 assert_eq!(confirm.previous_focus, Focus::Sidebar);
             }
             _ => panic!("Expected Confirming"),
@@ -1225,7 +1229,7 @@ mod tests {
     fn test_app_state_cancel_confirmation() {
         let mut state = AppState {
             focus: Focus::Terminal,
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Terminal)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Terminal)),
             ..Default::default()
         };
 
@@ -1238,95 +1242,95 @@ mod tests {
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
     fn test_app_state_jump_back() {
         let mut state =
-            AppState::with_sessions(vec![Session::new("session1"), Session::new("session2")]);
+            AppState::with_windows(vec![Window::new("window1"), Window::new("window2")]);
         state.selected_index = 0;
         state.focus_terminal();
 
-        // Select a different session
+        // Select a different window
         state.focus_sidebar();
         state.select_next();
         assert_eq!(state.selected_index, 1);
 
-        // Jump back should return to previous session and focus terminal
+        // Jump back should return to previous window and focus terminal
         state.jump_back();
         assert_eq!(state.selected_index, 0);
         assert_eq!(state.focus, Focus::Terminal);
     }
 
     #[test]
-    fn test_app_state_add_session() {
+    fn test_app_state_add_window() {
         let mut state = AppState::default();
 
-        state.add_session(Session::new("new"));
-        assert_eq!(state.sessions.len(), 1);
-        assert_eq!(state.sessions[0].name, "new");
+        state.add_window(Window::new("new"));
+        assert_eq!(state.windows.len(), 1);
+        assert_eq!(state.windows[0].name, "new");
         assert_eq!(state.selected_index, 0);
 
-        state.add_session(Session::new("newer"));
-        assert_eq!(state.sessions.len(), 2);
-        assert_eq!(state.sessions[0].name, "newer"); // Most recent at top
+        state.add_window(Window::new("newer"));
+        assert_eq!(state.windows.len(), 2);
+        assert_eq!(state.windows[0].name, "newer"); // Most recent at top
         assert_eq!(state.selected_index, 0);
     }
 
     #[test]
-    fn test_app_state_remove_session() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+    fn test_app_state_remove_window() {
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.selected_index = 2;
 
-        assert!(state.remove_session(1));
-        assert_eq!(state.sessions.len(), 2);
-        assert_eq!(state.sessions[0].name, "a");
-        assert_eq!(state.sessions[1].name, "c");
+        assert!(state.remove_window(1));
+        assert_eq!(state.windows.len(), 2);
+        assert_eq!(state.windows[0].name, "a");
+        assert_eq!(state.windows[1].name, "c");
         // Selection adjusted since we were at index 2
         assert_eq!(state.selected_index, 1);
     }
 
     #[test]
-    fn test_app_state_remove_session_updates_previous() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+    fn test_app_state_remove_window_updates_previous() {
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
-        state.previous_session = Some(2);
+        state.previous_window = Some(2);
 
-        state.remove_session(1);
+        state.remove_window(1);
         // Previous was at 2, now should be at 1
-        assert_eq!(state.previous_session, Some(1));
+        assert_eq!(state.previous_window, Some(1));
 
-        state.previous_session = Some(0);
-        state.remove_session(0);
+        state.previous_window = Some(0);
+        state.remove_window(0);
         // Previous was the removed one, should be None
-        assert!(state.previous_session.is_none());
+        assert!(state.previous_window.is_none());
     }
 
     #[test]
-    fn test_app_state_remove_session_invalid_index() {
-        let mut state = AppState::with_sessions(vec![Session::new("test")]);
-        assert!(!state.remove_session(5)); // Invalid index
-        assert_eq!(state.sessions.len(), 1);
+    fn test_app_state_remove_window_invalid_index() {
+        let mut state = AppState::with_windows(vec![Window::new("test")]);
+        assert!(!state.remove_window(5)); // Invalid index
+        assert_eq!(state.windows.len(), 1);
     }
 
     #[test]
-    fn test_app_state_rename_session() {
-        let mut state = AppState::with_sessions(vec![Session::new("old")]);
+    fn test_app_state_rename_window() {
+        let mut state = AppState::with_windows(vec![Window::new("old")]);
 
-        assert!(state.rename_session(0, "new".to_string()));
-        assert_eq!(state.sessions[0].name, "new");
+        assert!(state.rename_window(0, "new".to_string()));
+        assert_eq!(state.windows[0].name, "new");
 
-        assert!(!state.rename_session(5, "invalid".to_string()));
+        assert!(!state.rename_window(5, "invalid".to_string()));
     }
 
     #[test]
     fn test_app_state_scroll_on_select_previous() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.selected_index = 2;
         state.scroll_offset = 2;
@@ -1353,94 +1357,94 @@ mod tests {
     }
 
     #[test]
-    fn test_move_session_to_top() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+    fn test_move_window_to_top() {
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.selected_index = 2;
 
-        // Move session "c" (index 2) to top
-        state.move_session_to_top(2);
+        // Move window "c" (index 2) to top
+        state.move_window_to_top(2);
 
-        assert_eq!(state.sessions[0].name, "c");
-        assert_eq!(state.sessions[1].name, "a");
-        assert_eq!(state.sessions[2].name, "b");
-        // Selection should follow the moved session
+        assert_eq!(state.windows[0].name, "c");
+        assert_eq!(state.windows[1].name, "a");
+        assert_eq!(state.windows[2].name, "b");
+        // Selection should follow the moved window
         assert_eq!(state.selected_index, 0);
     }
 
     #[test]
-    fn test_move_session_to_top_updates_previous() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+    fn test_move_window_to_top_updates_previous() {
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
-        state.previous_session = Some(2);
+        state.previous_window = Some(2);
         state.selected_index = 1;
 
-        // Move session "c" (index 2, same as previous) to top
-        state.move_session_to_top(2);
+        // Move window "c" (index 2, same as previous) to top
+        state.move_window_to_top(2);
 
-        // Previous should now point to 0 (where the session moved)
-        assert_eq!(state.previous_session, Some(0));
+        // Previous should now point to 0 (where the window moved)
+        assert_eq!(state.previous_window, Some(0));
     }
 
     #[test]
-    fn test_move_session_to_top_index_0_is_noop() {
-        let mut state = AppState::with_sessions(vec![Session::new("a"), Session::new("b")]);
+    fn test_move_window_to_top_index_0_is_noop() {
+        let mut state = AppState::with_windows(vec![Window::new("a"), Window::new("b")]);
         state.selected_index = 0;
 
         // Moving index 0 to top should be a no-op
-        state.move_session_to_top(0);
+        state.move_window_to_top(0);
 
-        assert_eq!(state.sessions[0].name, "a");
-        assert_eq!(state.sessions[1].name, "b");
+        assert_eq!(state.windows[0].name, "a");
+        assert_eq!(state.windows[1].name, "b");
         assert_eq!(state.selected_index, 0);
     }
 
     #[test]
     fn test_move_selected_to_top() {
-        let mut state = AppState::with_sessions(vec![
-            Session::new("a"),
-            Session::new("b"),
-            Session::new("c"),
+        let mut state = AppState::with_windows(vec![
+            Window::new("a"),
+            Window::new("b"),
+            Window::new("c"),
         ]);
         state.selected_index = 2;
 
         state.move_selected_to_top();
 
-        assert_eq!(state.sessions[0].name, "c");
-        assert_eq!(state.sessions[1].name, "a");
-        assert_eq!(state.sessions[2].name, "b");
+        assert_eq!(state.windows[0].name, "c");
+        assert_eq!(state.windows[1].name, "a");
+        assert_eq!(state.windows[2].name, "b");
         assert_eq!(state.selected_index, 0);
         assert_eq!(state.scroll_offset, 0);
     }
 
     #[test]
     fn test_move_selected_to_top_already_at_top() {
-        let mut state = AppState::with_sessions(vec![Session::new("a"), Session::new("b")]);
+        let mut state = AppState::with_windows(vec![Window::new("a"), Window::new("b")]);
         state.selected_index = 0;
 
         state.move_selected_to_top();
 
         // Should be unchanged
-        assert_eq!(state.sessions[0].name, "a");
-        assert_eq!(state.sessions[1].name, "b");
+        assert_eq!(state.windows[0].name, "a");
+        assert_eq!(state.windows[1].name, "b");
         assert_eq!(state.selected_index, 0);
     }
 
-    // WorkspaceOverlayState scroll tests
+    // SessionOverlayState scroll tests
 
     #[test]
-    fn test_workspace_overlay_select_next_scrolls_down() {
-        let workspaces = vec!["a", "b", "c", "d", "e", "f"]
+    fn test_session_overlay_select_next_scrolls_down() {
+        let sessions = vec!["a", "b", "c", "d", "e", "f"]
             .into_iter()
             .map(String::from)
             .collect();
-        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+        let mut ov = SessionOverlayState::new(sessions, "a".to_string());
         ov.visible_height = 3; // Only 3 rows visible at a time
         assert_eq!(ov.selected_index, 0);
         assert_eq!(ov.scroll_offset, 0);
@@ -1461,9 +1465,9 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_overlay_select_next_does_not_overflow() {
-        let workspaces = vec!["a", "b", "c"].into_iter().map(String::from).collect();
-        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+    fn test_session_overlay_select_next_does_not_overflow() {
+        let sessions = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let mut ov = SessionOverlayState::new(sessions, "a".to_string());
         ov.visible_height = 10;
 
         ov.select_next(); // index 1
@@ -1474,12 +1478,12 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_overlay_select_previous_scrolls_up() {
-        let workspaces = vec!["a", "b", "c", "d", "e"]
+    fn test_session_overlay_select_previous_scrolls_up() {
+        let sessions = vec!["a", "b", "c", "d", "e"]
             .into_iter()
             .map(String::from)
             .collect();
-        let mut ov = WorkspaceOverlayState::new(workspaces, "a".to_string());
+        let mut ov = SessionOverlayState::new(sessions, "a".to_string());
         ov.visible_height = 3;
         ov.selected_index = 3;
         ov.scroll_offset = 1;

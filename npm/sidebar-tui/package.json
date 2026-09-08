@@ -1,11 +1,11 @@
 {
   "name": "sidebar-tui",
   "version": "0.1.13",
-  "description": "A terminal UI sidebar for managing terminal sessions",
+  "description": "A terminal UI sidebar for managing terminal windows",
   "keywords": [
     "terminal",
     "tui",
-    "session",
+    "window",
     "sidebar"
   ],
   "homepage": "https://github.com/melchiahmauck/sidebar_tui",

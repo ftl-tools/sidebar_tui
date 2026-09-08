@@ -47,7 +47,7 @@ if docker ps --format "{{.Names}}" 2>/dev/null | grep -Fxq "$CONTAINER_NAME"; th
         bash -c 'source ~/.cargo/env && cargo build --release'
 
     # A direct copy over a running executable failed with "Text file busy".
-    # Stage the binary and atomically rename it so active sessions can keep running.
+    # Stage the binary and atomically rename it so active windows can keep running.
     echo "Installing to /usr/local/bin/sb in container..."
     docker exec "$CONTAINER_NAME" cp "$CONTAINER_SRC_DIR/target/release/sb" /usr/local/bin/sb.new
     docker exec "$CONTAINER_NAME" chmod +x /usr/local/bin/sb.new

@@ -5,7 +5,7 @@
   <line x1="16" y1="6" x2="16" y2="42" stroke="#875fff" stroke-width="2" opacity="0.6"/>
   <!-- Titlebar divider -->
   <line x1="2" y1="14" x2="16" y2="14" stroke="#875fff" stroke-width="1.5" opacity="0.4"/>
-  <!-- Sidebar session lines -->
+  <!-- Sidebar window lines -->
   <rect x="4" y="17" width="8" height="2" rx="1" fill="#875fff" opacity="0.9"/>
   <rect x="4" y="22" width="9" height="2" rx="1" fill="#875fff" opacity="0.5"/>
   <rect x="4" y="27" width="7" height="2" rx="1" fill="#875fff" opacity="0.5"/>

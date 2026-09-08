@@ -31,6 +31,10 @@ Set LoopOffset 1%
 
 # --- Setup (hidden from recording) ---
 Hide
+# The old demo shared the user's server; isolate it so recording cannot touch real windows.
+Type "export SB_DEMO_ROOT=$(mktemp -d /tmp/sb_demo_XXXXXX); export XDG_DATA_HOME=$SB_DEMO_ROOT/data XDG_RUNTIME_DIR=$SB_DEMO_ROOT/run; mkdir -p $XDG_DATA_HOME $XDG_RUNTIME_DIR"
+Enter
+Sleep 300ms
 Type "clear"
 Enter
 Sleep 200ms
@@ -42,32 +46,28 @@ Sleep 400ms
 Enter
 Sleep 2s
 
-# sidebar is focused — create first session
-Type "n"
+# sidebar is focused — create first window
+Type "c"
 Sleep 400ms
-Type "t"
-Sleep 300ms
 Type "api-server"
 Enter
 Sleep 1.5s
 
 # we're now in the terminal pane — run a command
-Type "git status"
+Type "echo API server ready"
 Enter
 Sleep 1.5s
 
-# go back to sidebar and create another session
+# go back to sidebar and create another window
 Ctrl+B
 Sleep 500ms
-Type "n"
-Sleep 300ms
-Type "t"
+Type "c"
 Sleep 300ms
 Type "docs"
 Enter
 Sleep 1.2s
 
-# run something in second session
+# run something in second window
 Type "echo hello from docs"
 Enter
 Sleep 1s
@@ -80,18 +80,27 @@ Sleep 400ms
 Enter
 Sleep 1s
 
-# zoom terminal pane
-Ctrl+Z
-Sleep 2s
-
-# unzoom
-Ctrl+Z
-Sleep 1.5s
-
-# quit
+# show the session chooser
 Ctrl+B
 Sleep 400ms
-Type "q"
+Type "s"
+Sleep 1.5s
+Escape
+Sleep 400ms
+
+# zoom terminal pane
+Type "z"
+Sleep 2s
+
+# unzoom and detach (windows keep running)
+Ctrl+B
+Sleep 400ms
+Type "d"
 Sleep 500ms
 Type "y"
 Sleep 800ms
+
+Hide
+Type "sb shutdown; rm -rf $SB_DEMO_ROOT"
+Enter
+Sleep 300ms

@@ -1,13 +1,13 @@
-//! Sidebar TUI - A terminal session manager with session persistence.
+//! Sidebar TUI - A tmux-style session and window manager.
 //!
-//! This library provides the core components for a terminal session manager:
+//! This library provides the core components for a session and window manager (currently backed by Sidebar-owned PTYs):
 //! - Terminal emulation via vt100
 //! - PTY management via portable-pty
-//! - Session daemon for persistence across TUI restarts
-//! - State management for multi-pane focus and modal UI
+//! - Background server for persistence across TUI restarts
+//! - State management for sidebar/terminal focus and modal UI
 
 pub mod colors;
-pub mod daemon;
+pub mod server;
 pub mod env_capture;
 pub mod hint_bar;
 pub mod input;

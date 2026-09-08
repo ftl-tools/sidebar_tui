@@ -1,7 +1,7 @@
 //! Cross-platform environment variable capture from running processes.
 //!
 //! This module provides functions to capture environment variables from a running
-//! shell process, used for persisting session state across daemon restarts.
+//! shell process, used for persisting window state across server restarts.
 
 use std::collections::HashMap;
 

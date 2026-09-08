@@ -15,9 +15,9 @@ use ratatui::style::Color as RatatuiColor;
 
 // Spec-required colors
 const PURPLE: u8 = 165;       // Title text, keybindings
-const WHITE: u8 = 255;        // Session names, terminal text
+const WHITE: u8 = 255;        // Window names, terminal text
 const DARK_GREY: u8 = 238;    // Unfocused borders, hints bg
-const DARK_PURPLE: u8 = 54;   // Selected session background
+const DARK_PURPLE: u8 = 54;   // Selected window background
 const DARK_RED: u8 = 88;      // Important prompts background
 
 fn main() -> io::Result<()> {
@@ -30,9 +30,9 @@ fn main() -> io::Result<()> {
     // Test each spec color
     let colors = [
         (PURPLE, "Purple (165)", "Title text, keybindings"),
-        (WHITE, "White (255)", "Session names, terminal text"),
+        (WHITE, "White (255)", "Window names, terminal text"),
         (DARK_GREY, "Dark Grey (238)", "Unfocused borders, hint bar bg"),
-        (DARK_PURPLE, "Dark Purple (54)", "Selected session background"),
+        (DARK_PURPLE, "Dark Purple (54)", "Selected window background"),
         (DARK_RED, "Dark Red (88)", "Important prompt background"),
     ];
 
@@ -82,7 +82,7 @@ fn main() -> io::Result<()> {
         stdout,
         SetBackgroundColor(Color::AnsiValue(DARK_RED)),
         SetForegroundColor(Color::AnsiValue(WHITE)),
-        Print("Delete session? "),
+        Print("Delete window? "),
         SetForegroundColor(Color::AnsiValue(PURPLE)),
         Print("y"),
         SetForegroundColor(Color::AnsiValue(WHITE)),
@@ -110,7 +110,7 @@ fn main() -> io::Result<()> {
     execute!(
         stdout,
         SetForegroundColor(Color::AnsiValue(WHITE)),
-        Print("Terminal Session\n"),
+        Print("Terminal Window\n"),
         ResetColor
     )?;
 
@@ -119,7 +119,7 @@ fn main() -> io::Result<()> {
         stdout,
         SetBackgroundColor(Color::AnsiValue(DARK_PURPLE)),
         SetForegroundColor(Color::AnsiValue(WHITE)),
-        Print("Terminal Session"),
+        Print("Terminal Window"),
         Print("        "),
         ResetColor,
         Print("\n")
@@ -129,7 +129,7 @@ fn main() -> io::Result<()> {
     execute!(
         stdout,
         SetForegroundColor(Color::AnsiValue(WHITE)),
-        Print("Terminal Session\n"),
+        Print("Terminal Window\n"),
         ResetColor
     )?;
 

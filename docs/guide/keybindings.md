@@ -1,6 +1,6 @@
 # Keybindings
 
-Sidebar uses its visible sidebar as a persistent tmux-style command mode. Contextual hints appear as a column below the session list, separated by a horizontal line—not under the terminal. The sidebar outline indicates focus; the terminal itself is unframed.
+Sidebar uses its visible sidebar as a persistent tmux-style command mode. Contextual hints appear as a column below the window list, separated by a horizontal line—not under the terminal. The sidebar outline indicates focus; the terminal itself is unframed.
 
 ## Toggle and direct shortcuts
 
@@ -10,7 +10,7 @@ Sidebar uses its visible sidebar as a persistent tmux-style command mode. Contex
 | <kbd>Cmd+Space</kbd> / <kbd>Cmd+B</kbd> | Toggle when the OS and terminal expose the Command chord |
 | <kbd>Alt+1</kbd>…<kbd>Alt+9</kbd> | Switch directly to a displayed window position |
 | <kbd>Alt+Left</kbd> / <kbd>Alt+Right</kbd> | Previous/next window |
-| <kbd>Alt+Up</kbd> / <kbd>Alt+Down</kbd> | Previous/next workspace |
+| <kbd>Alt+Up</kbd> / <kbd>Alt+Down</kbd> | Previous/next session |
 | <kbd>Alt+Shift+Left</kbd> / <kbd>Alt+Shift+Right</kbd> | Reorder the highlighted window |
 
 Direct Alt shortcuts also work while the sidebar is focused, but window shortcuts only update the highlighted preview there. Modal naming and confirmation fields take precedence over every global binding.
@@ -27,11 +27,11 @@ Direct Alt shortcuts also work while the sidebar is focused, but window shortcut
 | <kbd>l</kbd> | Switch to the last active window |
 | <kbd>c</kbd> / <kbd>a</kbd> | Create a terminal/agent; type an optional name and press Enter |
 | <kbd>r</kbd> / <kbd>,</kbd> | Rename highlighted window |
-| <kbd>&</kbd> / <kbd>Delete</kbd> | Delete highlighted window after confirmation |
-| <kbd>m</kbd> | Move highlighted window to another workspace |
-| <kbd>s</kbd> | Open workspace chooser |
-| <kbd>C</kbd> / <kbd>R</kbd> / <kbd>K</kbd> | Create, rename, or delete the current workspace |
-| <kbd>P</kbd> / <kbd>N</kbd> | Previous/next workspace |
+| <kbd>&</kbd> / <kbd>Delete</kbd> | Kill highlighted window after confirmation |
+| <kbd>m</kbd> | Move highlighted window to another session |
+| <kbd>s</kbd> | Open session chooser |
+| <kbd>C</kbd> / <kbd>R</kbd> / <kbd>K</kbd> | Create, rename, or kill the current session |
+| <kbd>P</kbd> / <kbd>N</kbd> | Previous/next session |
 | <kbd>z</kbd> | Hide sidebar and focus terminal |
 | <kbd>S</kbd> | Toggle mouse scrolling/text selection |
 | <kbd>d</kbd> | Detach after confirmation, leaving terminals running |
@@ -39,9 +39,9 @@ Direct Alt shortcuts also work while the sidebar is focused, but window shortcut
 
 Unsupported sidebar keys are consumed and are never forwarded to the child terminal.
 
-## Workspace chooser
+## Session chooser
 
-Use arrows or <kbd>j</kbd>/<kbd>k</kbd> and <kbd>Enter</kbd> to select. <kbd>Esc</kbd> or <kbd>q</kbd> closes the chooser. <kbd>C</kbd>, <kbd>R</kbd>/<kbd>$</kbd>, and <kbd>K</kbd> create, rename, and delete workspaces.
+Use arrows or <kbd>j</kbd>/<kbd>k</kbd> and <kbd>Enter</kbd> to select. <kbd>Esc</kbd> or <kbd>q</kbd> closes the chooser. <kbd>C</kbd>, <kbd>R</kbd>/<kbd>$</kbd>, and <kbd>K</kbd> create, rename, and kill sessions.
 
 ## Naming and confirmation
 

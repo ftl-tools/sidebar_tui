@@ -3,7 +3,7 @@ import { defineConfig } from "vitepress";
 export default defineConfig({
   title: "Sidebar TUI",
   description:
-    "Manage multiple terminal sessions without leaving your terminal.",
+    "Manage multiple terminal windows without leaving your terminal.",
   // Required for GitHub Pages project sites (served at /sidebar_tui/, not /)
   base: "/sidebar_tui/",
   // 'dark' allows toggling; 'force-dark' disables the toggle and locks to dark mode
@@ -19,7 +19,7 @@ export default defineConfig({
       {
         property: "og:description",
         content:
-          "Manage multiple terminal sessions without leaving your terminal.",
+          "Manage multiple terminal windows without leaving your terminal.",
       },
     ],
   ],
@@ -51,7 +51,8 @@ export default defineConfig({
           text: "Reference",
           items: [
             { text: "Keybindings", link: "/guide/keybindings" },
-            { text: "Workspaces", link: "/guide/workspaces" },
+            { text: "Sessions", link: "/guide/sessions" },
+            { text: "Terminology & compatibility", link: "/guide/terminology" },
           ],
         },
       ],

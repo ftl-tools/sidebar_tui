@@ -1,5 +1,5 @@
 class Sb < Formula
-  desc "TUI for managing terminal sessions in a sidebar"
+  desc "TUI for managing terminal windows in a sidebar"
   homepage "https://github.com/ftl-tools/sidebar_tui"
   version "0.1.9"
   license "MIT"

@@ -1,10 +1,10 @@
 //! Hint bar module for displaying context-aware keybindings.
 //!
-//! The hint column lives inside the sidebar below the session list and shows:
+//! The hint column lives inside the sidebar below the window list and shows:
 //! - Available keybindings based on current context
 //! - Confirmation prompts without obscuring the terminal's background
 //! - Temporary messages
-//! - Quit path below the contextual bindings
+//! - Detach path below the contextual bindings
 
 use ratatui::{
     buffer::Buffer,
@@ -22,7 +22,7 @@ use crate::state::{AppMode, AppState, ConfirmAction, Focus};
 pub struct KeybindingInfo {
     /// The key label (e.g., "ctrl + n", "q", "enter").
     pub key: String,
-    /// Description of the action (e.g., "New", "Quit", "Select").
+    /// Description of the action (e.g., "New", "Detach", "Select").
     pub description: String,
     /// Whether this binding is currently enabled (disabled bindings are grayed out).
     pub enabled: bool,
@@ -78,8 +78,8 @@ pub struct HintBar {
     pub bindings: Vec<KeybindingInfo>,
     /// Current display mode.
     pub mode: HintBarMode,
-    /// Path to quit shown below the bindings (e.g., "ctrl + b → q Quit").
-    pub quit_path: String,
+    /// Path to detach shown below the bindings (e.g., "ctrl + b → d Detach").
+    pub detach_path: String,
 }
 
 impl Default for HintBar {
@@ -87,18 +87,18 @@ impl Default for HintBar {
         Self {
             bindings: Vec::new(),
             mode: HintBarMode::Normal,
-            quit_path: String::new(),
+            detach_path: String::new(),
         }
     }
 }
 
 impl HintBar {
-    /// Create a new HintBar with the given bindings and quit path.
-    pub fn new(bindings: Vec<KeybindingInfo>, quit_path: impl Into<String>) -> Self {
+    /// Create a new HintBar with the given bindings and detach path.
+    pub fn new(bindings: Vec<KeybindingInfo>, detach_path: impl Into<String>) -> Self {
         Self {
             bindings,
             mode: HintBarMode::Normal,
-            quit_path: quit_path.into(),
+            detach_path: detach_path.into(),
         }
     }
 
@@ -130,9 +130,9 @@ impl HintBar {
         self.bindings = bindings;
     }
 
-    /// Set the quit path.
-    pub fn set_quit_path(&mut self, quit_path: impl Into<String>) {
-        self.quit_path = quit_path.into();
+    /// Set the detach path.
+    pub fn set_detach_path(&mut self, detach_path: impl Into<String>) {
+        self.detach_path = detach_path.into();
     }
 
     /// Calculate the height needed by the wrapped sidebar column.
@@ -154,7 +154,7 @@ impl HintBar {
         if !matches!(self.mode, HintBarMode::Message { .. }) {
             for binding in &self.bindings {
                 // The pinned exit path already displays this action; do not repeat it.
-                if format!("{} {}", binding.key, binding.description) == self.quit_path {
+                if format!("{} {}", binding.key, binding.description) == self.detach_path {
                     continue;
                 }
                 lines.push(Line::from(vec![
@@ -178,9 +178,9 @@ impl HintBar {
                 ]));
             }
         }
-        if !self.quit_path.is_empty() {
+        if !self.detach_path.is_empty() {
             lines.push(Line::from(
-                color_quit_path(&self.quit_path)
+                color_detach_path(&self.detach_path)
                     .into_iter()
                     .map(|(text, color)| Span::styled(text.to_owned(), Style::default().fg(color)))
                     .collect::<Vec<_>>(),
@@ -202,41 +202,41 @@ impl Widget for HintBar {
         // Unlike the old right-aligned footer, reserve the last rows for the
         // escape path even when a short sidebar clips the contextual bindings.
         self.bindings
-            .retain(|binding| format!("{} {}", binding.key, binding.description) != self.quit_path);
-        let quit = HintBar {
+            .retain(|binding| format!("{} {}", binding.key, binding.description) != self.detach_path);
+        let detach = HintBar {
             bindings: vec![],
             mode: HintBarMode::Normal,
-            quit_path: std::mem::take(&mut self.quit_path),
+            detach_path: std::mem::take(&mut self.detach_path),
         };
-        let quit_height = if quit.quit_path.is_empty() {
+        let detach_height = if detach.detach_path.is_empty() {
             0
         } else {
-            quit.calculate_height(area.width).min(area.height)
+            detach.calculate_height(area.width).min(area.height)
         };
         let content_area = Rect {
-            height: area.height - quit_height,
+            height: area.height - detach_height,
             ..area
         };
         self.column().render(content_area, buf);
-        quit.column()
+        detach.column()
             .style(Style::default().fg(colors::WHITE))
             .render(
-                Rect::new(area.x, content_area.bottom(), area.width, quit_height),
+                Rect::new(area.x, content_area.bottom(), area.width, detach_height),
                 buf,
             );
     }
 }
 
-/// Parse a quit path string and return colored segments.
-/// Keys are colored purple, arrows and "Quit" are colored white.
-/// Example: "ctrl + b → q Quit" -> [("ctrl + b", PURPLE), (" → ", WHITE), ("q", PURPLE), (" ", WHITE), ("Quit", WHITE)]
-fn color_quit_path(quit_path: &str) -> Vec<(&str, ratatui::style::Color)> {
+/// Parse a detach path string and return colored segments.
+/// Keys are colored purple, arrows and "Detach" are colored white.
+/// Example: "ctrl + b → d Detach" -> [("ctrl + b", PURPLE), (" → ", WHITE), ("q", PURPLE), (" ", WHITE), ("Detach", WHITE)]
+fn color_detach_path(detach_path: &str) -> Vec<(&str, ratatui::style::Color)> {
     use ratatui::style::Color;
 
     let mut result = Vec::new();
 
-    // Check if it ends with " Quit"
-    if let Some(prefix) = quit_path.strip_suffix(" Quit") {
+    // Check if it ends with " Detach"
+    if let Some(prefix) = detach_path.strip_suffix(" Detach") {
         // Split by " → " to find key segments
         let parts: Vec<&str> = prefix.split(" → ").collect();
 
@@ -247,19 +247,20 @@ fn color_quit_path(quit_path: &str) -> Vec<(&str, ratatui::style::Color)> {
             // Add separator " → " if not the last part
             if i < parts.len() - 1 {
                 // Find where " → " appears after this part
-                let start = quit_path.find(part).unwrap() + part.len();
-                let arrow_slice = &quit_path[start..start + 5]; // " → " is 5 bytes (space + 3-byte arrow + space)
+                let start = detach_path.find(part).unwrap() + part.len();
+                let arrow_slice = &detach_path[start..start + 5]; // " → " is 5 bytes (space + 3-byte arrow + space)
                 result.push((arrow_slice, colors::WHITE));
             }
         }
 
-        // Add " Quit" at the end
-        let quit_start = quit_path.len() - 5; // " Quit" is 5 chars
-        result.push((&quit_path[quit_start..quit_start + 1], Color::Reset)); // space
-        result.push((&quit_path[quit_start + 1..], colors::WHITE)); // "Quit"
+        // Add " Detach" at the end
+        // The old fixed length only worked for "Quit"; measure the tmux action label.
+        let detach_start = detach_path.len() - " Detach".len();
+        result.push((&detach_path[detach_start..detach_start + 1], Color::Reset)); // space
+        result.push((&detach_path[detach_start + 1..], colors::WHITE)); // "Detach"
     } else {
         // Fallback: just render everything white
-        result.push((quit_path, colors::WHITE));
+        result.push((detach_path, colors::WHITE));
     }
 
     result
@@ -279,8 +280,8 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             Focus::Sidebar => {
                 if state.is_welcome_state() {
                     vec![
-                        KeybindingInfo::new("c/a", "New terminal/agent"),
-                        KeybindingInfo::new("s", "Workspaces"),
+                        KeybindingInfo::new("c/a", "New window/agent"),
+                        KeybindingInfo::new("s", "Sessions"),
                         KeybindingInfo::new("S", mouse_desc),
                         KeybindingInfo::new("?", "Help"),
                         KeybindingInfo::new("d", "Detach"),
@@ -292,11 +293,11 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                         KeybindingInfo::new("↑/↓/j/k", "Browse"),
                         KeybindingInfo::new("1-9", "Highlight"),
                         KeybindingInfo::new("n/p/l", "Next/prev/last"),
-                        KeybindingInfo::new("c/a", "New terminal/agent"),
+                        KeybindingInfo::new("c/a", "New window/agent"),
                         KeybindingInfo::new("r/,", "Rename"),
-                        KeybindingInfo::new("&/delete", "Delete"),
+                        KeybindingInfo::new("&/delete", "Kill window"),
                         KeybindingInfo::new("m", "Move"),
-                        KeybindingInfo::new("s", "Workspaces"),
+                        KeybindingInfo::new("s", "Sessions"),
                         KeybindingInfo::new("z", "Hide"),
                         KeybindingInfo::new("S", mouse_desc),
                         KeybindingInfo::new("?", "Help"),
@@ -308,13 +309,13 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                 vec![
                     KeybindingInfo::new("ctrl + space/b", "Sidebar"),
                     KeybindingInfo::new("alt + 1-9/←/→", "Switch window"),
-                    KeybindingInfo::new("alt + ↑/↓", "Switch workspace"),
+                    KeybindingInfo::new("alt + ↑/↓", "Switch session"),
                 ]
             }
         },
         AppMode::CreateMode { .. } => vec![
-            KeybindingInfo::new("t", "Terminal Session"),
-            KeybindingInfo::new("a", "Agent Session"),
+            KeybindingInfo::new("t", "Terminal Window"),
+            KeybindingInfo::new("a", "Agent Window"),
             KeybindingInfo::new("esc", "Cancel"),
         ],
         AppMode::Drafting(_) => vec![
@@ -326,8 +327,8 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
             KeybindingInfo::new("esc", "Cancel"),
         ],
         AppMode::Confirming(confirm_state) => {
-            // Show "y/q" for quit confirmation, just "y" for others
-            let yes_key = if matches!(confirm_state.action, ConfirmAction::Quit) {
+            // Show "y/q" for detach confirmation, just "y" for others
+            let yes_key = if matches!(confirm_state.action, ConfirmAction::Detach) {
                 "y/q"
             } else {
                 "y"
@@ -337,9 +338,9 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                 KeybindingInfo::new("n", "No"),
             ]
         }
-        AppMode::WorkspaceOverlay(overlay) => {
-            use crate::state::WorkspaceOverlayMode;
-            if overlay.drafting_workspace.is_some() {
+        AppMode::SessionOverlay(overlay) => {
+            use crate::state::SessionOverlayMode;
+            if overlay.drafting_session.is_some() {
                 vec![
                     KeybindingInfo::new("enter", "Create"),
                     KeybindingInfo::new("esc", "Cancel"),
@@ -349,12 +350,12 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     KeybindingInfo::new("enter", "Rename"),
                     KeybindingInfo::new("esc", "Cancel"),
                 ]
-            } else if matches!(overlay.mode, WorkspaceOverlayMode::MoveSession { .. }) {
+            } else if matches!(overlay.mode, SessionOverlayMode::MoveWindow { .. }) {
                 vec![
                     KeybindingInfo::new("enter", "Move here"),
                     KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                     KeybindingInfo::new("esc", "Cancel"),
-                    KeybindingInfo::new("q", "Quit"),
+                    KeybindingInfo::new("q", "Close"),
                 ]
             } else {
                 vec![
@@ -362,7 +363,7 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
                     KeybindingInfo::new("↑/↓/j/k", "Navigate"),
                     KeybindingInfo::new("C", "New"),
                     KeybindingInfo::new("R/$", "Rename"),
-                    KeybindingInfo::new("K", "Delete"),
+                    KeybindingInfo::new("K", "Kill session"),
                     KeybindingInfo::new("esc/q", "Close"),
                 ]
             }
@@ -371,17 +372,17 @@ pub fn get_bindings_for_state(state: &AppState) -> Vec<KeybindingInfo> {
     }
 }
 
-/// Get the quit path string for the current app state.
-pub fn get_quit_path_for_state(state: &AppState) -> String {
+/// Get the detach path string for the current app state.
+pub fn get_detach_path_for_state(state: &AppState) -> String {
     match &state.mode {
         AppMode::Normal => match state.focus {
             Focus::Sidebar => "d Detach".to_string(),
             Focus::Terminal => "toggle → d Detach".to_string(),
         },
-        AppMode::CreateMode { .. } => "esc → q Quit".to_string(),
-        AppMode::Drafting(_) | AppMode::Renaming(_) => "esc → q Quit".to_string(),
-        AppMode::Confirming(_) => "n → q Quit".to_string(),
-        AppMode::WorkspaceOverlay(_) => "esc/q Close".to_string(),
+        AppMode::CreateMode { .. } => "esc → d Detach".to_string(),
+        AppMode::Drafting(_) | AppMode::Renaming(_) => "esc → d Detach".to_string(),
+        AppMode::Confirming(_) => "n → d Detach".to_string(),
+        AppMode::SessionOverlay(_) => "esc/q Close".to_string(),
         AppMode::Help => "esc/q Close".to_string(),
     }
 }
@@ -389,9 +390,9 @@ pub fn get_quit_path_for_state(state: &AppState) -> String {
 /// Create a HintBar configured for the current app state.
 pub fn hint_bar_for_state(state: &AppState) -> HintBar {
     let bindings = get_bindings_for_state(state);
-    let quit_path = get_quit_path_for_state(state);
+    let detach_path = get_detach_path_for_state(state);
 
-    let mut hint_bar = HintBar::new(bindings, quit_path);
+    let mut hint_bar = HintBar::new(bindings, detach_path);
 
     // If in confirmation mode, show the confirmation prompt
     if let AppMode::Confirming(confirm_state) = &state.mode {
@@ -425,9 +426,9 @@ mod tests {
 
     #[test]
     fn test_keybinding_info_display_width() {
-        // "q Quit" = 1 + 1 + 4 = 6
-        let binding = KeybindingInfo::new("q", "Quit");
-        assert_eq!(binding.display_width(), 6);
+        // "d Detach" = 1 + 1 + 6 = 8
+        let binding = KeybindingInfo::new("q", "Detach");
+        assert_eq!(binding.display_width(), 8);
 
         // "ctrl + n New" = 8 + 1 + 3 = 12
         let binding = KeybindingInfo::new("ctrl + n", "New");
@@ -461,18 +462,18 @@ mod tests {
         let bar = HintBar::default();
         assert!(bar.bindings.is_empty());
         assert_eq!(bar.mode, HintBarMode::Normal);
-        assert!(bar.quit_path.is_empty());
+        assert!(bar.detach_path.is_empty());
     }
 
     #[test]
     fn test_hint_bar_new() {
         let bindings = vec![
-            KeybindingInfo::new("q", "Quit"),
+            KeybindingInfo::new("q", "Detach"),
             KeybindingInfo::new("n", "New"),
         ];
-        let bar = HintBar::new(bindings, "q Quit");
+        let bar = HintBar::new(bindings, "d Detach");
         assert_eq!(bar.bindings.len(), 2);
-        assert_eq!(bar.quit_path, "q Quit");
+        assert_eq!(bar.detach_path, "d Detach");
     }
 
     #[test]
@@ -514,10 +515,10 @@ mod tests {
     #[test]
     fn test_hint_bar_show_message() {
         let mut bar = HintBar::default();
-        bar.show_message("Session created!");
+        bar.show_message("Window created!");
         match &bar.mode {
             HintBarMode::Message { text } => {
-                assert_eq!(text, "Session created!");
+                assert_eq!(text, "Window created!");
             }
             _ => panic!("Expected Message mode"),
         }
@@ -539,10 +540,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hint_bar_set_quit_path() {
+    fn test_hint_bar_set_detach_path() {
         let mut bar = HintBar::default();
-        bar.set_quit_path("esc → q Quit");
-        assert_eq!(bar.quit_path, "esc → q Quit");
+        bar.set_detach_path("esc → d Detach");
+        assert_eq!(bar.detach_path, "esc → d Detach");
     }
 
     #[test]
@@ -552,7 +553,7 @@ mod tests {
                 KeybindingInfo::new("a", "Agent"),
                 KeybindingInfo::new("c", "Terminal"),
             ],
-            "q Quit",
+            "d Detach",
         );
         assert_eq!(bar.calculate_height(26), 3);
         let area = Rect::new(0, 0, 26, 3);
@@ -560,7 +561,7 @@ mod tests {
         bar.render(area, &mut buf);
         assert_eq!(buf[(0, 0)].symbol(), "a");
         assert_eq!(buf[(0, 1)].symbol(), "c");
-        assert_eq!(buf[(0, 2)].symbol(), "q");
+        assert_eq!(buf[(0, 2)].symbol(), "d");
         assert_eq!(buf[(0, 0)].fg, colors::PURPLE);
         assert_eq!(buf[(2, 0)].fg, colors::WHITE);
     }
@@ -568,7 +569,7 @@ mod tests {
     #[test]
     fn test_column_narrow_unicode_and_confirmation() {
         let bar = HintBar::default().with_mode(HintBarMode::Confirm {
-            message: "Delete 界 workspace?".into(),
+            message: "Delete 界 session?".into(),
             important: true,
         });
         assert!(bar.calculate_height(8) > 1);
@@ -599,15 +600,15 @@ mod tests {
     }
 
     #[test]
-    fn test_message_replaces_bindings_but_keeps_quit() {
-        let mut bar = HintBar::new(vec![KeybindingInfo::new("a", "Agent")], "q Quit");
+    fn test_message_replaces_bindings_but_keeps_detach() {
+        let mut bar = HintBar::new(vec![KeybindingInfo::new("a", "Agent")], "d Detach");
         bar.show_message("Saved");
         assert_eq!(bar.calculate_height(26), 2);
         let area = Rect::new(0, 0, 26, 2);
         let mut buf = Buffer::empty(area);
         bar.render(area, &mut buf);
         assert_eq!(buf[(0, 0)].symbol(), "S");
-        assert_eq!(buf[(0, 1)].symbol(), "q");
+        assert_eq!(buf[(0, 1)].symbol(), "d");
     }
 
     // Tests for context-aware binding functions
@@ -629,11 +630,11 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_bindings_sidebar_focused_with_sessions() {
-        use crate::state::Session;
+    fn test_get_bindings_sidebar_focused_with_windows() {
+        use crate::state::Window;
 
         let mut state = AppState::default();
-        state.sessions.push(Session::new("test"));
+        state.windows.push(Window::new("test"));
 
         let bindings = get_bindings_for_state(&state);
 
@@ -706,10 +707,10 @@ mod tests {
 
     #[test]
     fn test_get_bindings_drafting_mode() {
-        use crate::state::{DraftingState, SessionType};
+        use crate::state::{DraftingState, WindowType};
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -726,20 +727,20 @@ mod tests {
     }
 
     #[test]
-    fn test_get_bindings_confirming_quit_mode() {
+    fn test_get_bindings_confirming_detach_mode() {
         use crate::state::{ConfirmAction, ConfirmState};
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
         let bindings = get_bindings_for_state(&state);
 
-        // Quit confirmation should show "y/q" as the yes key
+        // Detach confirmation should show "y/q" as the yes key
         assert!(
             bindings.iter().any(|b| b.key == "y/q"),
-            "Should have 'y/q' binding for quit"
+            "Should have 'y/q' binding for detach"
         );
         assert!(
             bindings.iter().any(|b| b.key == "n"),
@@ -749,12 +750,12 @@ mod tests {
 
     #[test]
     fn test_get_bindings_confirming_delete_mode() {
-        use crate::state::{ConfirmAction, ConfirmState, Session};
+        use crate::state::{ConfirmAction, ConfirmState, Window};
 
         let state = AppState {
-            sessions: vec![Session::new("test")],
+            windows: vec![Window::new("test")],
             mode: AppMode::Confirming(ConfirmState::new(
-                ConfirmAction::DeleteSession(0),
+                ConfirmAction::KillWindow(0),
                 Focus::Sidebar,
             )),
             ..Default::default()
@@ -779,48 +780,48 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_quit_path_sidebar_focused() {
+    fn test_get_detach_path_sidebar_focused() {
         let state = AppState::default();
-        let quit_path = get_quit_path_for_state(&state);
-        assert_eq!(quit_path, "q Quit");
+        let detach_path = get_detach_path_for_state(&state);
+        assert_eq!(detach_path, "d Detach");
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_quit_path_terminal_focused() {
+    fn test_get_detach_path_terminal_focused() {
         let state = AppState {
             focus: Focus::Terminal,
             ..Default::default()
         };
 
-        let quit_path = get_quit_path_for_state(&state);
-        assert_eq!(quit_path, "ctrl + b → q Quit");
+        let detach_path = get_detach_path_for_state(&state);
+        assert_eq!(detach_path, "ctrl + b → d Detach");
     }
 
     #[test]
-    fn test_get_quit_path_drafting_mode() {
-        use crate::state::{DraftingState, SessionType};
+    fn test_get_detach_path_drafting_mode() {
+        use crate::state::{DraftingState, WindowType};
 
         let state = AppState {
-            mode: AppMode::Drafting(DraftingState::new(SessionType::Terminal, Focus::Sidebar)),
+            mode: AppMode::Drafting(DraftingState::new(WindowType::Terminal, Focus::Sidebar)),
             ..Default::default()
         };
 
-        let quit_path = get_quit_path_for_state(&state);
-        assert_eq!(quit_path, "esc → q Quit");
+        let detach_path = get_detach_path_for_state(&state);
+        assert_eq!(detach_path, "esc → d Detach");
     }
 
     #[test]
-    fn test_get_quit_path_confirming_mode() {
+    fn test_get_detach_path_confirming_mode() {
         use crate::state::{ConfirmAction, ConfirmState};
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
-        let quit_path = get_quit_path_for_state(&state);
-        assert_eq!(quit_path, "n → q Quit");
+        let detach_path = get_detach_path_for_state(&state);
+        assert_eq!(detach_path, "n → d Detach");
     }
 
     #[test]
@@ -830,18 +831,18 @@ mod tests {
         let hint_bar = hint_bar_for_state(&state);
 
         assert_eq!(hint_bar.mode, HintBarMode::Normal);
-        assert_eq!(hint_bar.quit_path, "q Quit");
+        assert_eq!(hint_bar.detach_path, "d Detach");
         assert!(!hint_bar.bindings.is_empty());
     }
 
     #[test]
     fn test_hint_bar_for_state_confirming_important() {
-        use crate::state::{ConfirmAction, ConfirmState, Session};
+        use crate::state::{ConfirmAction, ConfirmState, Window};
 
         let state = AppState {
-            sessions: vec![Session::new("test")],
+            windows: vec![Window::new("test")],
             mode: AppMode::Confirming(ConfirmState::new(
-                ConfirmAction::DeleteSession(0),
+                ConfirmAction::KillWindow(0),
                 Focus::Sidebar,
             )),
             ..Default::default()
@@ -852,7 +853,7 @@ mod tests {
         match &hint_bar.mode {
             HintBarMode::Confirm { message, important } => {
                 assert!(*important, "Delete should be important");
-                assert!(message.contains("Delete"), "Message should mention delete");
+                assert!(message.contains("Kill"), "Message should mention kill");
             }
             _ => panic!("Should be in Confirm mode"),
         }
@@ -863,7 +864,7 @@ mod tests {
         use crate::state::{ConfirmAction, ConfirmState};
 
         let state = AppState {
-            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Quit, Focus::Sidebar)),
+            mode: AppMode::Confirming(ConfirmState::new(ConfirmAction::Detach, Focus::Sidebar)),
             ..Default::default()
         };
 
@@ -871,7 +872,7 @@ mod tests {
 
         match &hint_bar.mode {
             HintBarMode::Confirm { important, .. } => {
-                assert!(!important, "Quit should not be important");
+                assert!(!important, "Detach should not be important");
             }
             _ => panic!("Should be in Confirm mode"),
         }
@@ -931,28 +932,28 @@ mod tests {
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_bindings_sidebar_with_sessions_shows_mouse_mode() {
-        use crate::state::Session;
+    fn test_get_bindings_sidebar_with_windows_shows_mouse_mode() {
+        use crate::state::Window;
 
         let mut state = AppState::default();
-        state.sessions.push(Session::new("test"));
+        state.windows.push(Window::new("test"));
 
         let bindings = get_bindings_for_state(&state);
         let mouse_binding = bindings.iter().find(|b| b.key == "ctrl + s");
         assert!(
             mouse_binding.is_some(),
-            "Sidebar with sessions should have ctrl + s binding"
+            "Sidebar with windows should have ctrl + s binding"
         );
     }
 
-    // === Workspace Overlay Hint Bar Tests ===
+    // === Session Overlay Hint Bar Tests ===
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_bindings_workspace_overlay_includes_q_quit() {
-        use crate::state::WorkspaceOverlayState;
+    fn test_get_bindings_session_overlay_includes_q_detach() {
+        use crate::state::SessionOverlayState;
         let state = AppState {
-            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new(
+            mode: AppMode::SessionOverlay(SessionOverlayState::new(
                 vec!["Default".to_string()],
                 "Default".to_string(),
             )),
@@ -963,38 +964,38 @@ mod tests {
         assert!(
             bindings
                 .iter()
-                .any(|b| b.key == "q" && b.description == "Quit"),
-            "Workspace overlay bindings should include 'q' for Quit"
+                .any(|b| b.key == "q" && b.description == "Detach"),
+            "Session overlay bindings should include 'q' for Detach"
         );
     }
 
     #[test]
     #[ignore = "legacy keybinding expectation replaced by tmux-style binding tests"]
-    fn test_get_quit_path_workspace_overlay_shows_q_quit() {
-        use crate::state::WorkspaceOverlayState;
+    fn test_get_detach_path_session_overlay_shows_q_detach() {
+        use crate::state::SessionOverlayState;
         let state = AppState {
-            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new(
+            mode: AppMode::SessionOverlay(SessionOverlayState::new(
                 vec!["Default".to_string()],
                 "Default".to_string(),
             )),
             ..Default::default()
         };
 
-        let quit_path = get_quit_path_for_state(&state);
+        let detach_path = get_detach_path_for_state(&state);
         assert_eq!(
-            quit_path, "q Quit",
-            "Workspace overlay quit path should be 'q Quit'"
+            detach_path, "d Detach",
+            "Session overlay detach path should be 'd Detach'"
         );
     }
 
     #[test]
-    fn test_get_bindings_workspace_overlay_move_mode_includes_q_quit() {
-        use crate::state::WorkspaceOverlayState;
+    fn test_get_bindings_session_overlay_move_mode_includes_q_close() {
+        use crate::state::SessionOverlayState;
         let state = AppState {
-            mode: AppMode::WorkspaceOverlay(WorkspaceOverlayState::new_move_mode(
+            mode: AppMode::SessionOverlay(SessionOverlayState::new_move_mode(
                 vec!["Default".to_string()],
                 "Default".to_string(),
-                "mysession".to_string(),
+                "mywindow".to_string(),
             )),
             ..Default::default()
         };
@@ -1003,20 +1004,20 @@ mod tests {
         assert!(
             bindings
                 .iter()
-                .any(|b| b.key == "q" && b.description == "Quit"),
-            "Workspace overlay move mode bindings should include 'q' for Quit"
+                .any(|b| b.key == "q" && b.description == "Close"),
+            "Session overlay move mode bindings should include 'q' for Close"
         );
         assert!(
             bindings
                 .iter()
                 .any(|b| b.key == "enter" && b.description == "Move here"),
-            "Workspace overlay move mode bindings should include 'enter' for Move here"
+            "Session overlay move mode bindings should include 'enter' for Move here"
         );
         assert!(
             bindings
                 .iter()
                 .any(|b| b.key == "esc" && b.description == "Cancel"),
-            "Workspace overlay move mode bindings should include 'esc' for Cancel"
+            "Session overlay move mode bindings should include 'esc' for Cancel"
         );
     }
 

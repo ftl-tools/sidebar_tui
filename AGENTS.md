@@ -28,19 +28,19 @@ When developing, just run e2e tests related to your feature. Only run the full e
 
 ## E2E Test Infrastructure — Key Pitfalls
 
-### Env vars and the daemon process
+### Env vars and the server process
 
-Shell sessions inherit their environment from the **daemon process**, not from the `sb` client that connects to it. The daemon is started once (as a background child of the first `sb` invocation) and stays running. Any env vars set only on a later `sb` client call are invisible to new sessions.
+Window shells inherit their environment from the **server process**, not from the `sb` client that connects to it. The server is started once (as a background child of the first `sb` invocation) and stays running. Any env vars set only on a later `sb` client call are invisible to new windows.
 
-This matters when writing tests that check env var inheritance. `TestEnv::setup()` boots the daemon via a bare `list` call — without any custom env vars. If you then spawn `sb` with a custom var and expect it to appear in a new session, it won't.
+This matters when writing tests that check env var inheritance. `TestEnv::setup()` boots the server via a bare `list` call — without any custom env vars. If you then spawn `sb` with a custom var and expect it to appear in a new window, it won't.
 
-**Fix:** use `TestIsolation` directly instead of `TestEnv::setup()`, and set your custom env var on the initial `list` call that boots the daemon:
+**Fix:** use `TestIsolation` directly instead of `TestEnv::setup()`, and set your custom env var on the initial `list` call that boots the server:
 
 ```rust
 let iso = TestIsolation::new();
 let binary = get_binary_path();
 
-// Boot daemon WITH the custom var so it's in the daemon's environment
+// Boot server WITH the custom var so it's in the server's environment
 let mut cmd = std::process::Command::new(&binary);
 iso.apply(&mut cmd);
 cmd.arg("list");
@@ -48,7 +48,7 @@ cmd.env("MY_VAR", "my_value");
 cmd.output().ok();
 std::thread::sleep(Duration::from_millis(300));
 
-// Now spawn the TUI — sessions it creates will inherit MY_VAR
+// Now spawn the TUI — windows it creates will inherit MY_VAR
 ```
 
 Remember to call `iso.cleanup()` manually at the end of the test (since you're not using `TestEnv` which does it in `Drop`).

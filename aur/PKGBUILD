@@ -4,7 +4,7 @@
 pkgname=sidebar-tui-bin
 pkgver=0.1.9
 pkgrel=1
-pkgdesc="TUI for managing terminal sessions in a sidebar"
+pkgdesc="TUI for managing terminal windows in a sidebar"
 arch=('x86_64' 'aarch64')
 url="https://github.com/ftl-tools/sidebar_tui"
 license=('MIT')

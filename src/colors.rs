@@ -10,20 +10,20 @@ use ratatui::style::Color;
 /// and try a brighter, more violet tone across all purple text elements.
 pub const PURPLE: Color = Color::Indexed(99);
 
-/// White (ANSI 255) - Used for session names, terminal text.
+/// White (ANSI 255) - Used for window names, terminal text.
 pub const WHITE: Color = Color::Indexed(255);
 
 /// Dark grey (ANSI 238) - Used for unfocused borders, wrap indicators,
 /// truncation indicators, hint bar background.
 pub const DARK_GREY: Color = Color::Indexed(238);
 
-/// Dark purple (ANSI 54) - Used for selected session background.
+/// Dark purple (ANSI 54) - Used for selected window background.
 pub const DARK_PURPLE: Color = Color::Indexed(54);
 
 /// Dark red (ANSI 88) - Used for important confirmation prompt backgrounds.
 pub const DARK_RED: Color = Color::Indexed(88);
 
-/// Focused border (ANSI 99) - Used for focused pane outlines.
+/// Focused border (ANSI 99) - Used for focused region outlines.
 /// Changed from 93 (#5f00ff, blue-violet) to 99 (#875fff) which is a softer violet-purple
 /// that sits between blue and purple, offering better contrast against dark backgrounds as thin lines.
 pub const FOCUSED_BORDER: Color = Color::Indexed(99);

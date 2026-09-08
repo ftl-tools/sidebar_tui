@@ -1,5 +1,5 @@
 pkgbase = sidebar-tui-bin
-	pkgdesc = TUI for managing terminal sessions in a sidebar
+	pkgdesc = TUI for managing terminal windows in a sidebar
 	pkgver = 0.1.9
 	pkgrel = 1
 	url = https://github.com/ftl-tools/sidebar_tui

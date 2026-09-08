@@ -75,4 +75,4 @@ paru -Syu sidebar-tui-bin
 
 Remove the `sb` binary from your `PATH`. If you used npm or bun, run `npm uninstall -g sidebar-tui` or `bun remove -g sidebar-tui`.
 
-Session data is stored in `$XDG_DATA_HOME/sidebar-tui/` (typically `~/.local/share/sidebar-tui/`). Remove this directory to fully clean up.
+Window data is stored in `$XDG_DATA_HOME/sidebar-tui/` (typically `~/.local/share/sidebar-tui/`). Remove this directory to fully clean up.
