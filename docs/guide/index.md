@@ -37,3 +37,4 @@ Pressing <kbd>Ctrl+B</kbd> while in the sidebar also commits the highlighted win
 - [Installation options](/guide/installation) — Homebrew, npm, curl, AUR
 - [All keybindings](/guide/keybindings) — complete reference
 - [Sessions](/guide/sessions) — group windows by project
+- [Proposed tmux migration plan](./tmux_migration_plan.md) — incremental, testable steps toward a native tmux manager

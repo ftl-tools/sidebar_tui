@@ -38,25 +38,29 @@ export default defineConfig({
       },
     ],
 
-    sidebar: {
-      "/guide/": [
-        {
-          text: "Getting Started",
-          items: [
-            { text: "Installation", link: "/guide/installation" },
-            { text: "Quickstart", link: "/guide/" },
-          ],
-        },
-        {
-          text: "Reference",
-          items: [
-            { text: "Keybindings", link: "/guide/keybindings" },
-            { text: "Sessions", link: "/guide/sessions" },
-            { text: "Terminology & compatibility", link: "/guide/terminology" },
-          ],
-        },
-      ],
-    },
+    // The route-scoped sidebar hid navigation outside the guide; one shared list
+    // keeps the migration plan and current reference pages discoverable together.
+    sidebar: [
+      {
+        text: "Getting Started",
+        items: [
+          { text: "Installation", link: "/guide/installation" },
+          { text: "Quickstart", link: "/guide/" },
+        ],
+      },
+      {
+        text: "Reference",
+        items: [
+          { text: "Keybindings", link: "/guide/keybindings" },
+          { text: "Sessions", link: "/guide/sessions" },
+          { text: "Terminology & compatibility", link: "/guide/terminology" },
+          {
+            text: "tmux migration plan (proposed)",
+            link: "/guide/tmux_migration_plan",
+          },
+        ],
+      },
+    ],
 
     // socialLinks: [
     //   { icon: "github", link: "https://github.com/ftl-tools/sidebar_tui" },
