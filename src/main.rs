@@ -60,7 +60,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Read-only tmux preview (ordinary sb still uses the legacy backend)
+    /// Native tmux chooser and read-only inspection (ordinary sb remains legacy)
     Tmux(sidebar_tui::tmux::TmuxCli),
     /// List all active windows across sessions
     #[command(name = "list-windows", alias = "list")]

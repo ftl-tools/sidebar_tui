@@ -54,7 +54,7 @@ export default defineConfig({
           { text: "Keybindings", link: "/guide/keybindings" },
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminology & compatibility", link: "/guide/terminology" },
-          { text: "tmux read-only preview", link: "/guide/tmux_preview" },
+          { text: "tmux chooser & inspection", link: "/guide/tmux_preview" },
           { text: "tmux migration progress", link: "/guide/tmux_migration_progress" },
           {
             text: "tmux migration plan",

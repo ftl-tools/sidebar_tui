@@ -1,4 +1,4 @@
-//! Read-only tmux preview. No legacy runtime or terminal rendering is used here.
+//! tmux preview adapter. No legacy runtime or terminal rendering is used here.
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -15,8 +15,15 @@ pub struct TmuxCli {
     /// Machine-readable output (names are escaped)
     #[arg(long, global = true)]
     pub json: bool,
+    /// Explicit working directory for the chooser's empty-server create action
+    #[arg(long)]
+    pub cwd: Option<std::path::PathBuf>,
+    /// Intended existing tmux client name/TTY (required when client selection is ambiguous)
+    #[arg(long)]
+    pub client: Option<String>,
+    // Inspection previously required a subcommand; bare preview now opens the native chooser.
     #[command(subcommand)]
-    pub action: Inspect,
+    pub action: Option<Inspect>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -36,7 +43,10 @@ macro_rules! id {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
         pub struct $name(String);
         impl $name {
-            fn parse(value: &str) -> Result<Self> {
+            pub(crate) fn as_str(&self) -> &str {
+                &self.0
+            }
+            pub(crate) fn parse(value: &str) -> Result<Self> {
                 ensure!(
                     value.starts_with($prefix)
                         && value.len() > 1
@@ -147,11 +157,18 @@ impl Adapter {
     pub fn new(socket: Socket) -> Self {
         Self { socket }
     }
-    fn command(&self) -> Command {
+    pub(crate) fn command(&self) -> Command {
+        self.command_with_start(false)
+    }
+    fn command_with_start(&self, allow_start: bool) -> Command {
         let mut cmd = Command::new("tmux");
         // Never allow tmux's server-start behavior or inherited context to override selection.
         // Non-UTF-8 clients replace name bytes with underscores, invalidating lengths.
-        cmd.args(["-N", "-u"]).env_remove("TMUX").env("LC_ALL", "C");
+        // Only the confirmed empty-server create action may start tmux; reads still use -N.
+        if !allow_start {
+            cmd.arg("-N");
+        }
+        cmd.arg("-u").env_remove("TMUX").env("LC_ALL", "C");
         match &self.socket {
             Socket::Name(n) => {
                 cmd.args(["-L", n]);
@@ -184,7 +201,7 @@ impl Adapter {
         );
         Ok(version.trim().into())
     }
-    fn identity(&self) -> Result<(String, u64, u64)> {
+    pub(crate) fn identity(&self) -> Result<(String, u64, u64)> {
         let rows = self.rows("display-message", &["socket_path", "pid", "start_time"])?;
         ensure!(rows.len() == 1, "Missing server identity/capability");
         Ok((rows[0][0].clone(), rows[0][1].parse()?, rows[0][2].parse()?))
@@ -198,7 +215,7 @@ impl Adapter {
             .collect();
         let args = match command {
             "display-message" => vec![command, "-p", &format],
-            "list-sessions" => vec![command, "-F", &format],
+            "list-sessions" | "list-clients" => vec![command, "-F", &format],
             _ => vec![command, "-a", "-F", &format],
         };
         parse_rows(&self.run(&args)?, fields.len())
@@ -304,6 +321,139 @@ impl Adapter {
         })
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneTarget {
+    pub server: ServerIdentity,
+    pub session: SessionId,
+    pub window: WindowId,
+    pub pane: PaneId,
+}
+impl ServerIdentity {
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.socket == other.socket && self.pid == other.pid && self.started == other.started
+    }
+}
+impl Adapter {
+    pub fn resolve_target(&self, target: &PaneTarget) -> Result<Snapshot> {
+        let fresh = self.snapshot()?;
+        ensure!(
+            target.server.same_generation(&fresh.server),
+            "Server restarted; select a fresh target"
+        );
+        ensure!(
+            fresh
+                .memberships
+                .iter()
+                .any(|m| m.session == target.session && m.window == target.window)
+                && fresh
+                    .panes
+                    .iter()
+                    .any(|p| p.id == target.pane && p.window == target.window),
+            "Selected target disappeared; refresh and choose again"
+        );
+        Ok(fresh)
+    }
+    /// Resolve only clients whose session contains the invoking pane; never guess among clients.
+    pub fn choose_client(
+        &self,
+        fresh: &Snapshot,
+        pane: &str,
+        requested: Option<&str>,
+    ) -> Result<String> {
+        let pane = PaneId::parse(pane)?;
+        let window = &fresh
+            .panes
+            .iter()
+            .find(|p| p.id == pane)
+            .context("Invoking pane disappeared")?
+            .window;
+        let candidates: Vec<_> = self
+            .rows("list-clients", &["client_name", "session_id"])?
+            .into_iter()
+            .filter(|r| {
+                fresh
+                    .memberships
+                    .iter()
+                    .any(|m| m.window == *window && m.session.as_str() == r[1])
+            })
+            .map(|r| r[0].clone())
+            .collect();
+        if let Some(name) = requested {
+            ensure!(
+                candidates.iter().any(|c| c == name),
+                "Requested client is not attached to the invoking pane's session"
+            );
+            return Ok(name.into());
+        }
+        ensure!(
+            candidates.len() == 1,
+            "Ambiguous or missing tmux client; pass --client with an attached client name/TTY"
+        );
+        Ok(candidates[0].clone())
+    }
+    pub(crate) fn commit(&self, target: &PaneTarget, client: Option<&str>) -> Result<()> {
+        self.resolve_target(target)?;
+        let window = format!("{}:{}", target.session.as_str(), target.window.as_str());
+        let mut args = vec![
+            "select-window",
+            "-t",
+            &window,
+            ";",
+            "select-pane",
+            "-t",
+            target.pane.as_str(),
+        ];
+        if let Some(c) = client {
+            args.extend([";", "switch-client", "-c", c, "-t", target.session.as_str()]);
+        }
+        let output = self.command().args(args).output()?;
+        ensure!(
+            output.status.success(),
+            "tmux selection failed (not replayed): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+    pub fn create_empty(&self, cwd: &std::path::Path) -> Result<()> {
+        self.version()?;
+        ensure!(
+            cwd.is_absolute() && cwd.is_dir(),
+            "Creation requires an existing absolute --cwd directory"
+        );
+        match self.snapshot() {
+            Ok(s) => ensure!(
+                s.sessions.is_empty(),
+                "Server is no longer empty; refresh instead"
+            ),
+            Err(e) => ensure!(
+                missing_server(&e),
+                "Cannot safely create on this connection: {e:#}"
+            ),
+        }
+        // tmux expands -c formats even with safe argv; escape hashes to keep cwd literal.
+        let literal_cwd = cwd
+            .to_str()
+            .context("--cwd must be UTF-8")?
+            .replace('#', "##");
+        let output = self
+            .command_with_start(true)
+            .args(["new-session", "-d", "-c"])
+            .arg(literal_cwd)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "tmux create failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+}
+pub(crate) fn missing_server(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("tmux read-only request failed:")
+        && (text.contains("no server running on") || text.contains("No such file or directory"))
+}
+
 fn boolean(s: &str) -> Result<bool> {
     match s {
         "0" => Ok(false),
@@ -343,8 +493,16 @@ pub fn run(cli: TmuxCli) -> Result<()> {
         cli.socket_path,
         std::env::var("TMUX").ok(),
     )?);
+    let Some(action) = cli.action else {
+        ensure!(!cli.json, "--json requires an inspection subcommand");
+        return crate::tmux_chooser::run(adapter, cli.cwd, cli.client);
+    };
+    ensure!(
+        cli.cwd.is_none() && cli.client.is_none(),
+        "--cwd and --client are chooser-only options"
+    );
     let snapshot = adapter.snapshot()?;
-    let value = match cli.action {
+    let value = match action {
         Inspect::Doctor => {
             serde_json::json!({"version": "tmux 3.6a", "read_only": true, "capabilities": "length-framed inventory verified", "inventory": snapshot})
         }

@@ -1,5 +1,7 @@
 # Keybindings
 
+This page describes ordinary legacy `sb`. For the explicit native-target `sb tmux` chooser, see the [preview keyboard workflow](./tmux_preview#chooser-keyboard-workflow).
+
 Sidebar uses its visible sidebar as a persistent tmux-style command mode. Contextual hints appear as a column below the window list, separated by a horizontal line—not under the terminal. The sidebar outline indicates focus; the terminal itself is unframed.
 
 ## Toggle and direct shortcuts

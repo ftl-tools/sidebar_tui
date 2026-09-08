@@ -19,3 +19,4 @@ pub mod state;
 pub mod terminal;
 pub mod updater;
 pub mod tmux;
+pub mod tmux_chooser;

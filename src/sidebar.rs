@@ -16,6 +16,18 @@ use ratatui::widgets::{Block, Borders, Widget};
 use crate::colors::{DARK_GREY, FOCUSED_BORDER, PURPLE, WHITE};
 use crate::state::{AppMode, AppState, Focus};
 
+/// Metadata-only list for the standalone tmux chooser. The legacy AppState list cannot
+/// represent linked memberships; reuse sidebar styling with native typed selection outside it.
+pub fn render_chooser_list(frame: &mut ratatui::Frame, area: Rect, labels: &[String], state: &mut ratatui::widgets::ListState) {
+    use ratatui::widgets::{List, ListItem};
+    let list = List::new(labels.iter().map(|s| ListItem::new(s.clone())))
+        .block(Block::default().title("Sessions / windows / panes").borders(Borders::ALL).border_style(Style::default().fg(FOCUSED_BORDER)))
+        .style(Style::default().fg(WHITE))
+        .highlight_style(Style::default().bg(DARK_GREY))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, state);
+}
+
 /// Width of the sidebar region including borders.
 pub const SIDEBAR_WIDTH: u16 = 28;
 
