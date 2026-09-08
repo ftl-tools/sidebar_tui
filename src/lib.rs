@@ -18,3 +18,4 @@ pub mod sidebar;
 pub mod state;
 pub mod terminal;
 pub mod updater;
+pub mod tmux;

@@ -12,7 +12,7 @@ Sidebar is moving toward being a tmux manager. Its code, UI, and documentation n
 | Quit | Detach | Close the client without killing windows |
 | Delete a session or terminal | Kill a session or window | Terminate its processes |
 
-**This release does not use tmux as its backend.** Sidebar still owns its PTYs and terminal emulation. There is currently one terminal pane per window, no pane splitting or linking windows between sessions, and window names remain globally unique. Saved metadata/scrollback restoration is Sidebar functionality, not a claim that tmux preserves processes across reboot.
+**Ordinary `sb` does not use tmux as its backend.** The explicit [read-only `sb tmux` preview](./tmux_preview) can inspect a real tmux server without changing it. Sidebar still owns its PTYs and terminal emulation. There is currently one terminal pane per window, no pane splitting or linking windows between sessions, and window names remain globally unique. Saved metadata/scrollback restoration is Sidebar functionality, not a claim that tmux preserves processes across reboot.
 
 ## CLI compatibility
 

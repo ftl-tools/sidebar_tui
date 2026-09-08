@@ -60,6 +60,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Read-only tmux preview (ordinary sb still uses the legacy backend)
+    Tmux(sidebar_tui::tmux::TmuxCli),
     /// List all active windows across sessions
     #[command(name = "list-windows", alias = "list")]
     List,
@@ -133,7 +135,9 @@ fn main() -> Result<()> {
         updater::check_and_notify();
     }
 
+    // The old routes own legacy PTYs; keep tmux inspection explicitly isolated from them.
     match cli.command {
+        Some(Commands::Tmux(options)) => sidebar_tui::tmux::run(options).map_err(|e| color_eyre::eyre::eyre!("{e:#}")),
         Some(Commands::List) => cmd_list(),
         Some(Commands::Kill { window }) => cmd_kill(&window),
         Some(Commands::Attach { window }) => cmd_attach(Some(&window)),
