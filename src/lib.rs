@@ -20,3 +20,4 @@ pub mod terminal;
 pub mod updater;
 pub mod tmux;
 pub mod tmux_chooser;
+pub mod tmux_sidebar;

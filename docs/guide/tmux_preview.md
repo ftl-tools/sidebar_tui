@@ -2,6 +2,8 @@
 
 Ordinary `sb` still uses Sidebar's legacy PTY server. Bare `sb tmux` opens a standalone native-target chooser. The explicit doctor/list subcommands remain strictly read-only. Neither mode installs hooks, inserts sidebar panes, owns layouts, or edits your configuration.
 
+A separate [native sidebar architecture demo](./tmux_sidebar_demo) is available only on explicitly created disposable servers. Step 3 remains incomplete pending real-terminal evidence and architecture approval; it is not general enrollment support.
+
 ## Commands
 
 ```bash

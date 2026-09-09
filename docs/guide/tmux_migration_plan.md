@@ -1,6 +1,6 @@
 # Incremental tmux migration plan
 
-**Status:** Steps 1–2 implemented; subsequent steps remain gated. See [implementation progress](./tmux_migration_progress).
+**Status:** Steps 1–2 complete. Step 3 has an incomplete prototype checkpoint pending real-terminal evidence and explicit architecture acceptance; subsequent steps remain gated. See [implementation progress](./tmux_migration_progress).
 
 **Target:** Sidebar becomes a tmux-native interface and manager, not a competing terminal multiplexer.  
 **Delivery rule:** Every numbered step produces a functional, independently testable tool. No step ends with a half-replaced backend.
@@ -62,7 +62,7 @@ Do not start by extracting a universal backend abstraction from the entire appli
 
 ### Temporary command routing
 
-Step 1 finalized the explicit `sb tmux` route and socket selectors below. Doctor, read-only lists, and the standalone chooser are available. Only explicit target selection and confirmed empty-server creation mutate tmux; layout ownership and general management remain future steps. Keep this route stable through the preview period.
+Step 1 finalized the explicit `sb tmux` route and socket selectors below. Doctor, read-only lists, and the standalone chooser are available. The chooser mutates tmux only for explicit target selection and confirmed empty-server creation. Separate Step 3 demo commands opt in to native sidebar panes on a private disposable server; the architecture is not yet accepted, and general enrollment/management remain future steps. Keep this route stable through the preview period.
 
 - Existing `sb` and existing management commands retain legacy behavior through Step 9.
 - `sb tmux ...` is the explicit tmux preview surface, including its TUI launcher.

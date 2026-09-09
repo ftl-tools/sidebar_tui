@@ -55,6 +55,7 @@ export default defineConfig({
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminology & compatibility", link: "/guide/terminology" },
           { text: "tmux chooser & inspection", link: "/guide/tmux_preview" },
+          { text: "Native sidebar demo (approval pending)", link: "/guide/tmux_sidebar_demo" },
           { text: "tmux migration progress", link: "/guide/tmux_migration_progress" },
           {
             text: "tmux migration plan",

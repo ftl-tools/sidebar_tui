@@ -28,6 +28,26 @@ pub struct TmuxCli {
 
 #[derive(Debug, Subcommand)]
 pub enum Inspect {
+    /// Create/reopen the disposable native-sidebar prototype (explicit private socket path only)
+    SidebarDemo {
+        #[arg(long = "cwd")]
+        directory: std::path::PathBuf,
+        /// Opt in to the owned F12 sidebar-focus binding on this demo server
+        #[arg(long)]
+        enable_binding: bool,
+    },
+    /// Reopen marked demo sidebars and focus one (never enroll ordinary windows)
+    SidebarShow {
+        #[arg(long)]
+        window: Option<String>,
+    },
+    /// Close only marked demo sidebar panes, leaving working panes alive
+    SidebarClose {
+        #[arg(long)]
+        disable_binding: bool,
+    },
+    #[command(hide = true)]
+    SidebarPane,
     /// Diagnose tmux version, connection and read-only format capabilities
     Doctor,
     /// List sessions without starting a server
@@ -157,14 +177,22 @@ impl Adapter {
     pub fn new(socket: Socket) -> Self {
         Self { socket }
     }
+    pub(crate) fn explicit_socket_path(&self) -> Result<&str> {
+        match &self.socket {
+            Socket::Path(p) => Ok(p),
+            _ => bail!(
+                "The sidebar prototype requires --socket-path in a private disposable directory"
+            ),
+        }
+    }
     pub(crate) fn command(&self) -> Command {
         self.command_with_start(false)
     }
-    fn command_with_start(&self, allow_start: bool) -> Command {
+    pub(crate) fn command_with_start(&self, allow_start: bool) -> Command {
         let mut cmd = Command::new("tmux");
         // Never allow tmux's server-start behavior or inherited context to override selection.
         // Non-UTF-8 clients replace name bytes with underscores, invalidating lengths.
-        // Only the confirmed empty-server create action may start tmux; reads still use -N.
+        // Only explicit chooser/demo creation paths may start tmux; reads still use -N.
         if !allow_start {
             cmd.arg("-N");
         }
@@ -488,6 +516,7 @@ fn parse_rows(text: &str, count: usize) -> Result<Vec<Vec<String>>> {
 }
 
 pub fn run(cli: TmuxCli) -> Result<()> {
+    let explicit_path = cli.socket_path.is_some();
     let adapter = Adapter::new(Socket::resolve(
         cli.socket_name,
         cli.socket_path,
@@ -501,8 +530,44 @@ pub fn run(cli: TmuxCli) -> Result<()> {
         cli.cwd.is_none() && cli.client.is_none(),
         "--cwd and --client are chooser-only options"
     );
+    // Inherited TMUX context was enough for inspection, but must not authorize creating a demo server.
+    if matches!(
+        &action,
+        Inspect::SidebarDemo { .. }
+            | Inspect::SidebarShow { .. }
+            | Inspect::SidebarClose { .. }
+            | Inspect::SidebarPane
+    ) {
+        ensure!(
+            explicit_path,
+            "Native sidebar demo commands require an explicit --socket-path"
+        );
+        ensure!(
+            !cli.json,
+            "Native sidebar demo commands do not support --json"
+        );
+    }
+    // Native sidebar experiments stay on explicit preview commands; ordinary inspection is unchanged.
+    let action = match action {
+        Inspect::SidebarDemo {
+            directory,
+            enable_binding,
+        } => return crate::tmux_sidebar::demo(&adapter, &directory, enable_binding),
+        Inspect::SidebarShow { window } => {
+            return crate::tmux_sidebar::show(&adapter, window.as_deref());
+        }
+        Inspect::SidebarClose { disable_binding } => {
+            return crate::tmux_sidebar::close(&adapter, disable_binding);
+        }
+        Inspect::SidebarPane => return crate::tmux_sidebar::pane(&adapter),
+        action => action,
+    };
     let snapshot = adapter.snapshot()?;
     let value = match action {
+        Inspect::SidebarDemo { .. }
+        | Inspect::SidebarShow { .. }
+        | Inspect::SidebarClose { .. }
+        | Inspect::SidebarPane => unreachable!(),
         Inspect::Doctor => {
             serde_json::json!({"version": "tmux 3.6a", "read_only": true, "capabilities": "length-framed inventory verified", "inventory": snapshot})
         }
