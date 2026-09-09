@@ -1,6 +1,35 @@
 # tmux migration progress
 
-## Current handoff — migration paused for test-harness overhaul
+## Current handoff — Step 3 reviewed; human acceptance still required
+
+Reviewed on macOS 15.8 with tmux 3.6a against `389b78a` on `main` (matched fetched `origin/main`). The Step 3 implementation in `src/tmux_sidebar.rs` and all six tests in `tests/tmux_sidebar.rs` are present. No missing implementation was identified within the restricted disposable-server contract, and no production code was changed. **Step 3 is still not complete:** physical-terminal mouse/keyboard validation and explicit acceptance of shared focus/layout remain human gates, not something a passing automated test can approve. Step 4 was not started.
+
+### Fresh validation
+
+All piped checks captured both streams with `set -o pipefail` and `2>&1 | tee`; normal outer timeouts were 90 seconds, full E2E 210 seconds, desktop 120 seconds. No failed case was retried or suppressed.
+
+| Command | Result |
+| --- | --- |
+| `npm test` | 12 Python runner tests passed; 452 Cargo cases passed, 47 existing ignored, 0 failed; 17.71 seconds. Report `target/test_reports/20260909_081920_98861/`. |
+| `python3 scripts/test_runner.py --suite e2e --run-timeout 180` | 39 passed, 52 assertion failures, 2 per-case timeouts; 121.03 seconds. Report `target/test_reports/20260909_081948_6291/`. Not a passing full legacy gate. |
+| `cargo install --path . --force --locked --offline` | Reinstalled `/Users/melchiahmauck/.cargo/bin/sb`, version 0.1.17. Existing unused `IpcListener` and locked yanked WASM dependency warnings; no dependency/version changes. |
+| `SB_TMUX_TEST_BINARY="$HOME/.cargo/bin/sb" cargo test --locked --test tmux_sidebar --test tmux_chooser --test tmux_inspector --test tmux_legacy_launch` | All 15 passed using the installed CLI: 6 sidebar, 6 chooser, 2 inspector, 1 legacy-without-tmux. Log `/tmp/sb_step3_review_installed.txt`. Direct Cargo invocation used because the isolated runner deliberately strips the binary override. |
+| `npm run test:desktop` | 1 passed, 14.86 seconds overall. Report `target/test_reports/20260909_082209_8929/`. This run uses the built debug CLI, not the installed override. |
+| `npm run docs:build` | Passed, VitePress 1.6.4. |
+
+Full-audit timeout logs `0072_e2e.log` and `0079_e2e.log` stop during isolated-server setup for `test_sidebar_scroll_position_restored_on_session_switch` and `test_truncation_indicators_when_window_list_overflows`. The inspected Ctrl+N failure still asserts a retired binding. These are unresolved legacy audit issues; this review does not classify every failure as a stale assertion or claim full legacy correctness.
+
+### Fresh desktop evidence and decision boundary
+
+The optional helper created and validated its own Terminal.app window 15507, TTY `/dev/ttys066`. Evidence remains local at `/var/folders/3c/5k5l4l7x00g60styy_w4m9fh0000gn/T/sb-step3-evidence-c633581175c4d66c/`. The reviewer opened `01_editor.png`, `03_mouse_selection.png`, and `04a_terminal_resized.png`: they show saved editor content, highlighted native copy-mode text, and usable hints beside continuing logs after resize to 70×20 (the list title clips). This is agent-inspected rendering evidence, **not physical mouse input or user sign-off**. Input came through a second native PTY client, with synthetic SGR mouse reports.
+
+Exact assertions/output: keyboard copy `STEP3_LOG_000039`, mouse copy `STEP3_LOG_000038`, history offset 0 → 5, native work-pane geometry `[29, 0, 51]` → `[33, 0, 47]`. Original workers remained `@0 %0 9258` and `@1 %1 9271` after close/reopen; saved editor text remained unchanged and log bytes advanced 1581 → 1649. Two attached clients shared window/pane selection. The owned test server/window were cleaned up by the fixture; no default/legacy user server was targeted.
+
+**Recommendation:** retain the provisional one-left-pane-per-window design for this experimental scope, subject to the user's acceptance. Remaining sign-off is the [manual demo checklist](./tmux_sidebar_demo#required-real-terminal-acceptance-please-report-evidence), especially physical mouse/scroll/copy and whether shared focus/width plus unzoom-on-entry are acceptable. Do not interpret the request to investigate/finish Step 3 as evidence that those observations or approval already happened. After acceptance, record the decision and re-estimate Steps 4–11 before continuing. Existing-server integration, linked-window lifecycle, notification recovery, and the release/deprecation interval remain substantial separate work.
+
+Unrelated `.beads/beads.db-shm`, `.beads/beads.db-wal`, and untracked `docs/temp.md` were present at review start and are excluded from this task's commit.
+
+## Previous handoff — migration paused for test-harness overhaul
 
 **Knowledge workflow resolved:** Mulch is no longer required or recommended for agent startup/completion. The project chose checked-in Markdown handoffs rather than installing the missing CLI. `AGENTS.md` documents the replacement workflow; existing `.mulch` records remain an unchanged historical archive. Earlier command-not-found entries below are history, not instructions to retry those commands.
 
