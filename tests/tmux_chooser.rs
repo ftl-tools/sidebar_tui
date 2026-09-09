@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[path = "support/test_paths.rs"]
+mod test_paths;
 use expectrl::{Expect, session::OsSession};
 use sidebar_tui::tmux::{Adapter, PaneTarget, Socket};
 use std::{
@@ -14,7 +16,8 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let dir = PathBuf::from(format!("/tmp/sb-tc-{:016x}", rand::random::<u64>()));
+        // Keep resources under the watchdog's private root for timeout cleanup.
+        let dir = test_paths::private_dir("sb-tc");
         std::fs::create_dir(&dir).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();

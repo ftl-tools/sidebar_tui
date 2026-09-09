@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 
 use expectrl::Session;
 
+mod harness;
 mod terminology;
+#[path = "../support/test_paths.rs"]
+mod test_paths;
 
 /// RAII test timer — logs the test name and elapsed time when dropped.
 struct TestTimer {
@@ -55,11 +58,13 @@ impl TestIsolation {
     fn new() -> Self {
         let pid = std::process::id();
         let id = TEST_ENV_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let base = std::path::PathBuf::from(format!("/tmp/sb-test-{}-{}", pid, id));
+        // A per-run root permits scoped cleanup if a hard watchdog prevents Drop.
+        let base = test_paths::private_dir(&format!("sb-test-{pid}-{id}"));
         let data_dir = base.join("data");
         let runtime_dir = base.join("runtime");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::create_dir_all(base.join("home")).unwrap();
         Self {
             data_dir,
             runtime_dir,
@@ -68,8 +73,26 @@ impl TestIsolation {
 
     /// Apply isolation env vars to a Command so it targets our private server.
     fn apply<'a>(&self, cmd: &'a mut std::process::Command) -> &'a mut std::process::Command {
+        // Personal shell hooks made startup machine-dependent and sometimes stalled
+        // tests. Apply the controlled shell on the initial server launch too.
         cmd.env("XDG_DATA_HOME", &self.data_dir)
             .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .env("HOME", self.data_dir.parent().unwrap().join("home"))
+            .env("SHELL", "/bin/sh")
+            .env("TERM", "xterm-256color")
+            .env_remove("ENV")
+            .env_remove("BASH_ENV")
+    }
+
+    fn has_server_socket(&self) -> bool {
+        self.runtime_dir
+            .join("sidebar-tui")
+            .join(if cfg!(unix) {
+                "daemon.sock"
+            } else {
+                "daemon.port"
+            })
+            .exists()
     }
 
     /// Shut down our private server and remove the temp dir.
@@ -77,8 +100,15 @@ impl TestIsolation {
         let binary = get_binary_path();
         let mut cmd = std::process::Command::new(&binary);
         self.apply(&mut cmd);
-        cmd.arg("shutdown").output().ok();
-        std::thread::sleep(Duration::from_millis(150));
+        // Missing-server probing itself retries for ~1s. A raw harness test has
+        // no server to stop, so do not pay that cost (or accidentally bootstrap one).
+        if self.has_server_socket() {
+            cmd.arg("shutdown").output().ok();
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while self.has_server_socket() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         std::fs::remove_dir_all(self.data_dir.parent().unwrap()).ok();
     }
 }
@@ -96,8 +126,14 @@ impl TestEnv {
         let binary = get_binary_path();
         let mut cmd = std::process::Command::new(&binary);
         iso.apply(&mut cmd);
-        cmd.arg("list").output().ok();
-        std::thread::sleep(Duration::from_millis(300));
+        // A successful list response already proves IPC readiness; a fixed sleep
+        // adds latency without detecting a failed bootstrap.
+        let output = cmd.arg("list").output().expect("start private server");
+        assert!(
+            output.status.success(),
+            "Server startup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Self { iso }
     }
 
@@ -132,9 +168,9 @@ fn get_unique_window_name() -> String {
 }
 
 fn get_binary_path() -> String {
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by cargo");
-    format!("{}/target/debug/sb", manifest_dir)
+    // Runtime Cargo variables and target/debug paths break standalone runners and
+    // custom target directories. Cargo embeds the actual CLI artifact at compile time.
+    env!("CARGO_BIN_EXE_sb").to_string()
 }
 
 /// Spawn an sb window in the isolated server environment.
@@ -179,42 +215,20 @@ impl SbClient {
     }
 
     /// Read all available output and process it through vt100.
-    /// Polls until output has been quiet for 100ms or 800ms have elapsed total,
-    /// whichever comes first — no fixed pre-sleep needed.
+    /// Briefly settle available output; readiness assertions use wait_for_screen.
+    /// The old no-output path always cost 800ms, even for an already-current screen.
     fn read_and_parse(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut buf = [0u8; 8192];
-        let deadline = std::time::Instant::now() + Duration::from_millis(800);
-        let mut last_data = std::time::Instant::now();
-        let mut got_any = false;
-
-        loop {
-            let mut got_data = false;
-            loop {
-                match self.window.try_read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        self.parser.process(&buf[..n]);
-                        got_data = true;
-                        got_any = true;
-                        last_data = std::time::Instant::now();
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(_) => break,
-                }
-            }
-
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                break;
-            }
-            // Once we've seen data, stop when it's been quiet for 100ms
-            if got_any && !got_data && now.duration_since(last_data) >= Duration::from_millis(100) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
+        read_into_parser(&mut self.window, &mut self.parser);
         Ok(())
+    }
+
+    /// Wait for a specific screen state, with one wall-clock budget and a useful failure.
+    fn wait_for_screen(&mut self, text: &str) {
+        assert!(
+            wait_for_text(&mut self.window, &mut self.parser, text, 3000),
+            "Missing {text:?}:\n{}",
+            self.screen_contents()
+        );
     }
 
     /// Get a specific row's contents
@@ -354,15 +368,17 @@ impl SbClient {
 
 impl Drop for SbClient {
     fn drop(&mut self) {
-        // Try to clean up by detaching
-        let _ = self.detach();
+        // The old cleanup sent retired Ctrl+Q and slept even after a clean exit.
+        // Stop only this fixture's display process; explicit detach is tested in flows.
         let _ = self.window.get_process_mut().exit(true);
 
         // Kill the named window in our isolated server
         let binary_path = get_binary_path();
         let mut cmd = std::process::Command::new(&binary_path);
         self.iso.apply(&mut cmd);
-        cmd.args(["kill", &self.window_name]).output().ok();
+        if self.iso.has_server_socket() {
+            cmd.args(["kill", &self.window_name]).output().ok();
+        }
         // No full reset here — TestEnv::drop() handles server shutdown
     }
 }
@@ -873,38 +889,38 @@ fn test_window_persistence_across_restart() {
     );
 }
 
-/// Helper to read available output into a vt100 parser.
-/// Polls until output has been quiet for 100ms or 800ms have elapsed total.
+/// Shared settling policy: the previous duplicate helpers spent 800ms on idle
+/// screens and could drain continuous output forever without checking a deadline.
 fn read_into_parser(window: &mut expectrl::session::OsSession, parser: &mut vt100::Parser) {
-    let mut buf = [0u8; 8192];
-    let deadline = std::time::Instant::now() + Duration::from_millis(800);
-    let mut last_data = std::time::Instant::now();
-    let mut got_any = false;
+    drain_until_quiet(window, parser, Instant::now() + Duration::from_millis(200));
+}
 
-    loop {
-        let mut got_data = false;
-        loop {
+fn drain_until_quiet(
+    window: &mut expectrl::session::OsSession,
+    parser: &mut vt100::Parser,
+    deadline: Instant,
+) {
+    let mut buf = [0u8; 8192];
+    let mut last_data = Instant::now();
+    while Instant::now() < deadline {
+        let slice_end = (Instant::now() + Duration::from_millis(5)).min(deadline);
+        while Instant::now() < slice_end {
             match window.try_read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => return,
                 Ok(n) => {
                     parser.process(&buf[..n]);
-                    got_data = true;
-                    got_any = true;
-                    last_data = std::time::Instant::now();
+                    last_data = Instant::now();
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                Err(_) => return,
             }
         }
-
-        let now = std::time::Instant::now();
-        if now >= deadline {
-            break;
+        if last_data.elapsed() >= Duration::from_millis(20) {
+            return;
         }
-        if got_any && !got_data && now.duration_since(last_data) >= Duration::from_millis(100) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
@@ -915,15 +931,18 @@ fn wait_for_text(
     text: &str,
     timeout_ms: u64,
 ) -> bool {
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(timeout_ms);
-
-    while start.elapsed() < timeout {
-        read_into_parser(window, parser);
+    // Pass the remaining budget into the drain, instead of multiplying nested
+    // waits or imposing an additional 100ms sleep after every partial frame.
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        drain_until_quiet(
+            window,
+            parser,
+            deadline.min(Instant::now() + Duration::from_millis(200)),
+        );
         if parser.screen().contents().contains(text) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
     false
 }
@@ -1718,9 +1737,7 @@ fn test_rename_keeps_focus() {
 
     // Clear the name and type a new one
     for _ in 0..window_name.len() {
-        window
-            .write_all(&[0x7f])
-            .expect("Failed to send Backspace");
+        window.write_all(&[0x7f]).expect("Failed to send Backspace");
     }
     window.flush().expect("Failed to flush");
     std::thread::sleep(Duration::from_millis(300));
@@ -3315,10 +3332,7 @@ fn test_welcome_state_on_fresh_start() {
                 .map(|entries| entries.flatten().count())
                 .unwrap_or(0);
             if remaining > 0 {
-                eprintln!(
-                    "WARNING: {} stale files in isolated windows dir",
-                    remaining
-                );
+                eprintln!("WARNING: {} stale files in isolated windows dir", remaining);
                 clean_state = false;
             }
         }
@@ -3766,10 +3780,7 @@ fn test_window_order_preserved_across_restart() {
     read_into_parser(&mut window, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!(
-        "PHASE 1 - After switching to window1:\n{}",
-        screen_contents
-    );
+    eprintln!("PHASE 1 - After switching to window1:\n{}", screen_contents);
 
     // Window 1 should now be at the top (most recently used after switch)
     let row2 = parser.screen().contents_between(2, 0, 2, 27);
@@ -5050,10 +5061,7 @@ fn test_truncation_indicators_when_window_list_overflows() {
     read_into_parser(&mut window, &mut parser);
 
     let screen_contents = parser.screen().contents();
-    eprintln!(
-        "Screen with {} windows:\n{}",
-        num_windows, screen_contents
-    );
+    eprintln!("Screen with {} windows:\n{}", num_windows, screen_contents);
 
     // Verify the truncation indicator "..." appears
     // It should appear at the bottom since we have more windows than can fit
@@ -5214,9 +5222,7 @@ fn test_create_session() {
     window.read_and_parse().expect("Failed to read output");
 
     // Type the session name
-    window
-        .send("MyWork")
-        .expect("Failed to type session name");
+    window.send("MyWork").expect("Failed to type session name");
     std::thread::sleep(Duration::from_millis(300));
     window.read_and_parse().expect("Failed to read output");
 
@@ -5740,10 +5746,7 @@ fn test_ctrl_w_from_terminal_opens_session_overlay() {
         let screen = window.screen_contents();
         if screen.contains("Sessions") || screen.contains("Default") {
             found_overlay = true;
-            eprintln!(
-                "After Ctrl+W from terminal (session overlay):\n{}",
-                screen
-            );
+            eprintln!("After Ctrl+W from terminal (session overlay):\n{}", screen);
             break;
         }
     }
@@ -6228,7 +6231,11 @@ fn test_session_name_truncated_in_sidebar_header() {
 
     // Sidebar content width is 24 chars; create a session name definitely longer than that
     // Use a fixed prefix of 25+ chars so it always exceeds the limit regardless of pid/unique_id
-    let long_session_name = format!("VeryLongSessionNameForTruncation-{}-{}", pid % 100, unique_id % 100);
+    let long_session_name = format!(
+        "VeryLongSessionNameForTruncation-{}-{}",
+        pid % 100,
+        unique_id % 100
+    );
     eprintln!(
         "Long session name ({} chars): {}",
         long_session_name.len(),
@@ -7521,9 +7528,7 @@ fn test_terminal_scroll_position_restored_on_window_switch() {
     std::thread::sleep(Duration::from_millis(300));
     window.read_and_parse().expect("Failed to read output");
 
-    window
-        .send_down_arrow()
-        .expect("Failed to send Down arrow");
+    window.send_down_arrow().expect("Failed to send Down arrow");
     std::thread::sleep(Duration::from_millis(200));
     window
         .send_enter()
@@ -8263,10 +8268,7 @@ fn test_kill_session_windows_are_gone() {
     window.read_and_parse().expect("Failed to read output");
 
     let screen = window.screen_contents();
-    eprintln!(
-        "After creating victim-sess in Victim session:\n{}",
-        screen
-    );
+    eprintln!("After creating victim-sess in Victim session:\n{}", screen);
     assert!(
         screen.contains(victim_window_name),
         "Window '{}' should appear in sidebar. Got:\n{}",
@@ -8455,64 +8457,37 @@ fn test_rename_window_confirm() {
     window.detach().expect("Failed to detach");
 }
 
-/// Test that running `bd list` inside the TUI terminal is not significantly slower
-/// than running it directly in a shell. This catches performance regressions in
-/// the PTY emulation/read loop.
-///
-/// If `bd` is not installed, this test skips gracefully.
+/// Deterministic throughput check, independent of locally installed tools/data.
 #[test]
-fn test_bd_list_performance_in_tui() {
-    let _timer = TestTimer::new("test_bd_list_performance_in_tui");
-
-    // Check if bd is available
-    let bd_check = std::process::Command::new("which").arg("bd").output();
-    match bd_check {
-        Ok(output) if output.status.success() => {}
-        _ => {
-            eprintln!("bd is not installed, skipping performance test");
-            return;
-        }
-    }
-
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-
-    // Measure baseline time for `bd list` outside the TUI
-    let baseline_start = std::time::Instant::now();
-    let baseline_result = std::process::Command::new("bd")
-        .arg("list")
-        .current_dir(manifest_dir)
-        .output()
-        .expect("Failed to run bd list");
-    let baseline_duration = baseline_start.elapsed();
-
-    assert!(
-        baseline_result.status.success(),
-        "bd list should succeed outside the TUI. stderr: {}",
-        String::from_utf8_lossy(&baseline_result.stderr)
-    );
-
-    eprintln!("bd list baseline time: {:?}", baseline_duration);
-
-    // Now measure bd list inside the TUI
+fn test_command_throughput_in_tui() {
+    // The bd benchmark touched the real repository database, silently skipped on
+    // machines without bd, and could pass on echoed input. Use shell builtins and
+    // an assembled completion marker to test actual PTY throughput everywhere.
     let env = TestEnv::setup();
+    let command = "i=0; while [ $i -lt 1000 ]; do printf 'throughput_%04d\\n' \"$i\"; i=$((i+1)); done; printf 'PERF_%s\\n' DONE";
+    let mut baseline = std::process::Command::new("/bin/sh");
+    env.iso.apply(&mut baseline);
+    let baseline_start = Instant::now();
+    let baseline_result = baseline.args(["-c", command]).output().unwrap();
+    let baseline_duration = baseline_start.elapsed();
+    assert!(baseline_result.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&baseline_result.stdout)
+            .lines()
+            .count(),
+        1001
+    );
     let mut window = SbClient::new(&env).expect("Failed to spawn sb");
 
-    // Wait for TUI to be ready and shell prompt to appear
-    std::thread::sleep(Duration::from_millis(1500));
-    window
-        .read_and_parse()
-        .expect("Failed to read initial output");
-
-    // Use a sentinel echo to detect command completion
-    let sentinel = "BD_PERF_DONE_12345";
-    let command = format!("bd list && echo {}", sentinel);
+    window.wait_for_screen("Switch session");
+    let sentinel = "PERF_DONE";
 
     let tui_start = std::time::Instant::now();
     window.send(&command).expect("Failed to send command");
     window.send_enter().expect("Failed to send enter");
 
-    // Give the TUI a generous timeout: 5x the baseline, minimum 15 seconds
-    let tui_timeout_ms = (baseline_duration.as_millis() as u64 * 5).max(15_000);
+    // One bounded readiness budget replaces the 15-second minimum plus startup sleep.
+    let tui_timeout_ms = 3000;
     let appeared = wait_for_text(
         &mut window.window,
         &mut window.parser,
@@ -8521,7 +8496,10 @@ fn test_bd_list_performance_in_tui() {
     );
     let tui_duration = tui_start.elapsed();
 
-    eprintln!("bd list TUI time: {:?}", tui_duration);
+    eprintln!(
+        "1000-line shell throughput: baseline {:?}, TUI {:?}",
+        baseline_duration, tui_duration
+    );
     eprintln!(
         "Ratio: {:.1}x slower than baseline",
         tui_duration.as_secs_f64() / baseline_duration.as_secs_f64().max(0.001)
@@ -8529,22 +8507,20 @@ fn test_bd_list_performance_in_tui() {
 
     assert!(
         appeared,
-        "bd list did not complete in the TUI within {:?}. \
+        "1000-line workload did not complete in the TUI within {:?}. \
         This indicates a serious performance regression in TUI PTY throughput. \
         Baseline (direct shell) time was: {:?}",
         Duration::from_millis(tui_timeout_ms),
         baseline_duration
     );
 
-    // Assert that the TUI does not add more than 10 seconds of overhead
-    // beyond the baseline. This catches cases where the TUI makes the command
-    // 10x+ slower than running it directly.
-    let max_overhead = Duration::from_secs(10);
+    assert!(window.screen_contents().contains("throughput_0999"));
+    let max_overhead = Duration::from_secs(3);
     let overhead = tui_duration.saturating_sub(baseline_duration);
 
     assert!(
         overhead <= max_overhead,
-        "bd list in TUI ({:?}) is too slow compared to direct execution ({:?}). \
+        "Workload in TUI ({:?}) is too slow compared to direct execution ({:?}). \
         Overhead: {:?} (max allowed: {:?}). \
         This indicates a performance regression in the TUI PTY emulation loop.",
         tui_duration,

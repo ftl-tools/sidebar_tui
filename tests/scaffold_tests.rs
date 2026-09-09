@@ -1,9 +1,8 @@
 use std::process::Command;
 
 fn get_binary_path() -> String {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR should be set by cargo");
-    format!("{}/target/debug/sb", manifest_dir)
+    // Use Cargo's actual artifact, including custom target directories.
+    env!("CARGO_BIN_EXE_sb").to_string()
 }
 
 #[test]
@@ -17,15 +16,13 @@ fn test_binary_exists_and_is_executable() {
 }
 
 #[test]
-fn test_cargo_build_succeeds() {
-    let output = Command::new("cargo")
-        .args(["build", "--bin", "sb"])
+fn test_cli_version_matches_package() {
+    // Cargo already built this artifact before running tests. Rebuilding inside
+    // a test added lock/network waits and tested no additional product behavior.
+    let output = Command::new(get_binary_path())
+        .arg("--version")
         .output()
-        .expect("Failed to run cargo build");
-
-    assert!(
-        output.status.success(),
-        "cargo build should succeed. stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
 }

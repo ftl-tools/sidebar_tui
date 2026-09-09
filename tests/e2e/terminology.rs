@@ -1,14 +1,9 @@
 use super::*;
 
 fn wait_for(client: &mut SbClient, text: &str) {
-    for _ in 0..25 {
-        client.read_and_parse().unwrap();
-        if client.screen_contents().contains(text) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("Missing {text:?}:\n{}", client.screen_contents());
+    // Iteration counts multiplied nested waits into a ~22-second silent stall.
+    // The shared readiness check uses a single three-second deadline instead.
+    client.wait_for_screen(text);
 }
 
 #[test]
@@ -26,13 +21,27 @@ fn test_tmux_terminology_workflow() {
     client.send("C").unwrap();
     client.send("Project").unwrap();
     client.send_enter().unwrap();
-    wait_for(&mut client, "Project");
-    let sessions = env
-        .iso_command()
-        .args(["session", "list"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&sessions.stdout).contains("Project"));
+    // "Project" also appears in the draft. Waiting only for that text raced the
+    // create request once blanket sleeps were removed; wait for committed IPC state.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        client.read_and_parse().unwrap();
+        let sessions = env
+            .iso_command()
+            .args(["session", "list"])
+            .output()
+            .unwrap();
+        assert!(sessions.status.success());
+        if String::from_utf8_lossy(&sessions.stdout).contains("Project") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Session was not committed: {}",
+            client.screen_contents()
+        );
+    }
+    wait_for(&mut client, "Kill session");
 
     client.send_down_arrow().unwrap();
     client.send_enter().unwrap();
@@ -53,7 +62,9 @@ fn test_tmux_terminology_workflow() {
     client.send("d").unwrap();
     wait_for(&mut client, "Detach Sidebar TUI?");
     client.send("y").unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    // Exit is observable; do not guess when the detach request has completed.
+    use expectrl::Expect;
+    client.window.expect(expectrl::Eof).unwrap();
 
     let windows = env.iso_command().args(["list-windows"]).output().unwrap();
     assert!(windows.status.success());

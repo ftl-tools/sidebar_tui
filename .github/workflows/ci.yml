@@ -19,6 +19,8 @@ jobs:
   test:
     name: Unit tests
     runs-on: ubuntu-latest
+    # Cold CI builds have an explicit 660s runner budget, not an hours-long fallback.
+    timeout-minutes: 12
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,5 +31,18 @@ jobs:
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Run unit tests
-        run: cargo test --lib
+      # A single stuck libtest case previously blocked the whole job. Build once,
+      # isolate cases, and retain watchdog/timing evidence on both success and failure.
+      - name: Test the test runner
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Run bounded unit and CLI tests
+        run: python3 scripts/test_runner.py --suite unit --timeout 15 --build-timeout 600 --run-timeout 660
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/test_reports/
+          retention-days: 7

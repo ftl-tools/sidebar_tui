@@ -1,5 +1,20 @@
 # tmux migration progress
 
+## Current handoff — migration paused for test-harness overhaul
+
+**Knowledge workflow resolved:** Mulch is no longer required or recommended for agent startup/completion. The project chose checked-in Markdown handoffs rather than installing the missing CLI. `AGENTS.md` documents the replacement workflow; existing `.mulch` records remain an unchanged historical archive. Earlier command-not-found entries below are history, not instructions to retry those commands.
+
+**Timeout correction:** numerical `600000` Bash timeout records below are historical, not current instructions. This tool uses seconds. The runner now defaults to a 60-second overall budget with a 90-second outer tool timeout; see [testing](./testing#agent-tool-backstop). Full reviews explicitly request 180 seconds (210-second tool backstop).
+
+The user redirected this session from Step 3 acceptance to **making tests faster and reliable** after a unit test hung. Do not interpret the new test tooling or successful fast gate as Step 3 architecture acceptance. No Step 4 implementation was started.
+
+- Added a real editor/logging regression to `tests/tmux_sidebar.rs`: saved `vi` content, continuous numbered logs, keyboard copy, SGR mouse focus/history/selection/copy, native border resizing, zoom/reentry, and unchanged working IDs/PIDs after close/reopen. The sidebar integration target now has six tests. It passes in the bounded fast gate.
+- Optional `tests/support/tmux_desktop.rs` opens a new, TTY-validated Terminal.app window for visual evidence. Earlier agent-driven runs captured actual editor, zoom/unzoom, shared focus, mouse-selection and resize rendering. Input was driven through a second native PTY client, **not** physical OS mouse events; macOS Accessibility control was unavailable. Screenshots remain local temporary artifacts. No human approval or final architecture acceptance was recorded.
+- Early desktop automation incorrectly assumed Terminal's front window was the newly created window; in that run it captured/closed another agent-created demo window. The helper now resolves a newly created window by its exact TTY, validates sole-tab ownership before captures/cleanup, and waits for that TTY to attach. Do not use the early captures as acceptance evidence.
+- The interrupted unit log ended at `test_process_resize_updates_all_windows` running over 60 seconds. The new runner isolates cases and has hard watchdogs, heartbeats, scoped socket cleanup, and persistent timing/failure reports. See [testing and diagnostics](./testing) for exact commands, measured speedups, and the failing full legacy audit—not just the green fast subset.
+- The legacy audit exposed a `bd list` performance test accessing this repository's actual `.beads` database. It is replaced by a deterministic shell-throughput test. SQLite WAL/SHM changes were not blindly restored because those runtime files may be in use by other clients.
+- CLI rebuilt/reinstalled with `cargo install --path . --force --locked --offline`; version unchanged. Existing legacy data/default servers were not intentionally stopped. The unfinished Step 3 gate below remains the next migration task after the test-system work.
+
 ## Step 3 — native sidebar proof (INCOMPLETE / waiting for architecture gate)
 
 **Status:** Working prototype and automated gates delivered as an explicitly incomplete checkpoint. **Do not check off Step 3 or advance to Step 4.** Real-terminal editor/logging, native mouse/copy-mode evidence, human acceptance of shared focus/layout, and the post-decision re-estimate are still outstanding. Exact instructions and an evidence checklist are in the [native sidebar demo guide](./tmux_sidebar_demo#required-real-terminal-acceptance-please-report-evidence).

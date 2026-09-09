@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
-use portable_pty::{CommandBuilder, Child, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// Extension trait to convert anyhow::Error to eyre::Error.
 trait AnyhowToEyre<T> {
@@ -232,10 +232,7 @@ pub fn spawn_shell_with_env(
 }
 
 /// Spawn a background thread that reads from the PTY and sends events via channel.
-fn spawn_reader_thread(
-    mut reader: Box<dyn Read + Send>,
-    tx: Sender<PtyEvent>,
-) -> JoinHandle<()> {
+fn spawn_reader_thread(mut reader: Box<dyn Read + Send>, tx: Sender<PtyEvent>) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         loop {
@@ -407,70 +404,63 @@ mod tests {
 
     #[test]
     fn test_pty_does_not_inherit_claudecode_env() {
-        // Set CLAUDECODE in our process environment
-        // Safety: This test runs serially, so modifying env vars is safe here
-        unsafe {
-            std::env::set_var("CLAUDECODE", "test_window_id");
-        }
-
-        // Spawn a shell
-        let mut handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
-
-        // Ask the shell to print CLAUDECODE env var
-        handle
-            .write(b"echo CLAUDECODE_IS=$CLAUDECODE\r")
-            .expect("Failed to write to PTY");
-
-        // Wait for output and check that CLAUDECODE is empty
-        let mut output_collected = String::new();
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
-            match handle.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(PtyEvent::Output(data)) => {
-                    output_collected.push_str(&String::from_utf8_lossy(&data));
-                    // Look for the marker that proves CLAUDECODE is empty
-                    if output_collected.contains("CLAUDECODE_IS=\r")
-                        || output_collected.contains("CLAUDECODE_IS=\n")
-                        || (output_collected.contains("CLAUDECODE_IS=")
-                            && !output_collected.contains("CLAUDECODE_IS=test_window_id"))
-                    {
-                        // Clean up the env var we set
-                        // Safety: This test runs serially, so modifying env vars is safe here
-                        unsafe {
-                            std::env::remove_var("CLAUDECODE");
-                        }
-                        // CLAUDECODE was successfully stripped
-                        return;
-                    }
-                    // If the original value appears, that's a failure
-                    if output_collected.contains("CLAUDECODE_IS=test_window_id") {
-                        // Clean up the env var we set
-                        unsafe {
-                            std::env::remove_var("CLAUDECODE");
-                        }
-                        panic!(
-                            "CLAUDECODE env var should have been removed but it was inherited. Output: {}",
-                            output_collected
-                        );
-                    }
+        // The old test mutated process-global environment while other tests spawned
+        // shells (despite claiming to be serial). Set inheritance on a child process
+        // instead, so ordinary parallel cargo test is safe as well as our runner.
+        const CHILD: &str = "SB_PTY_ENV_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() != Ok("1") {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pty::tests::test_pty_does_not_inherit_claudecode_env",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("CLAUDECODE", "test_window_id")
+                .env(
+                    "SHELL",
+                    if cfg!(unix) {
+                        "/bin/sh"
+                    } else {
+                        "powershell.exe"
+                    },
+                )
+                .spawn()
+                .unwrap();
+            let start = std::time::Instant::now();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "isolated inheritance check failed");
+                    return;
                 }
-                Ok(PtyEvent::Exited) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => break,
+                if start.elapsed() > Duration::from_secs(6) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("isolated inheritance check exceeded six seconds");
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
-
-        // Clean up the env var we set
-        // Safety: This test runs serially, so modifying env vars is safe here
-        unsafe {
-            std::env::remove_var("CLAUDECODE");
+        assert_eq!(std::env::var("CLAUDECODE").unwrap(), "test_window_id");
+        let mut handle = spawn_shell(24, 80, None).expect("Failed to spawn shell");
+        // A marker in the echoed command was previously enough to pass falsely.
+        // Split its literal so only actual shell execution produces the full marker.
+        #[cfg(unix)]
+        handle
+            .write(b"printf 'CLAUDE%s=%s\\n' CODE_IS \"${CLAUDECODE-unset}\"\r")
+            .unwrap();
+        #[cfg(windows)]
+        handle.write(b"Write-Output ('CLAUDE' + 'CODE_IS=' + $(if ($env:CLAUDECODE) {$env:CLAUDECODE} else {'unset'}))\r").unwrap();
+        let mut output = String::new();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Ok(PtyEvent::Output(bytes)) = handle.rx.recv_timeout(Duration::from_millis(50)) {
+                output.push_str(&String::from_utf8_lossy(&bytes));
+                if output.contains("CLAUDECODE_IS=unset") {
+                    return;
+                }
+            }
         }
-
-        // If we get here, verify we at least got some output
-        assert!(
-            output_collected.contains("CLAUDECODE_IS="),
-            "Should have received echo output. Got: {}",
-            output_collected
-        );
+        panic!("Shell did not prove CLAUDECODE was removed: {output}");
     }
 }

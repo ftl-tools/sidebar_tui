@@ -1,5 +1,6 @@
 references/
 /target
+__pycache__/
 session_logs/
 node_modules/
 docs/.vitepress/dist/

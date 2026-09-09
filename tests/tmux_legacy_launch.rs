@@ -1,5 +1,7 @@
 //! Installed-binary-capable PTY acceptance: missing tmux does not prevent legacy launch.
 #![cfg(unix)]
+#[path = "support/test_paths.rs"]
+mod test_paths;
 use expectrl::Expect;
 use std::{path::PathBuf, process::Command, time::Duration};
 struct Legacy {
@@ -29,7 +31,8 @@ impl Drop for Legacy {
 #[test]
 fn missing_tmux_still_launches_legacy_in_pty() {
     let f = Legacy {
-        dir: PathBuf::from(format!("/tmp/sb-legacy-{:016x}", rand::random::<u64>())),
+        // Keep resources under the watchdog's private root for timeout cleanup.
+        dir: test_paths::private_dir("sb-legacy"),
         binary: std::env::var("SB_TMUX_TEST_BINARY")
             .unwrap_or_else(|_| env!("CARGO_BIN_EXE_sb").into()),
     };
@@ -42,18 +45,23 @@ fn missing_tmux_still_launches_legacy_in_pty() {
     let mut client = expectrl::Session::spawn(launch).unwrap();
     client.set_expect_timeout(Some(Duration::from_secs(15)));
     let mut parser = vt100::Parser::new(24, 80, 0);
-    let wait = |client: &mut expectrl::session::OsSession, parser: &mut vt100::Parser, text: &str| {
-        for _ in 0..150 {
-            let mut buf = [0; 8192];
-            while let Ok(n) = client.try_read(&mut buf) {
-                if n == 0 { break; }
-                parser.process(&buf[..n]);
+    let wait =
+        |client: &mut expectrl::session::OsSession, parser: &mut vt100::Parser, text: &str| {
+            for _ in 0..150 {
+                let mut buf = [0; 8192];
+                while let Ok(n) = client.try_read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    parser.process(&buf[..n]);
+                }
+                if parser.screen().contents().contains(text) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
-            if parser.screen().contents().contains(text) { return; }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        panic!("Missing {text:?}: {}", parser.screen().contents());
-    };
+            panic!("Missing {text:?}: {}", parser.screen().contents());
+        };
     wait(&mut client, &mut parser, "Switch session");
     client.send("\x02").unwrap();
     wait(&mut client, &mut parser, "Kill window");

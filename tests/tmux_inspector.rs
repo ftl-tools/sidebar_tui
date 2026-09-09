@@ -1,5 +1,7 @@
 //! Real tmux tests: missing tmux is a failure, never a skipped success.
 #![cfg(unix)]
+#[path = "support/test_paths.rs"]
+mod test_paths;
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -12,7 +14,8 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let dir = PathBuf::from(format!("/tmp/sb-ti-{:016x}", rand::random::<u64>()));
+        // Keep resources under the watchdog's private root for timeout cleanup.
+        let dir = test_paths::private_dir("sb-ti");
         std::fs::create_dir(&dir).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();

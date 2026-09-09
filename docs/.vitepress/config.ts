@@ -54,6 +54,8 @@ export default defineConfig({
           { text: "Keybindings", link: "/guide/keybindings" },
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminology & compatibility", link: "/guide/terminology" },
+          // Keep the bounded runner and test-tier contract visible to contributors.
+          { text: "Testing & diagnostics", link: "/guide/testing" },
           { text: "tmux chooser & inspection", link: "/guide/tmux_preview" },
           { text: "Native sidebar demo (approval pending)", link: "/guide/tmux_sidebar_demo" },
           { text: "tmux migration progress", link: "/guide/tmux_migration_progress" },

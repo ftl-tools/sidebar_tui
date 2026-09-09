@@ -293,7 +293,7 @@ A step is complete only when all of the following hold:
 
 - Run `cargo test --lib` after code changes.
 - Add focused tmux integration and PTY-driven E2E tests to the existing harness or a clearly separated tmux test target. tmux-specific CI jobs must install the supported dependency; do not silently skip the entire feature suite when tmux is missing.
-- For E2E tool calls, follow `AGENTS.md`: set Bash `timeout: 600000` and capture **both** streams with `2>&1 | tee`. Use pipeline failure propagation so a passing `tee` does not hide failed tests.
+- For E2E tool calls, follow `AGENTS.md`: Bash timeouts are **seconds**. Use `timeout: 90` around the runner's default 60-second whole-run budget; explicit full reviews may use `--run-timeout 180` and Bash `timeout: 210`. The former `600000` requirement confused milliseconds with seconds and is obsolete. Capture **both** streams with `2>&1 | tee` and pipeline failure propagation so a passing `tee` cannot hide failed tests.
 - During development, run feature-related E2E tests. Full E2E runs belong to review/release gates, including Steps 10 and 11; do not run the slow full suite for every small edit.
 - Every fixture owns an isolated tmux socket and config. Cleanup must never target the user's default server. Set test environment variables on the initial server-starting command, not merely on a later client.
 - Automate structural assertions (IDs, pane geometry, process survival, focus targets) alongside TUI interaction tests. Use manual real-terminal checks for native mouse, copy mode, visual behavior, and representative user configurations.

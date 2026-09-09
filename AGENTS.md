@@ -2,24 +2,65 @@ Build and re-install the cli after every functioning batch of work so that users
 
 ## Running Tests
 
-**Unit tests** (fast, ~1s):
+Prefer the bounded, process-isolated runner (Python 3.9+, macOS/Linux):
+
+```bash
+npm test                              # Fast developer gate, not the full legacy audit
+npm run test:unit                     # Library + CLI + compatibility tests
+npm run test:tmux                     # Native tmux feature tests
+python3 scripts/test_runner.py --suite e2e --filter test_name
+npm run test:full                     # Explicit full review/audit; failures are not suppressed
+```
+
+The runner builds once with `--locked`, discovers Cargo's artifacts, uses four isolated workers,
+prints heartbeat/slow-test progress, and enforces a 30-second per-test watchdog plus a **60-second
+whole-run budget** (build + discovery + all tests). Use `--repeat N` for stability checks,
+`--timeout N` for a per-case budget, and `--run-timeout N` for an explicitly larger overall budget.
+`--build-timeout N` caps compilation separately but cannot extend the whole-run deadline. Logs and machine-readable timings are in `target/test_reports/`. Never silently retry a
+failed case. Desktop screenshots are separate: `npm run test:desktop` (macOS, opt-in).
+
+Fast includes the unit/CLI/compatibility/scaffold suites, every tmux integration, current legacy
+terminology/throughput workflows and harness regressions. It explicitly excludes the remaining
+old legacy UI scenarios; the full audit still reports their stale-binding/layout failures.
+See `docs/guide/testing.md` for scope and known limitations.
+
+After a functioning batch, reinstall using `cargo install --path . --force --locked --offline`
+when dependencies are cached; this avoids unnecessary index updates and dependency re-resolution.
+Keep install separate from test loops. If a cached dependency is missing, retry explicitly without
+`--offline`, not by repeatedly running an unbounded combined test/install command.
+
+**Direct unit tests** (normally ~1s, but no per-case watchdog):
 
 ```bash
 cargo test --lib
 ```
 
-**E2E tests** — the full suite takes ~170s with 4 threads. **You MUST set `timeout: 600000` on the Bash tool call**, or the tool will kill the process at 120s and you'll see truncated output that looks like "1 passed; 68 filtered out" — a false signal that makes it look like a filter argument problem. It is not. It is a timeout kill.
+### Tool timeouts are seconds, not milliseconds
 
-Full suite:
+**Never use `timeout: 600000` with this Bash tool.** The old instruction confused milliseconds
+with seconds: that value permits almost seven days. A large outer timeout is not a hang fix.
+
+- Fast/focused/unit checks: runner whole-run limit **60s**, Bash `timeout: 90`.
+- Explicit full review: runner `--run-timeout 180`, Bash `timeout: 210`.
+- If a known cold build needs more time, choose and explain a finite budget explicitly; do not
+  automatically inflate deadlines after a timeout. Keep builds/installs separate from test runs.
+- The runner emits progress every two seconds while stalled, cancels queued/running tests on
+  overall expiry, and exits **124**. Active workers have up to five seconds for scoped cleanup.
+- The tool timeout is a final backstop for failures in the runner itself. On any cutoff, inspect
+  the saved log/report rather than interpreting partial output or zero tests as success.
+
+Full review (Bash `timeout: 210`):
 
 ```bash
-cargo test --test e2e -- --test-threads=4 2>&1 | tee /tmp/e2e_out.txt; grep -E "test result|FAILED|error\[" /tmp/e2e_out.txt
+set -o pipefail
+python3 scripts/test_runner.py --suite e2e --run-timeout 180 2>&1 | tee /tmp/e2e_out.txt
 ```
 
-Single test:
+Single test (Bash `timeout: 90`):
 
 ```bash
-cargo test --test e2e "test_name_here" -- --nocapture 2>&1 | tee /tmp/e2e_out.txt; tail -20 /tmp/e2e_out.txt
+set -o pipefail
+python3 scripts/test_runner.py --suite e2e --filter test_name_here 2>&1 | tee /tmp/e2e_out.txt
 ```
 
 **Critical: use `2>&1 | tee`, not `2>/tmp/e2e_out.txt`.** cargo test prints results to **stdout**, not stderr. Redirecting only stderr (`2>`) leaves the results file nearly empty — you'll see the compile lines but nothing about pass/fail. `2>&1 | tee` captures both streams so the file actually has the results. The `tee` also lets you stream output live while saving to file.
@@ -53,46 +94,19 @@ std::thread::sleep(Duration::from_millis(300));
 
 Remember to call `iso.cleanup()` manually at the end of the test (since you're not using `TestEnv` which does it in `Drop`).
 
-<!-- mulch:start -->
+## Project Knowledge and Handoffs
 
-## Project Expertise (Mulch)
+Use checked-in Markdown, not Mulch. The previous mandatory CLI workflow repeatedly failed
+because the executable was not installed; it is no longer a project prerequisite. Do not run
+or install Mulch as part of normal agent startup, validation, or completion.
 
-This project uses [Mulch](https://github.com/jayminwest/mulch) for structured expertise management.
-
-**At the start of every session**, run:
-
-```bash
-mulch prime
-```
-
-This injects project-specific conventions, patterns, decisions, and other learnings into your context.
-Use `mulch prime --files src/foo.ts` to load only records relevant to specific files.
-
-**Before completing your task**, review your work for insights worth preserving — conventions discovered,
-patterns applied, failures encountered, or decisions made — and record them:
-
-```bash
-mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
-```
-
-Link evidence when available: `--evidence-commit <sha>`, `--evidence-bead <id>`
-
-Run `mulch status` to check domain health and entry counts.
-Run `mulch --help` for full usage.
-Mulch write commands use file locking and atomic writes — multiple agents can safely record to the same domain concurrently.
-
-### Before You Finish
-
-1. Discover what to record:
-   ```bash
-   mulch learn
-   ```
-2. Store insights from this work session:
-   ```bash
-   mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
-   ```
-3. Validate and commit:
-   ```bash
-   mulch sync
-   ```
-   <!-- mulch:end -->
+- At session start, read the relevant project instructions and task handoff. For the tmux
+  migration, read `docs/guide/tmux_migration_progress.md`; for tests, read `docs/guide/testing.md`.
+- Before finishing, record useful decisions, pitfalls, exact validation results, and unresolved
+  work in the relevant guide/handoff (or `progress.md` for work without a dedicated handoff).
+  Make targeted updates and preserve other agents' notes. Include test names or commit IDs
+  when available; do not commit or push merely to record knowledge.
+- `.mulch/` is a preserved historical archive, not the active workflow. Read its JSONL records
+  directly only when relevant, and verify them against current code: some describe retired
+  bindings, terminology, and tooling. Do not treat archived records as current instructions.
+- For documentation changes, run `npm run docs:build`; no knowledge-management CLI is needed.
